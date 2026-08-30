@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+build/
+dist/
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Environments
+.venv/
+venv/
+env/
+
+# PyTorch / Triton / Inductor caches and JIT build dirs
+.torchinductor_cache/
+torchinductor_*/
+.triton/
+torch_extensions/
+*.ptx
+*.cubin
+
+# Profiler outputs (large binaries — never commit)
+*.nsys-rep
+*.sqlite
+*.ncu-rep
+*.qdrep
+profiles/
+traces/
+
+# Local scratch
+scratch/
+tmp/
+*.log
+
+# Committed results are curated JSON only; block stray large artifacts
+results/**/*.pt
+results/**/*.bin
+results/**/*.csv.gz
+*.ckpt
+*.pth
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
