@@ -1,0 +1,437 @@
+{
+  "toolchain": {
+    "python": "3.12.3",
+    "platform": "Linux-6.8.0-117-generic-x86_64-with-glibc2.39",
+    "torch": "2.9.0+cu128",
+    "torch_cuda": "12.8",
+    "triton": "3.5.0",
+    "torch_arch_list": [
+      "sm_70",
+      "sm_75",
+      "sm_80",
+      "sm_86",
+      "sm_90",
+      "sm_100",
+      "sm_120"
+    ],
+    "cuda_home": "/usr/local/cuda-12.8",
+    "nvcc_version": "Build cuda_12.8.r12.8/compiler.35583870_0",
+    "nvcc_gpu_archs": [
+      "compute_50",
+      "compute_52",
+      "compute_53",
+      "compute_60",
+      "compute_61",
+      "compute_62",
+      "compute_70",
+      "compute_72",
+      "compute_75",
+      "compute_80",
+      "compute_86",
+      "compute_87",
+      "compute_89",
+      "compute_90",
+      "compute_100",
+      "compute_101",
+      "compute_120"
+    ],
+    "nvcc_supports_sm120": true,
+    "ncu_path": "/usr/local/cuda-12.8/bin/ncu",
+    "nsys_path": "/usr/local/cuda-12.8/bin/nsys"
+  },
+  "theoretical_dram_bandwidth": [
+    {
+      "index": 0,
+      "name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+      "memory_clock_mhz": 14001.0,
+      "assumed_bus_width_bits": 512,
+      "note": "bus width is an assumption, not a measurement; GB202 is a 512-bit part",
+      "theoretical_gbytes_per_s": 1792.128
+    },
+    {
+      "index": 1,
+      "name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+      "memory_clock_mhz": 14001.0,
+      "assumed_bus_width_bits": 512,
+      "note": "bus width is an assumption, not a measurement; GB202 is a 512-bit part",
+      "theoretical_gbytes_per_s": 1792.128
+    }
+  ],
+  "devices": {
+    "0": {
+      "properties": {
+        "index": 0,
+        "name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+        "compute_capability": "12.0",
+        "total_memory_bytes": 101971591168,
+        "multi_processor_count": 188,
+        "l2_cache_size_bytes": 134217728,
+        "shared_memory_per_block_optin_bytes": 101376,
+        "max_threads_per_multi_processor": 1536,
+        "regs_per_multiprocessor": 65536,
+        "warp_size": 32
+      },
+      "bandwidth_dram": {
+        "working_set_bytes": 2147483648,
+        "working_set_mib": 2048.0,
+        "copy": {
+          "median_ms": 5.873439788818359,
+          "min_ms": 5.864927768707275,
+          "p10_ms": 5.868832111358643,
+          "p90_ms": 5.880608081817627,
+          "reps": 25,
+          "launches_per_timing": 2,
+          "gbytes_per_s": 1462.5049206009064
+        },
+        "read": {
+          "median_ms": 5.2420477867126465,
+          "min_ms": 5.239039897918701,
+          "p10_ms": 5.239295959472656,
+          "p90_ms": 5.245408058166504,
+          "reps": 25,
+          "launches_per_timing": 4,
+          "gbytes_per_s": 1638.6601079397742
+        },
+        "write": {
+          "median_ms": 5.254335880279541,
+          "min_ms": 5.246175765991211,
+          "p10_ms": 5.2493438720703125,
+          "p90_ms": 5.260447978973389,
+          "reps": 25,
+          "launches_per_timing": 4,
+          "gbytes_per_s": 1634.8278427040716
+        }
+      },
+      "bandwidth_sweep": {
+        "curve": [
+          {
+            "mib": 4,
+            "copy_gbytes_per_s": 680.0655251508816
+          },
+          {
+            "mib": 16,
+            "copy_gbytes_per_s": 2741.0952527760674
+          },
+          {
+            "mib": 32,
+            "copy_gbytes_per_s": 5377.635858157314
+          },
+          {
+            "mib": 48,
+            "copy_gbytes_per_s": 6063.607203429163
+          },
+          {
+            "mib": 64,
+            "copy_gbytes_per_s": 5632.419151484221
+          },
+          {
+            "mib": 96,
+            "copy_gbytes_per_s": 1569.1000312681074
+          },
+          {
+            "mib": 128,
+            "copy_gbytes_per_s": 1468.1922229328918
+          },
+          {
+            "mib": 256,
+            "copy_gbytes_per_s": 1461.6368972702287
+          },
+          {
+            "mib": 1024,
+            "copy_gbytes_per_s": 1461.1594790589336
+          },
+          {
+            "mib": 2048,
+            "copy_gbytes_per_s": 1462.895422058973
+          }
+        ],
+        "dram_plateau_gbytes_per_s": 1462.0274505589532,
+        "l2_peak_gbytes_per_s": 6063.607203429163
+      },
+      "matmul": {
+        "bf16_2048": {
+          "median_ms": 0.09417600184679031,
+          "min_ms": 0.09254399687051773,
+          "p10_ms": 0.09279999881982803,
+          "p90_ms": 0.09510400146245956,
+          "reps": 50,
+          "tflop_per_s": 182.42300423784152
+        },
+        "bf16_4096": {
+          "median_ms": 0.4607680141925812,
+          "min_ms": 0.45820799469947815,
+          "p10_ms": 0.45926401019096375,
+          "p90_ms": 0.4625920057296753,
+          "reps": 50,
+          "tflop_per_s": 298.2823226409037
+        },
+        "bf16_8192": {
+          "median_ms": 4.5444159507751465,
+          "min_ms": 4.429887771606445,
+          "p10_ms": 4.4542717933654785,
+          "p90_ms": 4.577184200286865,
+          "reps": 50,
+          "tflop_per_s": 241.947840973592
+        },
+        "fp16_2048": {
+          "median_ms": 0.08870399743318558,
+          "min_ms": 0.08620800077915192,
+          "p10_ms": 0.08684799820184708,
+          "p90_ms": 0.08982399851083755,
+          "reps": 50,
+          "tflop_per_s": 193.67638078475974
+        },
+        "fp16_4096": {
+          "median_ms": 0.5739840269088745,
+          "min_ms": 0.5684159994125366,
+          "p10_ms": 0.5707839727401733,
+          "p90_ms": 0.5774400234222412,
+          "reps": 50,
+          "tflop_per_s": 239.4473487566576
+        },
+        "fp16_8192": {
+          "median_ms": 5.614048004150391,
+          "min_ms": 5.463327884674072,
+          "p10_ms": 5.5015997886657715,
+          "p90_ms": 5.631936073303223,
+          "reps": 50,
+          "tflop_per_s": 195.85005809767668
+        },
+        "fp32_2048": {
+          "median_ms": 0.34191998839378357,
+          "min_ms": 0.33977600932121277,
+          "p10_ms": 0.34067198634147644,
+          "p90_ms": 0.3440000116825104,
+          "reps": 50,
+          "tflop_per_s": 50.24529061522495
+        },
+        "fp32_4096": {
+          "median_ms": 2.683072090148926,
+          "min_ms": 2.5783040523529053,
+          "p10_ms": 2.645632028579712,
+          "p90_ms": 2.7104640007019043,
+          "reps": 50,
+          "tflop_per_s": 51.22447286325853
+        },
+        "fp32_8192": {
+          "median_ms": 20.97292709350586,
+          "min_ms": 20.928319931030273,
+          "p10_ms": 20.93622398376465,
+          "p90_ms": 21.00476837158203,
+          "reps": 50,
+          "tflop_per_s": 52.42528250224344
+        }
+      },
+      "launch_overhead": {
+        "triton_empty_us": 9.340959787368774,
+        "chain_length": 200,
+        "torch_tiny_op_us": 6.088320016860962,
+        "torch_tiny_op_cudagraph_us": 1.0715200006961823,
+        "cudagraph_ops_verified": 200
+      }
+    },
+    "1": {
+      "properties": {
+        "index": 1,
+        "name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+        "compute_capability": "12.0",
+        "total_memory_bytes": 101971591168,
+        "multi_processor_count": 188,
+        "l2_cache_size_bytes": 134217728,
+        "shared_memory_per_block_optin_bytes": 101376,
+        "max_threads_per_multi_processor": 1536,
+        "regs_per_multiprocessor": 65536,
+        "warp_size": 32
+      },
+      "bandwidth_dram": {
+        "working_set_bytes": 2147483648,
+        "working_set_mib": 2048.0,
+        "copy": {
+          "median_ms": 5.867008209228516,
+          "min_ms": 5.859744071960449,
+          "p10_ms": 5.862368106842041,
+          "p90_ms": 5.872799873352051,
+          "reps": 25,
+          "launches_per_timing": 2,
+          "gbytes_per_s": 1464.1081596730094
+        },
+        "read": {
+          "median_ms": 5.241951942443848,
+          "min_ms": 5.2393598556518555,
+          "p10_ms": 5.2399678230285645,
+          "p90_ms": 5.244351863861084,
+          "reps": 25,
+          "launches_per_timing": 4,
+          "gbytes_per_s": 1638.6900693323203
+        },
+        "write": {
+          "median_ms": 5.252255916595459,
+          "min_ms": 5.24835205078125,
+          "p10_ms": 5.249728202819824,
+          "p90_ms": 5.253695964813232,
+          "reps": 25,
+          "launches_per_timing": 4,
+          "gbytes_per_s": 1635.475256424299
+        }
+      },
+      "bandwidth_sweep": {
+        "curve": [
+          {
+            "mib": 4,
+            "copy_gbytes_per_s": 739.5384760245643
+          },
+          {
+            "mib": 16,
+            "copy_gbytes_per_s": 2971.752807811572
+          },
+          {
+            "mib": 32,
+            "copy_gbytes_per_s": 5747.098183823471
+          },
+          {
+            "mib": 48,
+            "copy_gbytes_per_s": 6065.808116674098
+          },
+          {
+            "mib": 64,
+            "copy_gbytes_per_s": 5609.350135005509
+          },
+          {
+            "mib": 96,
+            "copy_gbytes_per_s": 1571.54495532792
+          },
+          {
+            "mib": 128,
+            "copy_gbytes_per_s": 1468.6580842875637
+          },
+          {
+            "mib": 256,
+            "copy_gbytes_per_s": 1461.93142314358
+          },
+          {
+            "mib": 1024,
+            "copy_gbytes_per_s": 1461.3504326221935
+          },
+          {
+            "mib": 2048,
+            "copy_gbytes_per_s": 1463.0868296495032
+          }
+        ],
+        "dram_plateau_gbytes_per_s": 1462.2186311358482,
+        "l2_peak_gbytes_per_s": 6065.808116674098
+      },
+      "matmul": {
+        "bf16_2048": {
+          "median_ms": 0.09375999867916107,
+          "min_ms": 0.0926079973578453,
+          "p10_ms": 0.09270399808883667,
+          "p90_ms": 0.09574399888515472,
+          "reps": 50,
+          "tflop_per_s": 183.23239575533788
+        },
+        "bf16_4096": {
+          "median_ms": 0.46217599511146545,
+          "min_ms": 0.4599359929561615,
+          "p10_ms": 0.4613119959831238,
+          "p90_ms": 0.4642559885978699,
+          "reps": 50,
+          "tflop_per_s": 297.37363023117007
+        },
+        "bf16_8192": {
+          "median_ms": 4.619103908538818,
+          "min_ms": 4.465280055999756,
+          "p10_ms": 4.490143775939941,
+          "p90_ms": 4.651648044586182,
+          "reps": 50,
+          "tflop_per_s": 238.03569903319482
+        },
+        "fp16_2048": {
+          "median_ms": 0.09756799787282944,
+          "min_ms": 0.09536000341176987,
+          "p10_ms": 0.09644799679517746,
+          "p90_ms": 0.09907200187444687,
+          "reps": 50,
+          "tflop_per_s": 176.08098514425106
+        },
+        "fp16_4096": {
+          "median_ms": 0.6333760023117065,
+          "min_ms": 0.6267840266227722,
+          "p10_ms": 0.6296960115432739,
+          "p90_ms": 0.6392639875411987,
+          "reps": 50,
+          "tflop_per_s": 216.99425455080862
+        },
+        "fp16_8192": {
+          "median_ms": 5.678080081939697,
+          "min_ms": 5.642208099365234,
+          "p10_ms": 5.659743785858154,
+          "p90_ms": 5.708288192749023,
+          "reps": 50,
+          "tflop_per_s": 193.64144427501526
+        },
+        "fp32_2048": {
+          "median_ms": 0.3691839873790741,
+          "min_ms": 0.3611840009689331,
+          "p10_ms": 0.3673279881477356,
+          "p90_ms": 0.37219199538230896,
+          "reps": 50,
+          "tflop_per_s": 46.53470836035989
+        },
+        "fp32_4096": {
+          "median_ms": 2.7531518936157227,
+          "min_ms": 2.7442879676818848,
+          "p10_ms": 2.749408006668091,
+          "p90_ms": 2.7583999633789062,
+          "reps": 50,
+          "tflop_per_s": 49.920585126707635
+        },
+        "fp32_8192": {
+          "median_ms": 21.40825653076172,
+          "min_ms": 21.371007919311523,
+          "p10_ms": 21.381471633911133,
+          "p90_ms": 21.42905616760254,
+          "reps": 50,
+          "tflop_per_s": 51.35923264914644
+        }
+      },
+      "launch_overhead": {
+        "triton_empty_us": 9.327359795570374,
+        "chain_length": 200,
+        "torch_tiny_op_us": 5.974400043487549,
+        "cudagraph_error": "graph captured 0 of 200 ops; discarded"
+      }
+    }
+  },
+  "cpu": {
+    "count": 48,
+    "machine": "x86_64"
+  },
+  "p2p": {
+    "can_access_peer_0_1": true,
+    "can_access_peer_1_0": true,
+    "d2d_0to1": {
+      "median_ms": 10.46451187133789,
+      "min_ms": 9.960607528686523,
+      "p10_ms": 10.097951889038086,
+      "p90_ms": 11.745887756347656,
+      "reps": 30,
+      "gbytes_per_s": 25.651980646631007
+    },
+    "h2d_pinned": {
+      "median_ms": 9.470687866210938,
+      "min_ms": 9.470015525817871,
+      "p10_ms": 9.470239639282227,
+      "p90_ms": 9.476256370544434,
+      "reps": 30,
+      "gbytes_per_s": 28.343818294097836
+    },
+    "topo": "\t\u001b[4mGPU0\tGPU1\tCPU Affinity\tNUMA Affinity\tGPU NUMA ID\u001b[0m\nGPU0\t X \tNODE\t0-47\t0\t\tN/A\nGPU1\tNODE\t X \t0-47\t0\t\tN/A\n\nLegend:\n\n  X    = Self\n  SYS  = Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI)\n  NODE = Connection traversing PCIe as well as the interconnect between PCIe Host Bridges within a NUMA node\n  PHB  = Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU)\n  PXB  = Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge)\n  PIX  = Connection traversing at most a single PCIe bridge\n  NV#  = Connection traversing a bonded set of # NVLinks\n"
+  },
+  "ncu": {
+    "available": true,
+    "returncode": 1,
+    "counters_permitted": false,
+    "permission_denied": true,
+    "excerpt": "==PROF== Connected to process 955051 (/usr/bin/python3.12)\n==ERROR== ERR_NVGPUCTRPERM - The user does not have permission to access NVIDIA GPU Performance Counters on the target device 0. For instructions on enabling permissions and to get more information see https://developer.nvidia.com/ERR_NVGPUCTRPERM\n==PROF== Disconnected from process 955051\n"
+  }
+}

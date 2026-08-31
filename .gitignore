@@ -47,3 +47,7 @@ results/**/*.csv.gz
 .vscode/
 .idea/
 .DS_Store
+
+# Locally-extracted Python headers (see scripts/fetch_python_headers.sh)
+.local-toolchain/
+.cache/
