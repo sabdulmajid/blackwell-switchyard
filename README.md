@@ -24,6 +24,29 @@ measured against a kernel that touches exactly the same bytes with the same acce
 but skips the softmax. There is essentially nothing left to win on the forward, and saying
 so is more useful than chasing another percent.
 
+## End to end, in a 1.3B decoder
+
+The operator number is not the number that matters. This is
+([`docs/model.md`](docs/model.md), 24 layers, d_model 2048, 8 blocks, batch 4 × seq 2048):
+
+| variant | step ms | tokens/s | peak GiB | the residual mechanism costs |
+|---|---|---|---|---|
+| standard PreNorm residual (control) | 428.89 | 19101 | 30.33 | — |
+| Block AttnRes, framework | 704.54 | 11627 | 31.87 | **39% of the step** |
+| **Block AttnRes, switchyard** | **484.21** | **16918** | **31.86** | **11% of the step** |
+
+Fusing takes the mechanism from **39% of a training step to 11%** — a 3.4× reduction in
+its overhead, worth **1.46× end-to-end**. Adopting Block AttnRes then costs 11% of step
+time and 1.5 GiB (5%) of peak memory over a standard residual, against the paper's
+reported quality gains.
+
+The end-to-end figure is smaller than the operator's 3.5–5× because the operator is one
+part of a step. Quoting the Amdahl arithmetic rather than the kernel speedup is deliberate.
+
+Separately, holding the sources in a preallocated buffer rather than `torch.stack`-ing them
+at every site — as the paper's pseudocode does — saves **6.75 GiB** of peak memory (265 slab
+copies per forward down to 49).
+
 ## Against the other fused kernels
 
 Fused Block AttnRes kernels already exist. This repository claims no first — it claims a
@@ -84,6 +107,7 @@ out = block_attn_res_triton(v, w)                                       # [B, T,
 | [`reference.py`](src/switchyard/reference.py) | Paper-faithful PyTorch. Readable beside the paper, slow, and the correctness oracle. |
 | [`baselines.py`](src/switchyard/baselines.py) | The strongest framework formulations, for `torch.compile` to work on. |
 | [`triton_op.py`](src/switchyard/triton_op.py) | The fused operator. Two forward and two backward strategies, dispatched by measured tile budget. |
+| [`model.py`](src/switchyard/model.py) | A 1.3B decoder that can run any of the three residual mechanisms, for the end-to-end comparison. |
 
 ## Results
 
@@ -118,9 +142,11 @@ floor across all sixteen tested shapes, against 1.6–3.3× for the eager chain.
 in fp32 and rounds once; the eager chain rounds at every step. Fusion usually trades accuracy
 for speed, and here it does the opposite.
 
-99 tests cover both dispatch strategies, three dtypes, non-power-of-two `N`/`D`/`T`,
+113 tests cover both dispatch strategies, three dtypes, non-power-of-two `N`/`D`/`T`,
 `gradcheck` and `gradgradcheck` in float64, online-softmax merge exactness, saturated-logit
-overflow, and non-contiguous inputs.
+overflow, non-contiguous inputs, and — for the model — that the source-count schedule matches
+the paper's Eq. 6, that the two AttnRes modes are parameter-matched, and that all three
+residual modes still learn.
 
 ## Hardware and environment
 
@@ -139,7 +165,7 @@ driver change this project will not make on a shared machine), so profiling uses
 ```bash
 scripts/fetch_python_headers.sh   # host lacks python3.12-dev; unpacks locally, installs nothing
 source scripts/env.sh
-python -m pytest tests/ -q        # 99 tests
+python -m pytest tests/ -q        # 113 tests
 python bench/machine.py           # machine characterization -> results/machine.json
 python bench/bench_operator.py    # operator sweep       -> results/operator_*.json
 python scripts/summarize_operator.py   # -> docs/results.md and its figure
@@ -147,6 +173,9 @@ python scripts/summarize_operator.py   # -> docs/results.md and its figure
 scripts/fetch_third_party.sh      # clone Liger / fla / catswe at pinned commits
 python bench/bench_third_party.py # head-to-head  -> results/third_party_bfloat16.json
 python scripts/summarize_third_party.py   # -> docs/third_party.md
+
+python bench/bench_model.py       # 1.3B end-to-end -> results/model_bfloat16.json
+python scripts/summarize_model.py # -> docs/model.md
 ```
 
 ## Engineering report
