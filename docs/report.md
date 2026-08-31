@@ -351,6 +351,19 @@ softmax. It is a fairer ceiling than a generic copy benchmark. It is itself a
 measured kernel subject to the same noise, so a figure at or slightly above
 100% means "at the ceiling", not "faster than possible".
 
+### How much of this is noise
+
+Every timing records its coefficient of variation, so the question is answerable
+rather than a matter of trust. Across the 19 shapes, at the sizes that matter
+(`T >= 2048`) the CV of our forward is **0.6% to 3.7%**. Small shapes are looser
+— 5.6% to 10.9% at `T <= 512` — which is expected when a single ~8 µs launch is
+most of the measurement.
+
+Exactly one shape reports above the ceiling: `N=16 B=1 T=4096 D=2048` at 101%.
+Its CV is **0.287**, against 0.006–0.037 everywhere else, so that run had one
+long tail and the median moved. It is noise, not a result, and it is the reason
+this section exists rather than the number being quietly rounded down.
+
 Where the kernel does *not* reach the ceiling:
 
 - `D = 8192` on the tiled path: 84%. The second pass over `D` no longer fits the
