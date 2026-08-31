@@ -1,49 +1,157 @@
 # blackwell-switchyard
 
-High-performance **Block Attention Residuals** (Block AttnRes) for NVIDIA Blackwell GPUs.
+A fused **Block Attention Residuals** operator for NVIDIA Blackwell, and a measured account
+of how much performance the operation actually has left in it.
 
-> **Status: early.** The repository is being built in reviewable stages. Nothing is claimed
-> here that has not been measured on the hardware named below. This banner is removed once
-> the headline result is in place.
+On an RTX PRO 6000 Blackwell (`sm_120`), at `N=9 B=1 T=4096 D=2048` in bf16 — the shape a
+real Block AttnRes model spends most of its time in:
 
-Attention Residuals ([Kimi Team, arXiv:2603.15031](https://arxiv.org/abs/2603.15031)) replaces the
-fixed additive residual connection with softmax attention over the outputs of preceding layers, so
-each layer aggregates earlier representations with learned, input-dependent weights. **Block
-AttnRes** is the practical variant that partitions depth into blocks to bound the cost.
+| | best framework baseline | switchyard | |
+|---|---|---|---|
+| forward | 0.430 ms | **0.123 ms** | **3.50×** |
+| forward + backward | 1.918 ms | **0.362 ms** | **5.29×** |
+| kernels (fwd / fwd+bwd) | 6 / 16 | **1 / 4** | |
+| workspace above the data | 592 MiB | **464 MiB** | −22% |
+| accuracy vs bf16 rounding floor | 2.3× | **1.00×** | |
 
-Computationally the operator is a *depth-wise* attention: for every token position independently,
-a softmax runs over the block axis rather than the sequence axis. That gives it a very different
-performance profile from ordinary attention, and it is the profile this repository is about.
+The baseline is the fastest of six framework configurations — two algebraic formulations,
+eager and under three `torch.compile` modes — not eager PyTorch. Median of 100
+CUDA-event-timed repetitions with the 128 MiB L2 flushed between them, steady state after
+compilation. Reproduce with `python bench/bench_operator.py`.
 
-## What this project measures
+**The forward is finished.** It sustains **94–101% of speed of light** for `N` from 2 to 32,
+measured against a kernel that touches exactly the same bytes with the same access pattern
+but skips the softmax. There is essentially nothing left to win on the forward, and saying
+so is more useful than chasing another percent.
+
+> **On novelty:** fused Block AttnRes kernels already exist — in
+> [Liger-Kernel](https://github.com/linkedin/Liger-Kernel) (merged March 2026, benchmarked
+> by its author on an RTX 5090, also `sm_120`),
+> [flash-linear-attention](https://github.com/fla-org/flash-linear-attention), and two
+> standalone projects. This repository claims no first. What it adds is an independent
+> head-to-head on Blackwell, a speed-of-light ceiling so "how much is left" has a number,
+> and a harness whose failure modes are documented.
+
+## What Block AttnRes is
+
+Attention Residuals ([Kimi Team, arXiv:2603.15031](https://arxiv.org/abs/2603.15031))
+replaces the fixed residual connection `h = x + f(x)` with a softmax attention over the
+outputs of preceding layers, so each layer aggregates earlier representations with learned,
+input-dependent weights. **Block AttnRes** partitions depth into `N` blocks and attends over
+the block summaries, taking memory from `O(Ld)` to `O(Nd)`.
+
+Computationally it is a *depth-wise* attention: for every token position independently, a
+softmax runs over the source axis. Nothing interacts across the sequence, so it looks
+nothing like FlashAttention, and it has an arithmetic intensity of about **2.7 FLOP/byte**
+against this machine's **204 FLOP/byte** balance point. It is memory-bound by roughly 75×.
+The whole optimization problem is bytes moved, and then kernels launched.
+
+```python
+from switchyard.triton_op import block_attn_res_triton
+
+v = torch.randn(9, 1, 4096, 2048, device="cuda", dtype=torch.bfloat16)  # [N, B, T, D]
+w = torch.zeros(2048, device="cuda", dtype=torch.bfloat16)              # pseudo-query
+out = block_attn_res_triton(v, w)                                       # [B, T, D]
+```
+
+## The three paths
 
 | Path | Purpose |
 |------|---------|
-| Reference | Paper-faithful PyTorch. Readable, slow, and the correctness oracle. |
-| Framework baseline | The strongest formulation PyTorch + `torch.compile`/Inductor can reach. |
-| Switchyard | The optimized execution path, selected by profiling rather than by preference. |
+| [`reference.py`](src/switchyard/reference.py) | Paper-faithful PyTorch. Readable beside the paper, slow, and the correctness oracle. |
+| [`baselines.py`](src/switchyard/baselines.py) | The strongest framework formulations, for `torch.compile` to work on. |
+| [`triton_op.py`](src/switchyard/triton_op.py) | The fused operator. Two forward and two backward strategies, dispatched by measured tile budget. |
 
-Headline results, the shapes they were measured at, and the reproduction commands go here once
-they exist and have survived independent review.
+## Results
 
-## Hardware under test
+Full tables across 19 shapes in [`docs/results.md`](docs/results.md), regenerated from raw
+JSON in [`results/`](results/) by `scripts/summarize_operator.py`. A selection:
 
-NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition, compute capability 12.0 (`sm_120`),
-188 SMs, 128 MiB L2, 95 GiB usable, 300 W. Two such GPUs, connected over PCIe (no NVLink).
-Full capture in [`docs/machine.md`](docs/machine.md).
+| shape (bf16) | fwd speedup | fwd+bwd speedup | % of ceiling |
+|---|---|---|---|
+| N=9 B=1 T=4096 D=2048 | 3.50× | 5.29× | 98% |
+| N=9 B=1 T=4096 D=4096 | 3.73× | 4.40× | 95% |
+| N=9 B=1 T=4096 D=8192 | 3.56× | 4.58× | 85% |
+| N=32 B=1 T=4096 D=2048 | 4.62× | 7.83× | 96% |
+| N=9 B=8 T=2048 D=2048 | 4.25× | 6.42× | 99% |
+
+Where it does **not** win: at `T ≤ 512` the operator is launch-bound rather than
+bandwidth-bound, and both the kernel and the ceiling are a single ~8 µs launch, so the
+margin narrows to 2.2–3.0×. At `D=8192` the tiled path reaches 85% of ceiling rather than
+~98%.
+
+![achieved bandwidth against N](docs/bandwidth_vs_n.png)
+
+## Correctness
+
+The pass criterion is relative L2 against a float64 oracle, reported alongside the error
+that merely *rounding* the exact answer to the working dtype would cost — so the bar is "as
+good as the format allows" rather than a tolerance tuned until things pass.
+
+The fused kernel is **more accurate than the framework baseline**: 1.00× the bf16 rounding
+floor across all sixteen tested shapes, against 1.6–3.3× for the eager chain. It accumulates
+in fp32 and rounds once; the eager chain rounds at every step. Fusion usually trades accuracy
+for speed, and here it does the opposite.
+
+99 tests cover both dispatch strategies, three dtypes, non-power-of-two `N`/`D`/`T`,
+`gradcheck` and `gradgradcheck` in float64, online-softmax merge exactness, saturated-logit
+overflow, and non-contiguous inputs.
+
+## Hardware and environment
+
+NVIDIA RTX PRO 6000 Blackwell Max-Q, CC 12.0 (`sm_120`), 188 SMs, 128 MiB L2, 95 GiB,
+300 W. Two cards, PCIe-only (no NVLink). Measured: 1462 GB/s DRAM copy, 6064 GB/s L2 peak
+(4.15× DRAM), 299 TFLOP/s bf16, 9.3 µs Triton launch overhead. Full capture in
+[`docs/machine.md`](docs/machine.md); nothing in this repository divides by a spec-sheet
+number.
+
+Nsight Compute is unusable on this host (`ERR_NVGPUCTRPERM`, and lifting it is a host-wide
+driver change this project will not make on a shared machine), so profiling uses `nsys`,
+`torch.profiler`, and achieved bandwidth from measured latency against exact byte counts.
+
+## Reproducing
+
+```bash
+scripts/fetch_python_headers.sh   # host lacks python3.12-dev; unpacks locally, installs nothing
+source scripts/env.sh
+python -m pytest tests/ -q        # 99 tests
+python bench/machine.py           # machine characterization -> results/machine.json
+python bench/bench_operator.py    # operator sweep       -> results/operator_*.json
+python scripts/summarize_operator.py   # -> docs/results.md and its figure
+```
+
+## Engineering report
+
+[`docs/report.md`](docs/report.md) carries the full account: the performance model, the
+baseline profile, the design, and — at some length — the measurement bugs found and fixed
+along the way. Two of them would have produced flattering numbers, including a bandwidth
+probe that reported L2 as slower than DRAM and a backward fallback that was quietly *slower*
+than the baseline it was meant to beat.
 
 ## Project state
 
-See [`PROJECT_STATE.md`](PROJECT_STATE.md) for what is done, in progress, and next, and for the
-decision log.
+[`PROJECT_STATE.md`](PROJECT_STATE.md) and [issue #1](https://github.com/sabdulmajid/blackwell-switchyard/issues/1)
+track what is done, in progress, and next, with a decision log recording every change of
+direction and the evidence that forced it.
 
 ## Attribution
 
 Attention Residuals is the work of the **Kimi Team at Moonshot AI**
-([paper](https://arxiv.org/abs/2603.15031), [code](https://github.com/MoonshotAI/Attention-Residuals)).
-This repository is an independent performance-engineering implementation and is not affiliated with
-Moonshot AI. See [`NOTICE`](NOTICE) for attribution details and
-[`docs/`](docs/) for the citation.
+([paper](https://arxiv.org/abs/2603.15031), [repository](https://github.com/MoonshotAI/Attention-Residuals)).
+The upstream repository is documentation-only and carries no LICENSE, so everything here is
+implemented from the published mathematics rather than adapted from upstream code. This
+project is independent and not affiliated with Moonshot AI.
+
+```bibtex
+@misc{chen2026attnres,
+  title         = {Attention Residuals},
+  author        = {Kimi Team},
+  year          = {2026},
+  archiveprefix = {arXiv},
+  eprint        = {2603.15031},
+  primaryclass  = {cs.CL}
+}
+```
 
 ## License
 
