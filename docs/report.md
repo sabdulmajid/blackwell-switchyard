@@ -191,6 +191,42 @@ regimes call for opposite fixes — fewer kernels versus fewer bytes.
 
 ---
 
+### What Inductor actually emits
+
+`torch.profiler`, `N=9 B=1 T=4096 D=2048`, bf16, per call. This is the evidence
+that a fusion opportunity existed, and it is more specific than a kernel count.
+
+**`torch.compile` on `paper_form` — 6 kernels, 368 µs of GPU work in a 430 µs window:**
+
+| kernel | µs |
+|---|---|
+| `gemv2N_kernel` (cuBLAS) | 143.4 |
+| `triton_red_fused_add_mean_mul_pow_rsqrt_0` | 140.3 |
+| `gemvx::kernel` (cuBLAS) | 78.9 |
+| three small elementwise / softmax kernels | 5.1 |
+
+Inductor does fuse the RMSNorm into a single Triton reduction — but it then
+*materializes* the normalized tensor and hands the two contractions to cuBLAS
+`gemv`. So `[N,B,T,D]` is written once and read three times: once written by the
+norm kernel, once read by the scoring gemv, once read by the weighted-sum gemv.
+That is the 388 GB/s. Nothing here is Inductor doing badly; it is Inductor doing
+the sensible thing with the ops it was given, and the ops were the problem.
+
+**switchyard — 1 kernel, 108 µs:**
+
+| kernel | µs |
+|---|---|
+| `_fwd_resident` | 107.9 |
+
+**Backward.** The baseline's fwd+bwd is 16 kernels and 1954 µs of GPU work,
+dominated by a 562 µs CUTLASS gemm and a 414 µs Triton reduction. Ours is 4
+kernels and 354 µs — `_bwd_resident` at 221 µs, the forward at 130 µs, and two
+sub-2 µs kernels for the dtype cast and the `dw` zero-fill. **5.5× less GPU work
+for the same gradients.**
+
+GPU utilization at this shape is 86% for the baseline and 88% for our forward,
+so neither is dispatch-starved — the difference really is bytes.
+
 ## 6. Design
 
 The kernel folds the RMS scale into the score, so the `[N,B,T,D]` normalized
