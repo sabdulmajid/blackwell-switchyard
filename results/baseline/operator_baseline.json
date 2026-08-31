@@ -1,0 +1,642 @@
+{
+  "environment": {
+    "torch": "2.9.0+cu128",
+    "torch_cuda": "12.8",
+    "triton": "3.5.0",
+    "python": "3.12.3",
+    "platform": "Linux-6.8.0-117-generic-x86_64-with-glibc2.39",
+    "device_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+    "device_cc": "12.0",
+    "device_index": 0,
+    "timestamp_utc": "2026-08-31T03:58:45Z"
+  },
+  "metrics": {
+    "speed_of_light|N9|B1|T2048|D2048|bfloat16": {
+      "forward ms": 0.06758400052785873
+    },
+    "paper_eager|N9|B1|T2048|D2048|bfloat16": {
+      "forward ms": 0.317440003156662,
+      "fwd+bwd ms": 2.330656051635742,
+      "workspace bytes": 520336384
+    },
+    "folded_eager|N9|B1|T2048|D2048|bfloat16": {
+      "forward ms": 0.2539519965648651,
+      "fwd+bwd ms": 1.6159039735794067,
+      "workspace bytes": 520430592
+    },
+    "paper_compiled|N9|B1|T2048|D2048|bfloat16": {
+      "forward ms": 0.20476800203323364,
+      "fwd+bwd ms": 0.9441279768943787,
+      "workspace bytes": 520393728
+    },
+    "folded_compiled|N9|B1|T2048|D2048|bfloat16": {
+      "forward ms": 0.1945279985666275,
+      "fwd+bwd ms": 1.2237119674682617,
+      "workspace bytes": 453321728
+    },
+    "folded_compiled_cudagraph|N9|B1|T2048|D2048|bfloat16": {
+      "forward ms": 0.219200000166893,
+      "fwd+bwd ms": 0.894976019859314,
+      "workspace bytes": 427820032
+    },
+    "switchyard_triton|N9|B1|T2048|D2048|bfloat16": {
+      "forward ms": 0.06963200122117996,
+      "fwd+bwd ms": 0.1955839991569519,
+      "workspace bytes": 436208640
+    },
+    "speed_of_light|N9|B2|T2048|D2048|bfloat16": {
+      "forward ms": 0.11878400295972824
+    },
+    "paper_eager|N9|B2|T2048|D2048|bfloat16": {
+      "forward ms": 0.7475200295448303,
+      "fwd+bwd ms": 5.096479892730713,
+      "workspace bytes": 629498880
+    },
+    "folded_eager|N9|B2|T2048|D2048|bfloat16": {
+      "forward ms": 0.5488319993019104,
+      "fwd+bwd ms": 3.8574399948120117,
+      "workspace bytes": 621167616
+    },
+    "paper_compiled|N9|B2|T2048|D2048|bfloat16": {
+      "forward ms": 0.4403199851512909,
+      "fwd+bwd ms": 1.9538559913635254,
+      "workspace bytes": 621093888
+    },
+    "folded_compiled|N9|B2|T2048|D2048|bfloat16": {
+      "forward ms": 0.3829759955406189,
+      "fwd+bwd ms": 1.7960959672927856,
+      "workspace bytes": 486949888
+    },
+    "folded_compiled_cudagraph|N9|B2|T2048|D2048|bfloat16": {
+      "forward ms": 0.510047972202301,
+      "fwd+bwd ms": 1.9548159837722778,
+      "workspace bytes": 452985856
+    },
+    "switchyard_triton|N9|B2|T2048|D2048|bfloat16": {
+      "forward ms": 0.12492799758911133,
+      "fwd+bwd ms": 0.3624959886074066,
+      "workspace bytes": 469763072
+    },
+    "speed_of_light|N9|B4|T2048|D2048|bfloat16": {
+      "forward ms": 0.22323200106620789
+    },
+    "paper_eager|N9|B4|T2048|D2048|bfloat16": {
+      "forward ms": 1.5912959575653076,
+      "fwd+bwd ms": 10.330143928527832,
+      "workspace bytes": 847823872
+    },
+    "folded_eager|N9|B4|T2048|D2048|bfloat16": {
+      "forward ms": 1.1079679727554321,
+      "fwd+bwd ms": 7.808032035827637,
+      "workspace bytes": 822641664
+    },
+    "paper_compiled|N9|B4|T2048|D2048|bfloat16": {
+      "forward ms": 0.894976019859314,
+      "fwd+bwd ms": 4.089888095855713,
+      "workspace bytes": 822494208
+    },
+    "folded_compiled|N9|B4|T2048|D2048|bfloat16": {
+      "forward ms": 1.1079679727554321,
+      "fwd+bwd ms": 7.813119888305664,
+      "workspace bytes": 822641664
+    },
+    "folded_compiled_cudagraph|N9|B4|T2048|D2048|bfloat16": {
+      "forward ms": 1.1079679727554321,
+      "fwd+bwd ms": 7.805984020233154,
+      "workspace bytes": 822641664
+    },
+    "switchyard_triton|N9|B4|T2048|D2048|bfloat16": {
+      "forward ms": 0.23347200453281403,
+      "fwd+bwd ms": 0.6881279945373535,
+      "workspace bytes": 553911296
+    },
+    "speed_of_light|N9|B8|T2048|D2048|bfloat16": {
+      "forward ms": 0.4423680007457733
+    },
+    "paper_eager|N9|B8|T2048|D2048|bfloat16": {
+      "forward ms": 3.2675840854644775,
+      "fwd+bwd ms": 21.04319953918457,
+      "workspace bytes": 1292993536
+    },
+    "folded_eager|N9|B8|T2048|D2048|bfloat16": {
+      "forward ms": 2.2917120456695557,
+      "fwd+bwd ms": 15.946784019470215,
+      "workspace bytes": 1225589760
+    },
+    "paper_compiled|N9|B8|T2048|D2048|bfloat16": {
+      "forward ms": 1.8984960317611694,
+      "fwd+bwd ms": 8.566816329956055,
+      "workspace bytes": 1225294848
+    },
+    "folded_compiled|N9|B8|T2048|D2048|bfloat16": {
+      "forward ms": 2.292736053466797,
+      "fwd+bwd ms": 15.98572826385498,
+      "workspace bytes": 1225589760
+    },
+    "folded_compiled_cudagraph|N9|B8|T2048|D2048|bfloat16": {
+      "forward ms": 2.2958080768585205,
+      "fwd+bwd ms": 15.987775802612305,
+      "workspace bytes": 1225589760
+    },
+    "switchyard_triton|N9|B8|T2048|D2048|bfloat16": {
+      "forward ms": 0.44646400213241577,
+      "fwd+bwd ms": 1.3353279829025269,
+      "workspace bytes": 688129024
+    },
+    "speed_of_light|N9|B1|T4096|D1024|bfloat16": {
+      "forward ms": 0.0655359998345375
+    },
+    "paper_eager|N9|B1|T4096|D1024|bfloat16": {
+      "forward ms": 0.32150399684906006,
+      "fwd+bwd ms": 2.3081281185150146,
+      "workspace bytes": 520445952
+    },
+    "folded_eager|N9|B1|T4096|D1024|bfloat16": {
+      "forward ms": 0.24985599517822266,
+      "fwd+bwd ms": 1.6783360242843628,
+      "workspace bytes": 520503296
+    },
+    "paper_compiled|N9|B1|T4096|D1024|bfloat16": {
+      "forward ms": 0.2027519941329956,
+      "fwd+bwd ms": 0.9789440035820007,
+      "workspace bytes": 520429568
+    },
+    "folded_compiled|N9|B1|T4096|D1024|bfloat16": {
+      "forward ms": 0.17404800653457642,
+      "fwd+bwd ms": 0.9748799800872803,
+      "workspace bytes": 453394432
+    },
+    "folded_compiled_cudagraph|N9|B1|T4096|D1024|bfloat16": {
+      "forward ms": 0.22124800086021423,
+      "fwd+bwd ms": 0.8857920169830322,
+      "workspace bytes": 427820032
+    },
+    "switchyard_triton|N9|B1|T4096|D1024|bfloat16": {
+      "forward ms": 0.06758400052785873,
+      "fwd+bwd ms": 0.3463360071182251,
+      "workspace bytes": 436208640
+    },
+    "speed_of_light|N9|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.12083200365304947
+    },
+    "paper_eager|N9|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.7352319955825806,
+      "fwd+bwd ms": 5.0002241134643555,
+      "workspace bytes": 638018560
+    },
+    "folded_eager|N9|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.5426880121231079,
+      "fwd+bwd ms": 3.78985595703125,
+      "workspace bytes": 621167616
+    },
+    "paper_compiled|N9|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.43007999658584595,
+      "fwd+bwd ms": 1.9179840087890625,
+      "workspace bytes": 621093888
+    },
+    "folded_compiled|N9|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.5406399965286255,
+      "fwd+bwd ms": 3.78985595703125,
+      "workspace bytes": 621167616
+    },
+    "folded_compiled_cudagraph|N9|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.5406720042228699,
+      "fwd+bwd ms": 3.767296075820923,
+      "workspace bytes": 621167616
+    },
+    "switchyard_triton|N9|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.1228799968957901,
+      "fwd+bwd ms": 0.3624959886074066,
+      "workspace bytes": 486802432
+    },
+    "speed_of_light|N9|B1|T4096|D4096|bfloat16": {
+      "forward ms": 0.2252800017595291
+    },
+    "paper_eager|N9|B1|T4096|D4096|bfloat16": {
+      "forward ms": 1.5913280248641968,
+      "fwd+bwd ms": 10.293279647827148,
+      "workspace bytes": 847602688
+    },
+    "folded_eager|N9|B1|T4096|D4096|bfloat16": {
+      "forward ms": 1.1089919805526733,
+      "fwd+bwd ms": 7.791647911071777,
+      "workspace bytes": 822494208
+    },
+    "paper_compiled|N9|B1|T4096|D4096|bfloat16": {
+      "forward ms": 0.886784017086029,
+      "fwd+bwd ms": 4.09500789642334,
+      "workspace bytes": 822420480
+    },
+    "folded_compiled|N9|B1|T4096|D4096|bfloat16": {
+      "forward ms": 1.1059199571609497,
+      "fwd+bwd ms": 9.797663688659668,
+      "workspace bytes": 822494208
+    },
+    "folded_compiled_cudagraph|N9|B1|T4096|D4096|bfloat16": {
+      "forward ms": 1.1059520244598389,
+      "fwd+bwd ms": 7.812128067016602,
+      "workspace bytes": 822494208
+    },
+    "switchyard_triton|N9|B1|T4096|D4096|bfloat16": {
+      "forward ms": 0.23756800591945648,
+      "fwd+bwd ms": 0.9297919869422913,
+      "workspace bytes": 553911296
+    },
+    "speed_of_light|N9|B1|T4096|D8192|bfloat16": {
+      "forward ms": 0.4484800100326538
+    },
+    "paper_eager|N9|B1|T4096|D8192|bfloat16": {
+      "forward ms": 3.243040084838867,
+      "fwd+bwd ms": 20.81385612487793,
+      "workspace bytes": 1292329984
+    },
+    "folded_eager|N9|B1|T4096|D8192|bfloat16": {
+      "forward ms": 2.2814719676971436,
+      "fwd+bwd ms": 15.760448455810547,
+      "workspace bytes": 1225147392
+    },
+    "paper_compiled|N9|B1|T4096|D8192|bfloat16": {
+      "forward ms": 1.8821120262145996,
+      "fwd+bwd ms": 9.077792167663574,
+      "workspace bytes": 1225073664
+    },
+    "folded_compiled|N9|B1|T4096|D8192|bfloat16": {
+      "forward ms": 2.2824959754943848,
+      "fwd+bwd ms": 15.760448455810547,
+      "workspace bytes": 1225147392
+    },
+    "folded_compiled_cudagraph|N9|B1|T4096|D8192|bfloat16": {
+      "forward ms": 2.2814719676971436,
+      "fwd+bwd ms": 15.798303604125977,
+      "workspace bytes": 1225147392
+    },
+    "switchyard_triton|N9|B1|T4096|D8192|bfloat16": {
+      "forward ms": 0.5284159779548645,
+      "fwd+bwd ms": 1.9824960231781006,
+      "workspace bytes": 688129024
+    },
+    "speed_of_light|N2|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.03686400130391121
+    },
+    "paper_eager|N2|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.17817600071430206,
+      "fwd+bwd ms": 1.2732160091400146,
+      "workspace bytes": 511885312
+    },
+    "folded_eager|N2|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.159743994474411,
+      "fwd+bwd ms": 1.255295991897583,
+      "workspace bytes": 503611392
+    },
+    "paper_compiled|N2|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.13312000036239624,
+      "fwd+bwd ms": 0.8294079899787903,
+      "workspace bytes": 503595008
+    },
+    "folded_compiled|N2|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.16176000237464905,
+      "fwd+bwd ms": 0.881663978099823,
+      "workspace bytes": 486834176
+    },
+    "folded_compiled_cudagraph|N2|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.1598079949617386,
+      "fwd+bwd ms": 0.7362239956855774,
+      "workspace bytes": 452985856
+    },
+    "switchyard_triton|N2|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.03686400130391121,
+      "fwd+bwd ms": 0.10239999741315842,
+      "workspace bytes": 469763072
+    },
+    "speed_of_light|N4|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.06143999844789505
+    },
+    "paper_eager|N4|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.2805759906768799,
+      "fwd+bwd ms": 2.2425920963287354,
+      "workspace bytes": 545489920
+    },
+    "folded_eager|N4|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.24368000030517578,
+      "fwd+bwd ms": 1.6629760265350342,
+      "workspace bytes": 537199616
+    },
+    "paper_compiled|N4|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.2088640034198761,
+      "fwd+bwd ms": 1.0516799688339233,
+      "workspace bytes": 537166848
+    },
+    "folded_compiled|N4|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.19251200556755066,
+      "fwd+bwd ms": 0.9830399751663208,
+      "workspace bytes": 486867968
+    },
+    "folded_compiled_cudagraph|N4|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.22944000363349915,
+      "fwd+bwd ms": 1.0383360385894775,
+      "workspace bytes": 452985856
+    },
+    "switchyard_triton|N4|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.06348799914121628,
+      "fwd+bwd ms": 0.17203199863433838,
+      "workspace bytes": 469763072
+    },
+    "speed_of_light|N8|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.1085439994931221
+    },
+    "paper_eager|N8|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.6451200246810913,
+      "fwd+bwd ms": 4.451327800750732,
+      "workspace bytes": 612697088
+    },
+    "folded_eager|N8|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.4710400104522705,
+      "fwd+bwd ms": 3.339263916015625,
+      "workspace bytes": 604374016
+    },
+    "paper_compiled|N8|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.3829759955406189,
+      "fwd+bwd ms": 1.6650240421295166,
+      "workspace bytes": 604308480
+    },
+    "folded_compiled|N8|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.46489599347114563,
+      "fwd+bwd ms": 3.34335994720459,
+      "workspace bytes": 604374016
+    },
+    "folded_compiled_cudagraph|N8|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.47305598855018616,
+      "fwd+bwd ms": 3.34335994720459,
+      "workspace bytes": 604374016
+    },
+    "switchyard_triton|N8|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.1085439994931221,
+      "fwd+bwd ms": 0.30720001459121704,
+      "workspace bytes": 486802432
+    },
+    "speed_of_light|N16|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.19865599274635315
+    },
+    "paper_eager|N16|B1|T4096|D2048|bfloat16": {
+      "forward ms": 1.2636799812316895,
+      "fwd+bwd ms": 8.479776382446289,
+      "workspace bytes": 755631104
+    },
+    "folded_eager|N16|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.884768009185791,
+      "fwd+bwd ms": 6.246431827545166,
+      "workspace bytes": 738722816
+    },
+    "paper_compiled|N16|B1|T4096|D2048|bfloat16": {
+      "forward ms": 1.2431999444961548,
+      "fwd+bwd ms": 8.512736320495605,
+      "workspace bytes": 755631104
+    },
+    "folded_compiled|N16|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.886784017086029,
+      "fwd+bwd ms": 6.250527858734131,
+      "workspace bytes": 738722816
+    },
+    "folded_compiled_cudagraph|N16|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.8847360014915466,
+      "fwd+bwd ms": 6.244383811950684,
+      "workspace bytes": 738722816
+    },
+    "switchyard_triton|N16|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.19660800695419312,
+      "fwd+bwd ms": 0.5959680080413818,
+      "workspace bytes": 486802432
+    },
+    "speed_of_light|N32|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.374783992767334
+    },
+    "paper_eager|N32|B1|T4096|D2048|bfloat16": {
+      "forward ms": 2.6256000995635986,
+      "fwd+bwd ms": 16.844831466674805,
+      "workspace bytes": 1024459776
+    },
+    "folded_eager|N32|B1|T4096|D2048|bfloat16": {
+      "forward ms": 1.798143982887268,
+      "fwd+bwd ms": 12.264479637145996,
+      "workspace bytes": 1007420416
+    },
+    "paper_compiled|N32|B1|T4096|D2048|bfloat16": {
+      "forward ms": 2.6358399391174316,
+      "fwd+bwd ms": 16.888864517211914,
+      "workspace bytes": 1024459776
+    },
+    "folded_compiled|N32|B1|T4096|D2048|bfloat16": {
+      "forward ms": 1.802240014076233,
+      "fwd+bwd ms": 12.292160034179688,
+      "workspace bytes": 1007420416
+    },
+    "folded_compiled_cudagraph|N32|B1|T4096|D2048|bfloat16": {
+      "forward ms": 1.80022394657135,
+      "fwd+bwd ms": 12.306464195251465,
+      "workspace bytes": 1007420416
+    },
+    "switchyard_triton|N32|B1|T4096|D2048|bfloat16": {
+      "forward ms": 0.3891200125217438,
+      "fwd+bwd ms": 1.5667200088500977,
+      "workspace bytes": 486802432
+    },
+    "speed_of_light|N9|B1|T128|D1024|bfloat16": {
+      "forward ms": 0.008191999979317188
+    },
+    "paper_eager|N9|B1|T128|D1024|bfloat16": {
+      "forward ms": 0.03891199827194214,
+      "fwd+bwd ms": 0.6789759993553162,
+      "workspace bytes": 415243776
+    },
+    "folded_eager|N9|B1|T128|D1024|bfloat16": {
+      "forward ms": 0.03481600061058998,
+      "fwd+bwd ms": 1.2576960325241089,
+      "workspace bytes": 423498752
+    },
+    "paper_compiled|N9|B1|T128|D1024|bfloat16": {
+      "forward ms": 0.026623999699950218,
+      "fwd+bwd ms": 0.07372800260782242,
+      "workspace bytes": 423496192
+    },
+    "folded_compiled|N9|B1|T128|D1024|bfloat16": {
+      "forward ms": 0.02457600086927414,
+      "fwd+bwd ms": 0.06755200028419495,
+      "workspace bytes": 421401600
+    },
+    "folded_compiled_cudagraph|N9|B1|T128|D1024|bfloat16": {
+      "forward ms": 0.034912001341581345,
+      "fwd+bwd ms": 0.44681599736213684,
+      "workspace bytes": 403440640
+    },
+    "switchyard_triton|N9|B1|T128|D1024|bfloat16": {
+      "forward ms": 0.010208000428974628,
+      "fwd+bwd ms": 0.04915200173854828,
+      "workspace bytes": 403702784
+    },
+    "speed_of_light|N9|B1|T512|D1024|bfloat16": {
+      "forward ms": 0.01228800043463707
+    },
+    "paper_eager|N9|B1|T512|D1024|bfloat16": {
+      "forward ms": 0.06348799914121628,
+      "fwd+bwd ms": 0.699679970741272,
+      "workspace bytes": 424833024
+    },
+    "folded_eager|N9|B1|T512|D1024|bfloat16": {
+      "forward ms": 0.055296000093221664,
+      "fwd+bwd ms": 1.2612160444259644,
+      "workspace bytes": 432294912
+    },
+    "paper_compiled|N9|B1|T512|D1024|bfloat16": {
+      "forward ms": 0.043007999658584595,
+      "fwd+bwd ms": 0.8012800216674805,
+      "workspace bytes": 432285696
+    },
+    "folded_compiled|N9|B1|T512|D1024|bfloat16": {
+      "forward ms": 0.03891199827194214,
+      "fwd+bwd ms": 0.7603840231895447,
+      "workspace bytes": 423906304
+    },
+    "folded_compiled_cudagraph|N9|B1|T512|D1024|bfloat16": {
+      "forward ms": 0.05331199988722801,
+      "fwd+bwd ms": 0.4480319917201996,
+      "workspace bytes": 405799936
+    },
+    "switchyard_triton|N9|B1|T512|D1024|bfloat16": {
+      "forward ms": 0.014336000196635723,
+      "fwd+bwd ms": 0.22387200593948364,
+      "workspace bytes": 406848512
+    },
+    "speed_of_light|N4|B1|T256|D512|bfloat16": {
+      "forward ms": 0.0081599997356534
+    },
+    "paper_eager|N4|B1|T256|D512|bfloat16": {
+      "forward ms": 0.03481600061058998,
+      "fwd+bwd ms": 1.3302719593048096,
+      "workspace bytes": 413277184
+    },
+    "folded_eager|N4|B1|T256|D512|bfloat16": {
+      "forward ms": 0.03276799991726875,
+      "fwd+bwd ms": 1.0474560260772705,
+      "workspace bytes": 421532672
+    },
+    "paper_compiled|N4|B1|T256|D512|bfloat16": {
+      "forward ms": 0.018432000651955605,
+      "fwd+bwd ms": 0.8297280073165894,
+      "workspace bytes": 421530624
+    },
+    "folded_compiled|N4|B1|T256|D512|bfloat16": {
+      "forward ms": 0.03276799991726875,
+      "fwd+bwd ms": 1.2446719408035278,
+      "workspace bytes": 421532672
+    },
+    "folded_compiled_cudagraph|N4|B1|T256|D512|bfloat16": {
+      "forward ms": 0.03907199949026108,
+      "fwd+bwd ms": 1.2090879678726196,
+      "workspace bytes": 421532672
+    },
+    "switchyard_triton|N4|B1|T256|D512|bfloat16": {
+      "forward ms": 0.008191999979317188,
+      "fwd+bwd ms": 0.14163200557231903,
+      "workspace bytes": 420742144
+    },
+    "speed_of_light|N9|B1|T512|D2048|bfloat16": {
+      "forward ms": 0.020447999238967896
+    },
+    "paper_eager|N9|B1|T512|D2048|bfloat16": {
+      "forward ms": 0.09216000139713287,
+      "fwd+bwd ms": 1.3091200590133667,
+      "workspace bytes": 438463488
+    },
+    "folded_eager|N9|B1|T512|D2048|bfloat16": {
+      "forward ms": 0.08393599838018417,
+      "fwd+bwd ms": 1.1015679836273193,
+      "workspace bytes": 444876800
+    },
+    "paper_compiled|N9|B1|T512|D2048|bfloat16": {
+      "forward ms": 0.05321599915623665,
+      "fwd+bwd ms": 0.24371199309825897,
+      "workspace bytes": 444867584
+    },
+    "folded_compiled|N9|B1|T512|D2048|bfloat16": {
+      "forward ms": 0.0716480016708374,
+      "fwd+bwd ms": 0.7684159874916077,
+      "workspace bytes": 428099584
+    },
+    "folded_compiled_cudagraph|N9|B1|T512|D2048|bfloat16": {
+      "forward ms": 0.07174400240182877,
+      "fwd+bwd ms": 0.4389120042324066,
+      "workspace bytes": 408945664
+    },
+    "switchyard_triton|N9|B1|T512|D2048|bfloat16": {
+      "forward ms": 0.02457600086927414,
+      "fwd+bwd ms": 0.07577600330114365,
+      "workspace bytes": 411042816
+    },
+    "speed_of_light|N9|B1|T8192|D2048|bfloat16": {
+      "forward ms": 0.22864000499248505
+    },
+    "paper_eager|N9|B1|T8192|D2048|bfloat16": {
+      "forward ms": 1.581055998802185,
+      "fwd+bwd ms": 10.216480255126953,
+      "workspace bytes": 847823872
+    },
+    "folded_eager|N9|B1|T8192|D2048|bfloat16": {
+      "forward ms": 1.1038719415664673,
+      "fwd+bwd ms": 7.7824320793151855,
+      "workspace bytes": 822641664
+    },
+    "paper_compiled|N9|B1|T8192|D2048|bfloat16": {
+      "forward ms": 0.8888319730758667,
+      "fwd+bwd ms": 4.081696033477783,
+      "workspace bytes": 822494208
+    },
+    "folded_compiled|N9|B1|T8192|D2048|bfloat16": {
+      "forward ms": 1.0997439622879028,
+      "fwd+bwd ms": 7.788576126098633,
+      "workspace bytes": 822641664
+    },
+    "folded_compiled_cudagraph|N9|B1|T8192|D2048|bfloat16": {
+      "forward ms": 1.1079679727554321,
+      "fwd+bwd ms": 7.781407833099365,
+      "workspace bytes": 822641664
+    },
+    "switchyard_triton|N9|B1|T8192|D2048|bfloat16": {
+      "forward ms": 0.23756800591945648,
+      "fwd+bwd ms": 0.6922240257263184,
+      "workspace bytes": 553911296
+    },
+    "speed_of_light|N9|B1|T16384|D2048|bfloat16": {
+      "forward ms": 0.44441598653793335
+    },
+    "paper_eager|N9|B1|T16384|D2048|bfloat16": {
+      "forward ms": 3.265536069869995,
+      "fwd+bwd ms": 21.044288635253906,
+      "workspace bytes": 1292993536
+    },
+    "folded_eager|N9|B1|T16384|D2048|bfloat16": {
+      "forward ms": 2.281503915786743,
+      "fwd+bwd ms": 15.961119651794434,
+      "workspace bytes": 1225589760
+    },
+    "paper_compiled|N9|B1|T16384|D2048|bfloat16": {
+      "forward ms": 1.9088319540023804,
+      "fwd+bwd ms": 8.54633617401123,
+      "workspace bytes": 1225294848
+    },
+    "folded_compiled|N9|B1|T16384|D2048|bfloat16": {
+      "forward ms": 2.2896640300750732,
+      "fwd+bwd ms": 15.952927589416504,
+      "workspace bytes": 1225589760
+    },
+    "folded_compiled_cudagraph|N9|B1|T16384|D2048|bfloat16": {
+      "forward ms": 2.2906880378723145,
+      "fwd+bwd ms": 15.973440170288086,
+      "workspace bytes": 1225589760
+    },
+    "switchyard_triton|N9|B1|T16384|D2048|bfloat16": {
+      "forward ms": 0.4546560049057007,
+      "fwd+bwd ms": 1.3394240140914917,
+      "workspace bytes": 688129024
+    }
+  }
+}

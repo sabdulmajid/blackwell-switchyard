@@ -35,7 +35,6 @@ from harness import (  # noqa: E402
     measure_latency,
     measure_memory,
 )
-
 from switchyard.baselines import folded_form, paper_form  # noqa: E402
 from switchyard.reference import (  # noqa: E402
     DEFAULT_EPS,
@@ -217,7 +216,6 @@ def bench_one(
     except Exception as exc:  # noqa: BLE001
         rec["fwd_bwd"] = {"error": f"{type(exc).__name__}: {exc}"[:300]}
 
-    del vg, wg, grad_out
     torch.cuda.empty_cache()
     return rec
 
@@ -299,7 +297,7 @@ def main() -> None:
             from switchyard.triton_op import speed_of_light
 
             sol_t = measure_latency(
-                lambda: speed_of_light(v), device=device,
+                lambda v=v: speed_of_light(v), device=device,
                 warmup=10 if args.quick else 25, reps=30 if args.quick else 100,
             )
             mb = attn_res_min_bytes(shape.n, shape.b, shape.t, shape.d, v.element_size())
@@ -351,7 +349,6 @@ def main() -> None:
                     f"{rec['forward_achieved_gbps']:8.0f} {str(k):>5}       n/a"
                 )
 
-        del v, w, oracle
         torch.cuda.empty_cache()
 
     out = args.out or REPO / "results" / f"operator_{args.set}_{args.dtype}.json"

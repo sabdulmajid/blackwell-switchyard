@@ -134,7 +134,6 @@ def bandwidth_probe(nbytes: int, device: int, quick: bool, target_bytes: int = 8
     out["read"] = repeated(lambda: _read_kernel[grid](src, partial, n, BLOCK=BLOCK), nbytes)
     out["write"] = repeated(lambda: _write_kernel[grid](dst, n, BLOCK=BLOCK), nbytes)
 
-    del src, dst, partial
     torch.cuda.empty_cache()
     return out
 
@@ -178,12 +177,12 @@ def matmul_probe(device: int, quick: bool) -> dict:
             try:
                 a = torch.randn(n, n, device=f"cuda:{device}", dtype=dtype)
                 b = torch.randn(n, n, device=f"cuda:{device}", dtype=dtype)
-                t = time_cuda(lambda: torch.mm(a, b), 15 if quick else 30, 20 if quick else 50)
+                t = time_cuda(lambda a=a, b=b: torch.mm(a, b),
+                              15 if quick else 30, 20 if quick else 50)
                 res[f"{name}_{n}"] = {
                     **t,
                     "tflop_per_s": 2 * n**3 / (t["median_ms"] * 1e-3) / 1e12,
                 }
-                del a, b
                 torch.cuda.empty_cache()
             except Exception as exc:  # noqa: BLE001
                 res[f"{name}_{n}"] = {"error": str(exc)[:200]}
@@ -320,7 +319,6 @@ def p2p_probe(quick: bool) -> dict:
     t = time_cuda(lambda: a.copy_(h, non_blocking=True), 5 if quick else 10, 10 if quick else 30)
     out["h2d_pinned"] = {**t, "gbytes_per_s": nbytes / (t["median_ms"] * 1e-3) / 1e9}
 
-    del a, b, h
     torch.cuda.empty_cache()
     try:
         out["topo"] = subprocess.run(

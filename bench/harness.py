@@ -26,8 +26,8 @@ from __future__ import annotations
 import gc
 import statistics
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 import torch
 
