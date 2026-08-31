@@ -51,3 +51,6 @@ results/**/*.csv.gz
 # Locally-extracted Python headers (see scripts/fetch_python_headers.sh)
 .local-toolchain/
 .cache/
+
+# Cannot be pushed by the available token (no `workflow` scope); see issue #1
+.github/
