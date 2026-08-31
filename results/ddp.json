@@ -1,0 +1,146 @@
+{
+  "single": {
+    "environment": {
+      "torch": "2.9.0+cu128",
+      "torch_cuda": "12.8",
+      "triton": "3.5.0",
+      "python": "3.12.3",
+      "platform": "Linux-6.8.0-117-generic-x86_64-with-glibc2.39",
+      "device_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+      "device_cc": "12.0",
+      "device_index": 0,
+      "timestamp_utc": "2026-08-31T13:07:00Z"
+    },
+    "scale": "1.3B",
+    "batch": 2,
+    "seq": 2048,
+    "results": [
+      {
+        "residual": "standard",
+        "world_size": 1,
+        "rank": 0,
+        "step": {
+          "median_ms": 233.32896423339844,
+          "p10_ms": 232.90086364746094,
+          "p90_ms": 233.625244140625,
+          "min_ms": 232.77655029296875,
+          "mean_ms": 233.2662841796875,
+          "cv": 0.0012591357290493031,
+          "reps": 15,
+          "warmup": 5,
+          "l2_flushed": false
+        },
+        "tokens_per_step_global": 4096,
+        "tokens_per_second_global": 17554.614419420217,
+        "peak_memory_bytes": 19991163904,
+        "params": 1300334592,
+        "grad_check": null
+      },
+      {
+        "residual": "switchyard",
+        "world_size": 1,
+        "rank": 0,
+        "step": {
+          "median_ms": 252.24755859375,
+          "p10_ms": 251.63839721679688,
+          "p90_ms": 252.5662384033203,
+          "min_ms": 251.50758361816406,
+          "mean_ms": 252.16624145507814,
+          "cv": 0.0012983828017342441,
+          "reps": 15,
+          "warmup": 5,
+          "l2_flushed": false
+        },
+        "tokens_per_step_global": 4096,
+        "tokens_per_second_global": 16238.0164265403,
+        "peak_memory_bytes": 20814652416,
+        "params": 1300535296,
+        "grad_check": null
+      }
+    ]
+  },
+  "dual": {
+    "environment": {
+      "torch": "2.9.0+cu128",
+      "torch_cuda": "12.8",
+      "triton": "3.5.0",
+      "python": "3.12.3",
+      "platform": "Linux-6.8.0-117-generic-x86_64-with-glibc2.39",
+      "device_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+      "device_cc": "12.0",
+      "device_index": 0,
+      "timestamp_utc": "2026-08-31T13:07:43Z"
+    },
+    "scale": "1.3B",
+    "batch": 2,
+    "seq": 2048,
+    "results": [
+      {
+        "residual": "standard",
+        "world_size": 2,
+        "rank": 0,
+        "step": {
+          "median_ms": 274.9104309082031,
+          "p10_ms": 273.273193359375,
+          "p90_ms": 276.1094665527344,
+          "min_ms": 273.2007751464844,
+          "mean_ms": 274.8909545898438,
+          "cv": 0.0033420720042333808,
+          "reps": 15,
+          "warmup": 5,
+          "l2_flushed": false
+        },
+        "tokens_per_step_global": 8192,
+        "tokens_per_second_global": 29798.796549613053,
+        "peak_memory_bytes": 23424176128,
+        "params": 1300334592,
+        "grad_check": {
+          "max_abs_deviation_from_rank0": 0.0,
+          "grad_norm": 17.375
+        }
+      },
+      {
+        "residual": "switchyard",
+        "world_size": 2,
+        "rank": 0,
+        "step": {
+          "median_ms": 291.1361083984375,
+          "p10_ms": 290.2162780761719,
+          "p90_ms": 291.8223571777344,
+          "min_ms": 289.664794921875,
+          "mean_ms": 291.0503173828125,
+          "cv": 0.0022558436628103773,
+          "reps": 15,
+          "warmup": 5,
+          "l2_flushed": false
+        },
+        "tokens_per_step_global": 8192,
+        "tokens_per_second_global": 28138.04184257608,
+        "peak_memory_bytes": 28617061376,
+        "params": 1300535296,
+        "grad_check": {
+          "max_abs_deviation_from_rank0": 0.0,
+          "grad_norm": 17.5
+        }
+      }
+    ]
+  },
+  "scaling": {
+    "standard": {
+      "one_gpu_tokens_per_s": 17554.614419420217,
+      "two_gpu_tokens_per_s": 29798.796549613053,
+      "speedup": 1.6974908042780714,
+      "efficiency": 0.8487454021390357,
+      "step_ms_one": 233.32896423339844,
+      "step_ms_two": 274.9104309082031
+    },
+    "switchyard": {
+      "one_gpu_tokens_per_s": 16238.0164265403,
+      "two_gpu_tokens_per_s": 28138.04184257608,
+      "speedup": 1.7328496968746583,
+      "efficiency": 0.8664248484373291,
+      "step_ms_one": 252.24755859375,
+      "step_ms_two": 291.1361083984375
+    }
+  }
+}

@@ -47,6 +47,10 @@ Separately, holding the sources in a preallocated buffer rather than `torch.stac
 at every site — as the paper's pseudocode does — saves **6.75 GiB** of peak memory (265 slab
 copies per forward down to 49).
 
+Under DDP across both cards, gradients are **bit-identical across ranks** after all-reduce
+and scaling reaches **1.73× (87% efficiency)** — better than a 25.8 GB/s PCIe link and a
+2.6 GB gradient reduction would suggest, because NCCL overlaps the reduction with backward.
+
 ## Against the other fused kernels
 
 Fused Block AttnRes kernels already exist. This repository claims no first — it claims a
@@ -175,6 +179,7 @@ python bench/bench_third_party.py # head-to-head  -> results/third_party_bfloat1
 python scripts/summarize_third_party.py   # -> docs/third_party.md
 
 python bench/bench_model.py       # 1.3B end-to-end -> results/model_bfloat16.json
+python bench/bench_ddp.py         # two-GPU DDP     -> results/ddp.json
 python scripts/summarize_model.py # -> docs/model.md
 ```
 

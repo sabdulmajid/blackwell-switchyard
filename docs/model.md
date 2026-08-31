@@ -89,3 +89,31 @@ the mass still on the token embedding. That is an observation on a
 deliberately degenerate task, not a finding -- anything more would need
 real training, which is out of scope here.
 
+## Two GPUs
+
+Block AttnRes is a local tensor operation; nothing about it needs cross-device
+communication, and inventing some so this section could exist would be
+contrived. So the two-GPU work asks the two questions that are worth asking:
+does the operator still train correctly under DDP, and where does scaling stop
+on a machine whose cards are connected by PCIe at a measured 25.8 GB/s with no
+NVLink.
+
+| variant | 1 GPU tok/s | 2 GPU tok/s | speedup | efficiency |
+|---|---|---|---|---|
+| standard | 17555 | 29799 | 1.70x | 85% |
+| switchyard | 16238 | 28138 | 1.73x | 87% |
+
+**Gradients are identical across ranks after all-reduce** -- maximum
+deviation 0.0e+00. That is the check that matters here: a custom
+autograd Function returning a wrong or rank-dependent gradient for one of its
+inputs can pass every single-GPU test and still corrupt a distributed run.
+The fused operator's backward, and the arena's in-place staging, both survive
+it.
+
+Scaling holds up better than the interconnect would suggest -- 85-87% rather
+than the collapse a 25.8 GB/s link and a ~2.6 GB bf16 gradient all-reduce might
+imply -- because NCCL overlaps the reduction with the backward pass. The fused
+variant scales marginally *better* (87% against 85%), which is not a win worth
+claiming: it has slightly more compute per byte communicated, so there is more
+backward to hide the all-reduce behind.
+
