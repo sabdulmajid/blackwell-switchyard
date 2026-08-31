@@ -217,4 +217,11 @@ def test_dispatch_sends_the_representative_shape_to_the_resident_kernel():
     resident, _, _, _ = _launch_config(triton.next_power_of_2(9), 2048)
     assert resident, "N=9, D=2048 must use the resident kernel"
     usable, _, _, _ = _bwd_launch(triton.next_power_of_2(9), 2048)
-    assert usable, "N=9, D=2048 backward must be fused"
+    assert usable, "N=9, D=2048 backward must use the resident path"
+
+    # D=4096 exceeds the resident tile and must take the tiled backward, not the
+    # autograd fallback. When it did fall back, fwd+bwd was 0.51x the baseline --
+    # i.e. our "optimized" operator was twice as slow as torch.compile, because
+    # the fallback recomputed the forward before differentiating it.
+    resident, _, _, _ = _bwd_launch(triton.next_power_of_2(9), 4096)
+    assert not resident, "N=9, D=4096 is expected to exceed the resident tile"

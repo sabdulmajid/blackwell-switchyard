@@ -265,12 +265,114 @@ def _bwd_resident(
 
 
 def _bwd_launch(n_pow2: int, d: int) -> tuple[bool, int, int, int]:
-    """Backward writes ``dv`` as well as reading ``v``, so its tile budget is
-    tighter than the forward's. Returns ``(usable, tokens, warps, stages)``."""
+    """Whether the resident backward applies, and its launch parameters.
+
+    Returns ``(resident, tokens, warps, stages)``. When ``resident`` is false the
+    two-kernel tiled backward below is used instead.
+    """
     tile = n_pow2 * triton.next_power_of_2(d)
     if tile > _RESIDENT_TILE_MAX:
         return False, 0, 0, 0
     return True, 4, (4 if tile <= 16384 else 8), 1
+
+
+@triton.jit
+def _bwd_stats(
+    v_ptr, w_ptr, g_ptr, alpha_ptr, da_ptr, dssq_ptr,
+    n_src, D, eps,
+    stride_vn, stride_vt, stride_vd,
+    stride_gt, stride_gd, stride_sn,
+    BLOCK_N: tl.constexpr, BLOCK_D: tl.constexpr,
+):
+    """First half of the tiled backward: per-token softmax statistics.
+
+    Produces the three ``[N, B*T]`` quantities the apply pass needs. They are
+    tiny -- three fp32 scalars per (source, token), against the ``[N,B,T,D]``
+    tensors either side -- so materializing them is far cheaper than the
+    alternative, which would be recomputing the full-``D`` reductions inside
+    every ``D`` tile of the apply pass.
+    """
+    tok = tl.program_id(0)
+    offs_n = tl.arange(0, BLOCK_N)
+    n_mask = offs_n < n_src
+
+    ssq = tl.zeros([BLOCK_N], dtype=tl.float32)
+    a = tl.zeros([BLOCK_N], dtype=tl.float32)
+    gg = tl.zeros([BLOCK_N], dtype=tl.float32)
+
+    for d0 in range(0, D, BLOCK_D):
+        offs_d = d0 + tl.arange(0, BLOCK_D)
+        d_mask = offs_d < D
+        vp = v_ptr + tok * stride_vt + offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vd
+        v = tl.load(vp, mask=n_mask[:, None] & d_mask[None, :], other=0.0).to(tl.float32)
+        w = tl.load(w_ptr + offs_d, mask=d_mask, other=0.0).to(tl.float32)
+        g = tl.load(g_ptr + tok * stride_gt + offs_d * stride_gd,
+                    mask=d_mask, other=0.0).to(tl.float32)
+        ssq += tl.sum(v * v, axis=1)
+        a += tl.sum(v * w[None, :], axis=1)
+        gg += tl.sum(v * g[None, :], axis=1)
+
+    r = tl.rsqrt(ssq / D + eps)
+    logit = tl.where(n_mask, a * r, float("-inf"))
+    p = tl.exp(logit - tl.max(logit, axis=0))
+    alpha = p / tl.sum(p, axis=0)
+
+    dlogit = alpha * (gg - tl.sum(alpha * gg, axis=0))
+    da = dlogit * r
+    dssq = -dlogit * a * r * r * r / (2.0 * D)
+
+    sp = offs_n * stride_sn + tok
+    tl.store(alpha_ptr + sp, alpha, mask=n_mask)
+    tl.store(da_ptr + sp, da, mask=n_mask)
+    tl.store(dssq_ptr + sp, dssq, mask=n_mask)
+
+
+@triton.jit
+def _bwd_apply(
+    v_ptr, w_ptr, g_ptr, alpha_ptr, da_ptr, dssq_ptr, dv_ptr, dw_ptr,
+    n_src, D, n_tokens,
+    stride_vn, stride_vt, stride_vd,
+    stride_gt, stride_gd, stride_sn,
+    BLOCK_N: tl.constexpr, BLOCK_D: tl.constexpr, TOKENS: tl.constexpr,
+):
+    """Second half: write ``dv`` and reduce ``dw``.
+
+    The grid is (token chunks) x (D tiles). Chunking tokens is what makes ``dw``
+    affordable: it reduces over every token, so a program that owned a single
+    token would need one atomic per output element per token -- tens of millions
+    of them, all contending on the same ``D`` addresses. Accumulating over
+    ``TOKENS`` tokens first cuts that by the same factor.
+    """
+    pid_t = tl.program_id(0)
+    pid_d = tl.program_id(1)
+
+    offs_n = tl.arange(0, BLOCK_N)
+    offs_d = pid_d * BLOCK_D + tl.arange(0, BLOCK_D)
+    n_mask = offs_n < n_src
+    d_mask = offs_d < D
+
+    w = tl.load(w_ptr + offs_d, mask=d_mask, other=0.0).to(tl.float32)
+    dw_acc = tl.zeros([BLOCK_D], dtype=tl.float32)
+
+    for i in range(TOKENS):
+        tok = pid_t * TOKENS + i
+        if tok < n_tokens:
+            vp = v_ptr + tok * stride_vt + offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vd
+            v = tl.load(vp, mask=n_mask[:, None] & d_mask[None, :], other=0.0).to(tl.float32)
+            g = tl.load(g_ptr + tok * stride_gt + offs_d * stride_gd,
+                        mask=d_mask, other=0.0).to(tl.float32)
+            sp = offs_n * stride_sn + tok
+            alpha = tl.load(alpha_ptr + sp, mask=n_mask, other=0.0)
+            da = tl.load(da_ptr + sp, mask=n_mask, other=0.0)
+            dssq = tl.load(dssq_ptr + sp, mask=n_mask, other=0.0)
+
+            dv = alpha[:, None] * g[None, :] + da[:, None] * w[None, :] + (2.0 * dssq)[:, None] * v
+            dvp = (dv_ptr + tok * stride_vt + offs_n[:, None] * stride_vn
+                   + offs_d[None, :] * stride_vd)
+            tl.store(dvp, dv, mask=n_mask[:, None] & d_mask[None, :])
+            dw_acc += tl.sum(da[:, None] * v, axis=0)
+
+    tl.atomic_add(dw_ptr + offs_d, dw_acc, mask=d_mask)
 
 
 class _BlockAttnResTriton(torch.autograd.Function):
@@ -314,36 +416,49 @@ class _BlockAttnResTriton(torch.autograd.Function):
         n_pow2 = triton.next_power_of_2(n)
         usable, tokens, warps, stages = _bwd_launch(n_pow2, d)
 
-        if not usable:
-            # Shapes whose tile will not stay in registers fall back to autograd
-            # over the folded formulation. Correct, and still avoids
-            # materializing the normalized tensor, but not fused.
-            with torch.enable_grad():
-                vv = v.detach().requires_grad_(True)
-                ww = w.detach().requires_grad_(True)
-                dots = torch.einsum("d,nbtd->nbt", ww, vv)
-                inv_rms = torch.rsqrt(vv.pow(2).mean(-1) + ctx.eps)
-                out = torch.einsum("nbt,nbtd->btd", (dots * inv_rms).softmax(0), vv)
-                gv, gw = torch.autograd.grad(out, (vv, ww), grad_out)
-            return gv, gw, None
-
         grad_out = grad_out.contiguous()
         dv = torch.empty_like(v)
         # dw is reduced across every token by atomics, so it must be fp32
         # regardless of the working dtype: bf16 atomics would lose most of the
-        # contributions to swamping.
+        # contributions to swamping once the token count is large.
         dw = torch.zeros(d, device=v.device, dtype=torch.float32)
-
         n_tokens = b * t
-        grid = (triton.cdiv(n_tokens, tokens),)
-        _bwd_resident[grid](
-            v, w, grad_out, dv, dw,
+
+        if usable:
+            _bwd_resident[(triton.cdiv(n_tokens, tokens),)](
+                v, w, grad_out, dv, dw,
+                n, d, ctx.eps,
+                v.stride(0), v.stride(2), v.stride(3),
+                grad_out.stride(1), grad_out.stride(2),
+                n_tokens,
+                BLOCK_N=n_pow2, BLOCK_D=triton.next_power_of_2(d),
+                TOKENS=tokens, num_warps=warps, num_stages=stages,
+            )
+            return dv, dw.to(w.dtype), None
+
+        # Tiled backward: two kernels, because dw reduces over every token while
+        # the softmax statistics need a full-D reduction per token, and no single
+        # loop nesting satisfies both.
+        block_d = min(1024, triton.next_power_of_2(d))
+        alpha = torch.empty(n, n_tokens, device=v.device, dtype=torch.float32)
+        da = torch.empty_like(alpha)
+        dssq = torch.empty_like(alpha)
+
+        _bwd_stats[(n_tokens,)](
+            v, w, grad_out, alpha, da, dssq,
             n, d, ctx.eps,
             v.stride(0), v.stride(2), v.stride(3),
-            grad_out.stride(1), grad_out.stride(2),
-            n_tokens,
-            BLOCK_N=n_pow2, BLOCK_D=triton.next_power_of_2(d),
-            TOKENS=tokens, num_warps=warps, num_stages=stages,
+            grad_out.stride(1), grad_out.stride(2), alpha.stride(0),
+            BLOCK_N=n_pow2, BLOCK_D=block_d, num_warps=8, num_stages=1,
+        )
+        tokens_per_cta = 32
+        _bwd_apply[(triton.cdiv(n_tokens, tokens_per_cta), triton.cdiv(d, block_d))](
+            v, w, grad_out, alpha, da, dssq, dv, dw,
+            n, d, n_tokens,
+            v.stride(0), v.stride(2), v.stride(3),
+            grad_out.stride(1), grad_out.stride(2), alpha.stride(0),
+            BLOCK_N=n_pow2, BLOCK_D=block_d, TOKENS=tokens_per_cta,
+            num_warps=8, num_stages=1,
         )
         return dv, dw.to(w.dtype), None
 
