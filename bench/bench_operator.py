@@ -171,7 +171,7 @@ def bench_one(
     # a latency column, and the two call for opposite fixes: fewer kernels
     # versus fewer bytes.
     busy = rec.get("forward_kernels", {}).get("total_cuda_us")
-    if busy is not None:
+    if busy:
         rec["forward_gpu_busy_us"] = busy
         rec["forward_dispatch_gap_us"] = fwd.median_ms * 1000 - busy
         rec["forward_gpu_utilization"] = busy / (fwd.median_ms * 1000)
@@ -210,7 +210,7 @@ def bench_one(
             fwd_bwd, device=device, resident_bytes=resident
         ).as_dict()
         fb_busy = rec.get("fwd_bwd_kernels", {}).get("total_cuda_us")
-        if fb_busy is not None:
+        if fb_busy:
             rec["fwd_bwd_gpu_busy_us"] = fb_busy
             rec["fwd_bwd_gpu_utilization"] = fb_busy / (fb.median_ms * 1000)
     except Exception as exc:  # noqa: BLE001

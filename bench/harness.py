@@ -152,8 +152,8 @@ def measure_memory(
 
 @dataclass
 class KernelReport:
-    total_kernels: int
-    total_cuda_us: float
+    total_kernels: int | None
+    total_cuda_us: float | None
     by_name: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
@@ -201,6 +201,17 @@ def count_kernels(fn: Callable[[], object], *, device: torch.device, iters: int 
         }
         total += evt.count
         total_us += evt.self_device_time_total
+
+    # A call that ran cannot have launched zero kernels. When the profiler is
+    # invoked many times in one process it sometimes stops returning CUDA
+    # events, and reporting the result as "0 kernels" would be a false claim
+    # rather than a missing one. Report it as unavailable instead.
+    if total == 0:
+        return KernelReport(
+            total_kernels=None,
+            total_cuda_us=None,
+            by_name={"_unavailable": "profiler returned no CUDA events for this call"},
+        )
 
     return KernelReport(
         total_kernels=round(total / iters, 2),

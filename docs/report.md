@@ -85,6 +85,19 @@ So the honest framing of what this repository adds is:
    "how much is left" is quantitative.
 3. A reproducible measurement harness, with the failure modes documented.
 
+That head-to-head is in [`third_party.md`](third_party.md) and it does not go
+entirely our way. Summarised:
+
+* **The forward is a four-way tie at the memory ceiling.** switchyard, fla and
+  catswe are all within a few percent of speed of light. Liger is the outlier
+  and falls further behind as `N` grows (814 GB/s against 1415 at `N=32`).
+* **We take 7 of 10 shapes on forward+backward, and Liger takes 3** -- every one
+  of them at `D >= 4096` or `N=32`, which is exactly where our two-kernel tiled
+  backward runs instead of the register-resident one. That is a real deficiency.
+* **catswe is 4.3x faster on batched pseudo-queries.** Their two-phase schedule
+  reads the sources once per block; ours reads them once per call. No amount of
+  kernel tuning closes an 8x traffic difference -- it needs the API.
+
 Claims this project must not make are listed in the README.
 
 ---
@@ -386,8 +399,17 @@ Where the kernel does *not* reach the ceiling:
 - bf16 is the primary dtype. fp16 and fp32 are tested for correctness but not
   swept for performance.
 - The operator takes a pre-stacked `[N,B,T,D]` tensor. In a real model the
-  sources arrive as separate tensors, and the stacking cost is a real cost —
-  measured separately in the model integration rather than hidden.
+  sources arrive as separate tensors, and the stacking cost is a real cost. fla's
+  pointer-table API avoids it entirely and is the better design on that axis;
+  ours would need either a preallocated buffer written by slice, or a copy.
+- **No batched-query API.** The paper's own two-phase schedule (Sec. 4.2)
+  amortizes one pass over the sources across a block's `S` pseudo-queries.
+  catswe implements it and is 4.3x faster than `S` calls of our kernel. This is
+  the largest single piece of performance left in the operator and it is not a
+  kernel problem — our kernel is already at the ceiling for what it is asked to
+  do. It is asked to do the wrong thing `S` times.
+- **Our tiled backward is the weak path.** Liger beats it at `D >= 4096` and
+  `N=32`. The resident backward is comfortably ahead everywhere it applies.
 
 ---
 
@@ -407,3 +429,16 @@ than the baseline* turns a win into a loss at exactly the shapes nobody checked.
 **Check that the test regime is physical.** A benchmark input drawn without
 thinking about what the trained model actually looks like put the softmax in a
 saturated regime and made every implementation fail correctness.
+
+**Give a competitor its own API.** The first head-to-head handed fla `N` views of
+one leaf tensor because that is the shape our operator takes. Autograd then
+routed every gradient through `N` slice-backwards, and fla appeared 11x slower
+than us at `N=9` and 29x at `N=32`. Given its actual sequence-of-tensors API the
+true figures are 2.7x and 1.5x. The flattering number was one commit away from
+being published, and nothing in the harness would have caught it — only asking
+"why would it be *that* bad?" did.
+
+**Being at the ceiling is not the same as being fastest.** Our forward sustains
+94-101% of speed of light and is still 4.3x slower than catswe on batched
+queries, because the ceiling is computed for the work we chose to do. A roofline
+answers "is this kernel efficient", never "is this the right kernel".

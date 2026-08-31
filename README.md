@@ -24,13 +24,36 @@ measured against a kernel that touches exactly the same bytes with the same acce
 but skips the softmax. There is essentially nothing left to win on the forward, and saying
 so is more useful than chasing another percent.
 
-> **On novelty:** fused Block AttnRes kernels already exist — in
-> [Liger-Kernel](https://github.com/linkedin/Liger-Kernel) (merged March 2026, benchmarked
-> by its author on an RTX 5090, also `sm_120`),
-> [flash-linear-attention](https://github.com/fla-org/flash-linear-attention), and two
-> standalone projects. This repository claims no first. What it adds is an independent
-> head-to-head on Blackwell, a speed-of-light ceiling so "how much is left" has a number,
-> and a harness whose failure modes are documented.
+## Against the other fused kernels
+
+Fused Block AttnRes kernels already exist. This repository claims no first — it claims a
+measurement. Full tables in [`docs/third_party.md`](docs/third_party.md), all verified
+against the same float64 oracle before being timed:
+
+| | forward | fwd+bwd (wins / 10 shapes) | accuracy vs bf16 floor |
+|---|---|---|---|
+| **switchyard** | at the ceiling | **7** | **1.00×** |
+| [fla](https://github.com/fla-org/flash-linear-attention) | at the ceiling, **beats us at D=8192** | 0 | 1.00× |
+| [catswe](https://github.com/catswe/flash-attention-residuals) | at the ceiling | 0 | 1.00× |
+| [Liger-Kernel](https://github.com/linkedin/Liger-Kernel) | 814–1343 GB/s | **3** (all at D≥4096 / N=32) | 1.29× |
+
+Three honest conclusions:
+
+- **The forward is a four-way tie at the memory ceiling.** switchyard, fla and catswe are
+  all within a few percent of speed of light. There is nothing left there for anyone.
+- **Liger's backward beats ours at `D ≥ 4096` and `N=32`** — exactly where our tiled
+  backward runs instead of the register-resident one. That is a real deficiency, not a
+  rounding error, and it is the next piece of work.
+- **catswe is 4.3× faster on batched pseudo-queries** (0.215 ms vs our 0.930 ms for 8
+  queries). Their two-phase schedule reads the sources once per *block*; ours reads them
+  once per *call*. At S=8 that is an 8× traffic difference no kernel tuning can close —
+  it is an API and scheduling difference, and the clearest single thing this comparison
+  surfaced.
+
+What this project adds, then, is the head-to-head itself — nobody had published one on any
+Blackwell part — a speed-of-light ceiling so "how much is left" has a number rather than an
+adjective, and a harness whose failure modes are written down, including
+[the one that made fla look 11× slower than it is](docs/third_party.md#a-harness-bug-worth-recording).
 
 ## What Block AttnRes is
 
@@ -64,8 +87,10 @@ out = block_attn_res_triton(v, w)                                       # [B, T,
 
 ## Results
 
-Full tables across 19 shapes in [`docs/results.md`](docs/results.md), regenerated from raw
-JSON in [`results/`](results/) by `scripts/summarize_operator.py`. A selection:
+Full tables across 19 shapes in [`docs/results.md`](docs/results.md) and the third-party
+comparison in [`docs/third_party.md`](docs/third_party.md), both regenerated from raw JSON
+in [`results/`](results/) by scripts in [`scripts/`](scripts/). A selection against the
+framework baseline:
 
 | shape (bf16) | fwd speedup | fwd+bwd speedup | % of ceiling |
 |---|---|---|---|
@@ -118,6 +143,10 @@ python -m pytest tests/ -q        # 99 tests
 python bench/machine.py           # machine characterization -> results/machine.json
 python bench/bench_operator.py    # operator sweep       -> results/operator_*.json
 python scripts/summarize_operator.py   # -> docs/results.md and its figure
+
+scripts/fetch_third_party.sh      # clone Liger / fla / catswe at pinned commits
+python bench/bench_third_party.py # head-to-head  -> results/third_party_bfloat16.json
+python scripts/summarize_third_party.py   # -> docs/third_party.md
 ```
 
 ## Engineering report

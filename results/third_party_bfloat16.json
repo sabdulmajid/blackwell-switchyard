@@ -1,0 +1,3930 @@
+{
+  "environment": {
+    "torch": "2.9.0+cu128",
+    "torch_cuda": "12.8",
+    "triton": "3.5.0",
+    "python": "3.12.3",
+    "platform": "Linux-6.8.0-117-generic-x86_64-with-glibc2.39",
+    "device_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+    "device_cc": "12.0",
+    "device_index": 0,
+    "timestamp_utc": "2026-08-31T12:35:40Z"
+  },
+  "dtype": "bfloat16",
+  "rel_l2_tol": 0.02,
+  "unavailable": [],
+  "adapter_notes": {
+    "switchyard": "this repository",
+    "liger": "linkedin/Liger-Kernel, rms gain set to ones",
+    "fla": "fla-org/flash-linear-attention, fused backend",
+    "catswe": "catswe/flash-attention-residuals, phase 1 at S=1 (see note)"
+  },
+  "results": [
+    {
+      "impl": "speed_of_light",
+      "shape": {
+        "n": 2,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "forward": {
+        "median_ms": 0.043007999658584595,
+        "p10_ms": 0.04095999896526337,
+        "p90_ms": 0.045024000108242035,
+        "min_ms": 0.04095999896526337,
+        "mean_ms": 0.04283733293414116,
+        "cv": 0.025087329696587814,
+        "reps": 60,
+        "warmup": 10,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1170.2857235759295,
+      "note": "ceiling, not an implementation"
+    },
+    {
+      "impl": "switchyard",
+      "shape": {
+        "n": 2,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016569263624031376,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016569263624031376,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.013556957244873047,
+        "max_abs_err_over_rms": 0.01696529933630002,
+        "output_rms": 0.7990992069244385,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.04095999896526337,
+        "p10_ms": 0.04095999896526337,
+        "p90_ms": 0.043007999658584595,
+        "min_ms": 0.04092799872159958,
+        "mean_ms": 0.04153311915695667,
+        "cv": 0.02321712942149332,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1228.8000310420998,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 8.52480000000005,
+        "by_name": {
+          "_fwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 8.52480000000005
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 528617472,
+        "workspace_bytes": 478281728,
+        "resident_bytes": 50335744,
+        "allocation_count": 1
+      },
+      "fwd_bwd": {
+        "median_ms": 0.09539200365543365,
+        "p10_ms": 0.09161599725484848,
+        "p90_ms": 0.1024319976568222,
+        "min_ms": 0.08975999802350998,
+        "mean_ms": 0.09703871980309486,
+        "cv": 0.0841270477030979,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 4.0,
+        "total_cuda_us": 41.813333333333425,
+        "by_name": {
+          "_fwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 8.992000000000113
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.83199999999988
+          },
+          "_bwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 30.98666666666668
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.0026666666667552
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 1.0500000181898945
+    },
+    {
+      "impl": "liger",
+      "shape": {
+        "n": 2,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0018329905700879964,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016569263624031376,
+        "err_vs_dtype_floor": 1.1062595246716351,
+        "max_abs_err": 0.013715982437133789,
+        "max_abs_err_over_rms": 0.017164304905173997,
+        "output_rms": 0.7990992069244385,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.04505600035190582,
+        "p10_ms": 0.04505600035190582,
+        "p90_ms": 0.04710400104522705,
+        "min_ms": 0.045024000108242035,
+        "mean_ms": 0.04530144043266773,
+        "cv": 0.014693731993926703,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1117.0909003659715,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 18.214,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.9024000000000114
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 17.311599999999988
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 528687104,
+        "workspace_bytes": 478351360,
+        "resident_bytes": 50335744,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 0.18025599420070648,
+        "p10_ms": 0.1743360012769699,
+        "p90_ms": 0.18748800456523895,
+        "min_ms": 0.17155200242996216,
+        "mean_ms": 0.180977920293808,
+        "cv": 0.030756059774118008,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 7.0,
+        "total_cuda_us": 116.45900000000005,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8220000000000217
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 17.47199999999998
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 1.6319999999999861
+          },
+          "_attn_res_bwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 94.59166666666674
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 1.9413333333333185
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.9545454395124844
+    },
+    {
+      "impl": "fla",
+      "shape": {
+        "n": 2,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016569263624031376,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016569263624031376,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.013556957244873047,
+        "max_abs_err_over_rms": 0.01696529933630002,
+        "output_rms": 0.7990992069244385,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.043007999658584595,
+        "p10_ms": 0.04095999896526337,
+        "p90_ms": 0.04505600035190582,
+        "min_ms": 0.04095999896526337,
+        "mean_ms": 0.043171839714050295,
+        "cv": 0.031595505792284234,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1170.2857235759295,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 25.93939999999999,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.870399999999961
+          },
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 25.069000000000027
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 528703488,
+        "workspace_bytes": 478367744,
+        "resident_bytes": 50335744,
+        "allocation_count": 5
+      },
+      "fwd_bwd": {
+        "median_ms": 0.5251520276069641,
+        "p10_ms": 0.5139840245246887,
+        "p90_ms": 0.6233279705047607,
+        "min_ms": 0.48921599984169006,
+        "mean_ms": 0.5451385641098022,
+        "cv": 0.0795750312805,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 3.0,
+        "total_cuda_us": 78.24099999999994,
+        "by_name": {
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 22.634666666666703
+          },
+          "attnres_bwd_kernel_dv": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 34.97633333333329
+          },
+          "attnres_bwd_kernel_dqdw": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 20.629999999999956
+          }
+        }
+      },
+      "fwd_bwd_input_form": "separate leaves",
+      "fwd_bwd_stacked_leaf": {
+        "median_ms": 0.6428800225257874,
+        "p10_ms": 0.6378880143165588,
+        "p90_ms": 0.6528319716453552,
+        "min_ms": 0.6344640254974365,
+        "mean_ms": 0.6436063992977142,
+        "cv": 0.008744354684210462,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fraction_of_speed_of_light": 1.0
+    },
+    {
+      "impl": "catswe",
+      "shape": {
+        "n": 2,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016569263624031376,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016569263624031376,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.013556957244873047,
+        "max_abs_err_over_rms": 0.01696529933630002,
+        "output_rms": 0.7990992069244385,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.04095999896526337,
+        "p10_ms": 0.04095999896526337,
+        "p90_ms": 0.043007999658584595,
+        "min_ms": 0.03891199827194214,
+        "mean_ms": 0.04149247914552689,
+        "cv": 0.025761091878802794,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1228.8000310420998,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 11.238599999999952,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 11.238599999999952
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 528699392,
+        "workspace_bytes": 478363648,
+        "resident_bytes": 50335744,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 0.628607988357544,
+        "p10_ms": 0.6209279894828796,
+        "p90_ms": 0.6377599835395813,
+        "min_ms": 0.6135039925575256,
+        "mean_ms": 0.629651198387146,
+        "cv": 0.01844154007429342,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 10.0,
+        "total_cuda_us": 108.75866666666673,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 21.07733333333336
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 5.429666666666662
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 4.0,
+            "cuda_us_per_call": 3.349999999999909
+          },
+          "phase_1_batched_attention_backward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 53.696333333333314
+          },
+          "reduce_grad_queries_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 7.861333333333353
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 17.344000000000126
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 1.0500000181898945
+    },
+    {
+      "impl": "speed_of_light",
+      "shape": {
+        "n": 4,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "forward": {
+        "median_ms": 0.0655359998345375,
+        "p10_ms": 0.06348799914121628,
+        "p90_ms": 0.06758400052785873,
+        "min_ms": 0.06348799914121628,
+        "mean_ms": 0.0655359998345375,
+        "cv": 0.018042202065656418,
+        "reps": 60,
+        "warmup": 10,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1280.000003231689,
+      "note": "ceiling, not an implementation"
+    },
+    {
+      "impl": "switchyard",
+      "shape": {
+        "n": 4,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016588443402778246,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016588443402778246,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.014912128448486328,
+        "max_abs_err_over_rms": 0.02382753324686808,
+        "output_rms": 0.6258360147476196,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.06758400052785873,
+        "p10_ms": 0.0655359998345375,
+        "p90_ms": 0.06758400052785873,
+        "min_ms": 0.06348799914121628,
+        "mean_ms": 0.06686688028275967,
+        "cv": 0.02093920356478271,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1241.212111517746,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 14.451399999999968,
+        "by_name": {
+          "_fwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 14.451399999999968
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 562171904,
+        "workspace_bytes": 478281728,
+        "resident_bytes": 83890176,
+        "allocation_count": 1
+      },
+      "fwd_bwd": {
+        "median_ms": 0.2061759978532791,
+        "p10_ms": 0.1995840072631836,
+        "p90_ms": 0.21884800493717194,
+        "min_ms": 0.19539199769496918,
+        "mean_ms": 0.20761215984821318,
+        "cv": 0.0360043132117409,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 4.0,
+        "total_cuda_us": 104.89533333333338,
+        "by_name": {
+          "_fwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 32.99166666666671
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8319999999999936
+          },
+          "_bwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 70.06899999999996
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.0026666666667172
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.9696969596749896
+    },
+    {
+      "impl": "liger",
+      "shape": {
+        "n": 4,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.001985077380733911,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016588443402778246,
+        "err_vs_dtype_floor": 1.1966628408313758,
+        "max_abs_err": 0.014912128448486328,
+        "max_abs_err_over_rms": 0.02382753324686808,
+        "output_rms": 0.6258360147476196,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.06963200122117996,
+        "p10_ms": 0.06758400052785873,
+        "p90_ms": 0.07168000191450119,
+        "min_ms": 0.06758400052785873,
+        "mean_ms": 0.06969312123954297,
+        "cv": 0.015800582111644278,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1204.7058612252606,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 32.262199999999986,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8576000000000021
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 31.40459999999998
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 562307072,
+        "workspace_bytes": 478416896,
+        "resident_bytes": 83890176,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 0.3198400139808655,
+        "p10_ms": 0.31174400448799133,
+        "p90_ms": 0.32870399951934814,
+        "min_ms": 0.30713599920272827,
+        "mean_ms": 0.31971264243125913,
+        "cv": 0.023188311690031528,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 7.0,
+        "total_cuda_us": 140.83199999999982,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8213333333332571
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 31.925333333333242
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 1.6216666666666317
+          },
+          "_attn_res_bwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 104.40499999999982
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 2.058666666666871
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.9411764517059927
+    },
+    {
+      "impl": "fla",
+      "shape": {
+        "n": 4,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016588443402778246,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016588443402778246,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.014912128448486328,
+        "max_abs_err_over_rms": 0.02382753324686808,
+        "output_rms": 0.6258360147476196,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.0655359998345375,
+        "p10_ms": 0.0655359998345375,
+        "p90_ms": 0.06758400052785873,
+        "min_ms": 0.06351999938488007,
+        "mean_ms": 0.06588447988033294,
+        "cv": 0.012018642477929308,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1280.000003231689,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 44.64000000000008,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8768000000000257
+          },
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 43.763200000000055
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 562323456,
+        "workspace_bytes": 478433280,
+        "resident_bytes": 83890176,
+        "allocation_count": 5
+      },
+      "fwd_bwd": {
+        "median_ms": 0.7151039838790894,
+        "p10_ms": 0.705407977104187,
+        "p90_ms": 0.7220479846000671,
+        "min_ms": 0.7016639709472656,
+        "mean_ms": 0.7151795160770417,
+        "cv": 0.009655384179421153,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 3.0,
+        "total_cuda_us": 158.99733333333336,
+        "by_name": {
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 33.205333333333364
+          },
+          "attnres_bwd_kernel_dv": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 107.08266666666653
+          },
+          "attnres_bwd_kernel_dqdw": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 18.70933333333346
+          }
+        }
+      },
+      "fwd_bwd_input_form": "separate leaves",
+      "fwd_bwd_stacked_leaf": {
+        "median_ms": 1.3926399946212769,
+        "p10_ms": 1.3824000358581543,
+        "p90_ms": 1.410048007965088,
+        "min_ms": 1.2881920337677002,
+        "mean_ms": 1.3873772835731506,
+        "cv": 0.019250402287199923,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fraction_of_speed_of_light": 1.0
+    },
+    {
+      "impl": "catswe",
+      "shape": {
+        "n": 4,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016588443402778246,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016588443402778246,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.014912128448486328,
+        "max_abs_err_over_rms": 0.02382753324686808,
+        "output_rms": 0.6258360147476196,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.06348799914121628,
+        "p10_ms": 0.06348799914121628,
+        "p90_ms": 0.0655359998345375,
+        "min_ms": 0.06143999844789505,
+        "mean_ms": 0.06424607940018177,
+        "cv": 0.01946839706659652,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1321.2903404533554,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 15.846199999999953,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 15.846199999999953
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 562319360,
+        "workspace_bytes": 478429184,
+        "resident_bytes": 83890176,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 0.6830080151557922,
+        "p10_ms": 0.6717759966850281,
+        "p90_ms": 0.6950719952583313,
+        "min_ms": 0.6636160016059875,
+        "mean_ms": 0.6839513576030731,
+        "cv": 0.0212815760473964,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 10.0,
+        "total_cuda_us": 326.87200000000047,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 54.101666666666766
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 5.397333333333336
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 4.0,
+            "cuda_us_per_call": 3.359666666666726
+          },
+          "phase_1_batched_attention_backward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 148.80133333333342
+          },
+          "reduce_grad_queries_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 14.400333333333416
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 100.8116666666668
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 1.032258075872983
+    },
+    {
+      "impl": "speed_of_light",
+      "shape": {
+        "n": 8,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "forward": {
+        "median_ms": 0.1085439994931221,
+        "p10_ms": 0.1085439994931221,
+        "p90_ms": 0.11059200018644333,
+        "min_ms": 0.10646399855613708,
+        "mean_ms": 0.10864533285299936,
+        "cv": 0.008745991612811994,
+        "reps": 60,
+        "warmup": 10,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1391.0943461187626,
+      "note": "ceiling, not an implementation"
+    },
+    {
+      "impl": "switchyard",
+      "shape": {
+        "n": 8,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016588904618106024,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016588904618106024,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.007809162139892578,
+        "max_abs_err_over_rms": 0.016210145928555023,
+        "output_rms": 0.48174533247947693,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.10649599879980087,
+        "p10_ms": 0.10649599879980087,
+        "p90_ms": 0.11059200018644333,
+        "min_ms": 0.10444799810647964,
+        "mean_ms": 0.10768351919949054,
+        "cv": 0.01477437510917823,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1417.8461698251365,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 86.25919999999996,
+        "by_name": {
+          "_fwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 86.25919999999996
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 629280768,
+        "workspace_bytes": 478281728,
+        "resident_bytes": 150999040,
+        "allocation_count": 1
+      },
+      "fwd_bwd": {
+        "median_ms": 0.30774399638175964,
+        "p10_ms": 0.3051519989967346,
+        "p90_ms": 0.3112959861755371,
+        "min_ms": 0.3031040132045746,
+        "mean_ms": 0.30795711994171143,
+        "cv": 0.007754573272159069,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 4.0,
+        "total_cuda_us": 286.82366666666667,
+        "by_name": {
+          "_fwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 95.26299999999999
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8106666666665964
+          },
+          "_bwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 189.32066666666665
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.4293333333334128
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 1.0192307759578012
+    },
+    {
+      "impl": "liger",
+      "shape": {
+        "n": 8,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.002109285297640576,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016588904618106024,
+        "err_vs_dtype_floor": 1.271503662356578,
+        "max_abs_err": 0.012181758880615234,
+        "max_abs_err_over_rms": 0.025286719059461144,
+        "output_rms": 0.48174533247947693,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.11878400295972824,
+        "p10_ms": 0.11673600226640701,
+        "p90_ms": 0.12083200365304947,
+        "min_ms": 0.11673600226640701,
+        "mean_ms": 0.11878464281558991,
+        "cv": 0.012895051246801617,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1271.172382119437,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 83.51379999999999,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.9599999999999909
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 82.5538
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 629547008,
+        "workspace_bytes": 478547968,
+        "resident_bytes": 150999040,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 0.3543039858341217,
+        "p10_ms": 0.3461120128631592,
+        "p90_ms": 0.3614720106124878,
+        "min_ms": 0.34406399726867676,
+        "mean_ms": 0.35415296018123626,
+        "cv": 0.01821265728918245,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 7.0,
+        "total_cuda_us": 310.2219999999999,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8426666666666923
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 96.65166666666664
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 1.6639999999999115
+          },
+          "_attn_res_bwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 208.55700000000004
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 2.5066666666665847
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.9137930764121677
+    },
+    {
+      "impl": "fla",
+      "shape": {
+        "n": 8,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016588904618106024,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016588904618106024,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.007809162139892578,
+        "max_abs_err_over_rms": 0.016210145928555023,
+        "output_rms": 0.48174533247947693,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.10751999914646149,
+        "p10_ms": 0.10649599879980087,
+        "p90_ms": 0.10956799983978271,
+        "min_ms": 0.10547199845314026,
+        "mean_ms": 0.10768351919949054,
+        "cv": 0.011705136480869361,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1404.3428682911153,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 86.52700000000004,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.851200000000017
+          },
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 85.67580000000002
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 629563392,
+        "workspace_bytes": 478564352,
+        "resident_bytes": 150999040,
+        "allocation_count": 5
+      },
+      "fwd_bwd": {
+        "median_ms": 0.8643839955329895,
+        "p10_ms": 0.8562880158424377,
+        "p90_ms": 1.0060160160064697,
+        "min_ms": 0.8504639863967896,
+        "mean_ms": 0.8927270376682281,
+        "cv": 0.06622391246260366,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 3.0,
+        "total_cuda_us": 298.98666666666685,
+        "by_name": {
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 76.4799999999999
+          },
+          "attnres_bwd_kernel_dv": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 201.1840000000001
+          },
+          "attnres_bwd_kernel_dqdw": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 21.322666666666844
+          }
+        }
+      },
+      "fwd_bwd_input_form": "separate leaves",
+      "fwd_bwd_stacked_leaf": {
+        "median_ms": 3.5102720260620117,
+        "p10_ms": 3.502079963684082,
+        "p90_ms": 3.522559881210327,
+        "min_ms": 3.358720064163208,
+        "mean_ms": 3.5083468914031983,
+        "cv": 0.0064574110830799706,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fraction_of_speed_of_light": 1.0095238128235635
+    },
+    {
+      "impl": "catswe",
+      "shape": {
+        "n": 8,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016588904618106024,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016588904618106024,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.007809162139892578,
+        "max_abs_err_over_rms": 0.016210145928555023,
+        "output_rms": 0.48174533247947693,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.1085439994931221,
+        "p10_ms": 0.10649599879980087,
+        "p90_ms": 0.1085439994931221,
+        "min_ms": 0.10649599879980087,
+        "mean_ms": 0.10805279932916165,
+        "cv": 0.011406364994852888,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1391.0943461187626,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 85.90020000000004,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 85.90020000000004
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 629559296,
+        "workspace_bytes": 478560256,
+        "resident_bytes": 150999040,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 0.9779199957847595,
+        "p10_ms": 0.9687039852142334,
+        "p90_ms": 1.0670080184936523,
+        "min_ms": 0.9646080136299133,
+        "mean_ms": 0.9899590396881104,
+        "cv": 0.03416336856190622,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 10.0,
+        "total_cuda_us": 664.0176666666665,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 101.04633333333341
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 5.4613333333333385
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 4.0,
+            "cuda_us_per_call": 3.3493333333331825
+          },
+          "phase_1_batched_attention_backward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 288.27
+          },
+          "reduce_grad_queries_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 18.67733333333331
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 247.21333333333322
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 1.0
+    },
+    {
+      "impl": "speed_of_light",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "forward": {
+        "median_ms": 0.12083200365304947,
+        "p10_ms": 0.11878400295972824,
+        "p90_ms": 0.12083200365304947,
+        "min_ms": 0.11875200271606445,
+        "mean_ms": 0.11994400322437286,
+        "cv": 0.00902193767305447,
+        "reps": 60,
+        "warmup": 10,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1388.4745342941758,
+      "note": "ceiling, not an implementation"
+    },
+    {
+      "impl": "switchyard",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016579430403132899,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016579430403132899,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.007812023162841797,
+        "max_abs_err_over_rms": 0.017042041300138297,
+        "output_rms": 0.45839715003967285,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.1228799968957901,
+        "p10_ms": 0.12083200365304947,
+        "p90_ms": 0.12697599828243256,
+        "min_ms": 0.12083200365304947,
+        "mean_ms": 0.12359679833054543,
+        "cv": 0.015430507558048367,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1365.3333678245554,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 111.73920000000005,
+        "by_name": {
+          "_fwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 111.73920000000005
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 646057984,
+        "workspace_bytes": 478281728,
+        "resident_bytes": 167776256,
+        "allocation_count": 1
+      },
+      "fwd_bwd": {
+        "median_ms": 0.3604480028152466,
+        "p10_ms": 0.3563520014286041,
+        "p90_ms": 0.3624959886074066,
+        "min_ms": 0.3543039858341217,
+        "mean_ms": 0.35977727711200713,
+        "cv": 0.005710951240162425,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 4.0,
+        "total_cuda_us": 345.0313333333332,
+        "by_name": {
+          "_fwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 119.252
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8853333333333163
+          },
+          "_bwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 223.49666666666664
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.39733333333326
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.9833333879030168
+    },
+    {
+      "impl": "liger",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0021425618857568688,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016579430403132899,
+        "err_vs_dtype_floor": 1.2923012634692226,
+        "max_abs_err": 0.011710643768310547,
+        "max_abs_err_over_rms": 0.02554693842947546,
+        "output_rms": 0.45839715003967285,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.13312000036239624,
+        "p10_ms": 0.13312000036239624,
+        "p90_ms": 0.1372160017490387,
+        "min_ms": 0.131071999669075,
+        "mean_ms": 0.1341443206369877,
+        "cv": 0.013568413671569083,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1260.3076888767218,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 112.1342,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.1394000000000006
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 110.99480000000001
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 646356992,
+        "workspace_bytes": 478580736,
+        "resident_bytes": 167776256,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 0.37273600697517395,
+        "p10_ms": 0.37068799138069153,
+        "p90_ms": 0.374783992767334,
+        "min_ms": 0.37068799138069153,
+        "mean_ms": 0.3731097596883774,
+        "cv": 0.004213718358897564,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 7.0,
+        "total_cuda_us": 349.32266666666686,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8746666666667124
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 112.49066666666663
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 1.9090000000001055
+          },
+          "_attn_res_bwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 231.53100000000003
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 2.517333333333378
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.9076923326630497
+    },
+    {
+      "impl": "fla",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016579430403132899,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016579430403132899,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.007812023162841797,
+        "max_abs_err_over_rms": 0.017042041300138297,
+        "output_rms": 0.45839715003967285,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.11878400295972824,
+        "p10_ms": 0.11776000261306763,
+        "p90_ms": 0.12083200365304947,
+        "min_ms": 0.1157120019197464,
+        "mean_ms": 0.1190393626689911,
+        "cv": 0.01344485064056959,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1412.4137579104856,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 95.58560000000003,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8447999999999979
+          },
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 94.74080000000004
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 646373376,
+        "workspace_bytes": 478597120,
+        "resident_bytes": 167776256,
+        "allocation_count": 5
+      },
+      "fwd_bwd": {
+        "median_ms": 0.9558079838752747,
+        "p10_ms": 0.9423040151596069,
+        "p90_ms": 1.1050560474395752,
+        "min_ms": 0.9394879937171936,
+        "mean_ms": 1.0047212827205658,
+        "cv": 0.07310352496252633,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 3.0,
+        "total_cuda_us": 337.9423333333331,
+        "by_name": {
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 81.17333333333322
+          },
+          "attnres_bwd_kernel_dv": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 235.8516666666667
+          },
+          "attnres_bwd_kernel_dqdw": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 20.917333333333243
+          }
+        }
+      },
+      "fwd_bwd_input_form": "separate leaves",
+      "fwd_bwd_stacked_leaf": {
+        "median_ms": 4.146143913269043,
+        "p10_ms": 4.136960029602051,
+        "p90_ms": 4.178944110870361,
+        "min_ms": 4.122623920440674,
+        "mean_ms": 4.1525849342346195,
+        "cv": 0.006746718476592014,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fraction_of_speed_of_light": 1.0172413847175665
+    },
+    {
+      "impl": "catswe",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016579430403132899,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016579430403132899,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.007812023162841797,
+        "max_abs_err_over_rms": 0.017042041300138297,
+        "output_rms": 0.45839715003967285,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.12083200365304947,
+        "p10_ms": 0.11878400295972824,
+        "p90_ms": 0.1228799968957901,
+        "min_ms": 0.11878400295972824,
+        "mean_ms": 0.12085184223949909,
+        "cv": 0.010849778336749558,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1388.4745342941758,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 98.6754,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 98.6754
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 646369280,
+        "workspace_bytes": 478593024,
+        "resident_bytes": 167776256,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 1.0455039739608765,
+        "p10_ms": 1.0332159996032715,
+        "p90_ms": 1.1376639604568481,
+        "min_ms": 1.0270719528198242,
+        "mean_ms": 1.0665145540237426,
+        "cv": 0.040657772359977834,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 10.0,
+        "total_cuda_us": 742.2890000000002,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 110.87033333333336
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 5.2053333333333285
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 4.0,
+            "cuda_us_per_call": 3.4133333333332607
+          },
+          "phase_1_batched_attention_backward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 325.8373333333334
+          },
+          "reduce_grad_queries_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 18.880333333333358
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 278.0823333333335
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 1.0
+    },
+    {
+      "impl": "speed_of_light",
+      "shape": {
+        "n": 16,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "forward": {
+        "median_ms": 0.19660800695419312,
+        "p10_ms": 0.19660800695419312,
+        "p90_ms": 0.19865599274635315,
+        "min_ms": 0.19660800695419312,
+        "mean_ms": 0.1975978672504425,
+        "cv": 0.005829828824930328,
+        "reps": 60,
+        "warmup": 10,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1450.6666153553479,
+      "note": "ceiling, not an implementation"
+    },
+    {
+      "impl": "switchyard",
+      "shape": {
+        "n": 16,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016583400014231868,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016583400014231868,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.0077970027923583984,
+        "max_abs_err_over_rms": 0.02136611871465185,
+        "output_rms": 0.3649236857891083,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.19660800695419312,
+        "p10_ms": 0.1945600062608719,
+        "p90_ms": 0.19865599274635315,
+        "min_ms": 0.1945279985666275,
+        "mean_ms": 0.19668896317481996,
+        "cv": 0.007783235981784157,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1450.6666153553479,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 177.6449999999999,
+        "by_name": {
+          "_fwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 177.6449999999999
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 763498496,
+        "workspace_bytes": 478281728,
+        "resident_bytes": 285216768,
+        "allocation_count": 1
+      },
+      "fwd_bwd": {
+        "median_ms": 0.5980160236358643,
+        "p10_ms": 0.5898240208625793,
+        "p90_ms": 0.603551983833313,
+        "min_ms": 0.5851200222969055,
+        "mean_ms": 0.5975456011295318,
+        "cv": 0.009123623698738653,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 4.0,
+        "total_cuda_us": 574.0029999999999,
+        "by_name": {
+          "_fwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 175.10333333333335
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.9813333333332821
+          },
+          "_bwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 396.585
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.3333333333333333
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 1.0
+    },
+    {
+      "impl": "liger",
+      "shape": {
+        "n": 16,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0022287747158506216,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016583400014231868,
+        "err_vs_dtype_floor": 1.3439793491912926,
+        "max_abs_err": 0.009761333465576172,
+        "max_abs_err_over_rms": 0.026748972033613923,
+        "output_rms": 0.3649236857891083,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.3031040132045746,
+        "p10_ms": 0.29900801181793213,
+        "p90_ms": 0.30720001459121704,
+        "min_ms": 0.2908160090446472,
+        "mean_ms": 0.302345926463604,
+        "cv": 0.011401134893473318,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 940.9729319799566,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 200.60000000000002,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.3312000000000352
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 199.2688
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 764026880,
+        "workspace_bytes": 478810112,
+        "resident_bytes": 285216768,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 0.6789119839668274,
+        "p10_ms": 0.6758400201797485,
+        "p90_ms": 0.681984007358551,
+        "min_ms": 0.6706879734992981,
+        "mean_ms": 0.6784582424163819,
+        "cv": 0.004233485737314835,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 7.0,
+        "total_cuda_us": 599.2653333333332,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8750000000000379
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 208.57599999999988
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 2.005333333333359
+          },
+          "_attn_res_bwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 385.2916666666666
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 2.5173333333332266
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.6486486433338515
+    },
+    {
+      "impl": "fla",
+      "shape": {
+        "n": 16,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016583400014231868,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016583400014231868,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.0077970027923583984,
+        "max_abs_err_over_rms": 0.02136611871465185,
+        "output_rms": 0.3649236857891083,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.2088959962129593,
+        "p10_ms": 0.20479999482631683,
+        "p90_ms": 0.21503999829292297,
+        "min_ms": 0.19968000054359436,
+        "mean_ms": 0.2094489598274231,
+        "cv": 0.02581085327835812,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1365.3333580852336,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 166.15060000000005,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8256000000000085
+          },
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 165.32500000000005
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 764043264,
+        "workspace_bytes": 478826496,
+        "resident_bytes": 285216768,
+        "allocation_count": 5
+      },
+      "fwd_bwd": {
+        "median_ms": 1.380031943321228,
+        "p10_ms": 1.2048319578170776,
+        "p90_ms": 1.5349119901657104,
+        "min_ms": 1.1992319822311401,
+        "mean_ms": 1.3387891197204589,
+        "cv": 0.09086900690792235,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 3.0,
+        "total_cuda_us": 647.5230000000003,
+        "by_name": {
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 159.9686666666668
+          },
+          "attnres_bwd_kernel_dv": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 465.14366666666683
+          },
+          "attnres_bwd_kernel_dqdw": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 22.410666666666657
+          }
+        }
+      },
+      "fwd_bwd_input_form": "separate leaves",
+      "fwd_bwd_stacked_leaf": {
+        "median_ms": 11.975680351257324,
+        "p10_ms": 11.96339225769043,
+        "p90_ms": 11.990015983581543,
+        "min_ms": 11.95315170288086,
+        "mean_ms": 11.979406108856201,
+        "cv": 0.0018142238746816878,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fraction_of_speed_of_light": 0.9411765209408841
+    },
+    {
+      "impl": "catswe",
+      "shape": {
+        "n": 16,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016583400014231868,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016583400014231868,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.0077970027923583984,
+        "max_abs_err_over_rms": 0.02136611871465185,
+        "output_rms": 0.3649236857891083,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.19865599274635315,
+        "p10_ms": 0.19660800695419312,
+        "p90_ms": 0.19865599274635315,
+        "min_ms": 0.19660800695419312,
+        "mean_ms": 0.19798047810792924,
+        "cv": 0.005859835248345789,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1435.7113926291854,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 178.20159999999996,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 178.20159999999996
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 764039168,
+        "workspace_bytes": 478822400,
+        "resident_bytes": 285216768,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 1.628159999847412,
+        "p10_ms": 1.5226880311965942,
+        "p90_ms": 1.696768045425415,
+        "min_ms": 1.516543984413147,
+        "mean_ms": 1.6252927994728088,
+        "cv": 0.04228580187102246,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 10.0,
+        "total_cuda_us": 1304.342666666667,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 191.99066666666667
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 5.173333333333555
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 4.0,
+            "cuda_us_per_call": 3.4886666666667074
+          },
+          "phase_1_batched_attention_backward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 568.7729999999998
+          },
+          "reduce_grad_queries_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 21.077666666666573
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 513.8393333333337
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.9896907927928712
+    },
+    {
+      "impl": "speed_of_light",
+      "shape": {
+        "n": 32,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "forward": {
+        "median_ms": 0.37273600697517395,
+        "p10_ms": 0.3686720132827759,
+        "p90_ms": 0.3768320083618164,
+        "min_ms": 0.3686400055885315,
+        "mean_ms": 0.37355573326349256,
+        "cv": 0.008619987916404554,
+        "reps": 60,
+        "warmup": 10,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1485.3626095663888,
+      "note": "ceiling, not an implementation"
+    },
+    {
+      "impl": "switchyard",
+      "shape": {
+        "n": 32,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016606184979429388,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016606184979429388,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.007681846618652344,
+        "max_abs_err_over_rms": 0.02851108238913048,
+        "output_rms": 0.2694337069988251,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.3911679983139038,
+        "p10_ms": 0.3829759955406189,
+        "p90_ms": 0.3973119854927063,
+        "min_ms": 0.38092800974845886,
+        "mean_ms": 0.39096320182085037,
+        "cv": 0.014183189389608664,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1415.3717338495298,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 379.3102000000002,
+        "by_name": {
+          "_fwd_tiled": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 379.3102000000002
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 1031933952,
+        "workspace_bytes": 478281728,
+        "resident_bytes": 553652224,
+        "allocation_count": 1
+      },
+      "fwd_bwd": {
+        "median_ms": 1.5544320344924927,
+        "p10_ms": 1.546239972114563,
+        "p90_ms": 1.5667200088500977,
+        "min_ms": 1.5431679487228394,
+        "mean_ms": 1.5553945565223695,
+        "cv": 0.004992062000064709,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 5.0,
+        "total_cuda_us": 1563.5926666666667,
+        "by_name": {
+          "_fwd_tiled": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 382.5173333333332
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.0986666666667209
+          },
+          "_bwd_stats": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 440.40433333333357
+          },
+          "_bwd_apply": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 737.9403333333333
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.6319999999999102
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.9528796030907963
+    },
+    {
+      "impl": "liger",
+      "shape": {
+        "n": 32,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.002373531938601333,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016606184979429388,
+        "err_vs_dtype_floor": 1.42930597337167,
+        "max_abs_err": 0.009922027587890625,
+        "max_abs_err_over_rms": 0.03682548742104451,
+        "output_rms": 0.2694337069988251,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.6799359917640686,
+        "p10_ms": 0.6758400201797485,
+        "p90_ms": 0.6840320229530334,
+        "min_ms": 0.6737920045852661,
+        "mean_ms": 0.6794486343860626,
+        "cv": 0.003861963327372451,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 814.2650701039968,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 561.9980000000002,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.331400000000133
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 560.6666
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 1032986624,
+        "workspace_bytes": 479334400,
+        "resident_bytes": 553652224,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 1.5124479532241821,
+        "p10_ms": 1.5032320022583008,
+        "p90_ms": 1.5370240211486816,
+        "min_ms": 1.4940160512924194,
+        "mean_ms": 1.51513151884079,
+        "cv": 0.008013327568245823,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 7.0,
+        "total_cuda_us": 1513.147333333333,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.938666666666677
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 657.1763333333332
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 2.4956666666663145
+          },
+          "_attn_res_bwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 849.6996666666668
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 2.8370000000002924
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.5481927879830634
+    },
+    {
+      "impl": "fla",
+      "shape": {
+        "n": 32,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016606184979429388,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016606184979429388,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.007681846618652344,
+        "max_abs_err_over_rms": 0.02851108238913048,
+        "output_rms": 0.2694337069988251,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.4710400104522705,
+        "p10_ms": 0.46694400906562805,
+        "p90_ms": 0.4782080054283142,
+        "min_ms": 0.4628480076789856,
+        "mean_ms": 0.4717056006193161,
+        "cv": 0.010552358362134957,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1175.3738869621989,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 330.38739999999996,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8251999999999953
+          },
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 329.56219999999996
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 1033003008,
+        "workspace_bytes": 479350784,
+        "resident_bytes": 553652224,
+        "allocation_count": 5
+      },
+      "fwd_bwd": {
+        "median_ms": 2.297600030899048,
+        "p10_ms": 2.1221120357513428,
+        "p90_ms": 2.3089280128479004,
+        "min_ms": 1.9433599710464478,
+        "mean_ms": 2.2534707140922547,
+        "cv": 0.03787129942540334,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 3.0,
+        "total_cuda_us": 1113.9156666666668,
+        "by_name": {
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 331.59666666666675
+          },
+          "attnres_bwd_kernel_dv": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 758.8096666666667
+          },
+          "attnres_bwd_kernel_dqdw": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 23.509333333333416
+          }
+        }
+      },
+      "fwd_bwd_input_form": "separate leaves",
+      "fwd_bwd_stacked_leaf": {
+        "median_ms": 45.80659103393555,
+        "p10_ms": 45.78303909301758,
+        "p90_ms": 45.8260498046875,
+        "min_ms": 45.53523254394531,
+        "mean_ms": 45.78754417419434,
+        "cv": 0.0015235989613563924,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fraction_of_speed_of_light": 0.7913043450752524
+    },
+    {
+      "impl": "catswe",
+      "shape": {
+        "n": 32,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016606184979429388,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016606184979429388,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.007681846618652344,
+        "max_abs_err_over_rms": 0.02851108238913048,
+        "output_rms": 0.2694337069988251,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.41785600781440735,
+        "p10_ms": 0.4137279987335205,
+        "p90_ms": 0.4219200015068054,
+        "min_ms": 0.4116800129413605,
+        "mean_ms": 0.4187379202246666,
+        "cv": 0.007490527915823207,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1324.9734780549222,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 387.5504000000002,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 387.5504000000002
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 1032998912,
+        "workspace_bytes": 479346688,
+        "resident_bytes": 553652224,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 3.8451199531555176,
+        "p10_ms": 3.831808090209961,
+        "p90_ms": 3.8543360233306885,
+        "min_ms": 3.7959680557250977,
+        "mean_ms": 3.8486809492111207,
+        "cv": 0.011732933800430138,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 10.0,
+        "total_cuda_us": 3797.9700000000016,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 403.6723333333339
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 6.4533333333333
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 4.0,
+            "cuda_us_per_call": 3.7440000000003693
+          },
+          "phase_1_batched_attention_backward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 2323.0253333333335
+          },
+          "reduce_grad_queries_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 22.14433333333348
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 1038.9306666666673
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.892020217502117
+    },
+    {
+      "impl": "speed_of_light",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 1024
+      },
+      "forward": {
+        "median_ms": 0.06963200122117996,
+        "p10_ms": 0.06758400052785873,
+        "p90_ms": 0.06963200122117996,
+        "min_ms": 0.06758400052785873,
+        "mean_ms": 0.06923946775496007,
+        "cv": 0.016221433270852195,
+        "reps": 60,
+        "warmup": 10,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1204.7058612252606,
+      "note": "ceiling, not an implementation"
+    },
+    {
+      "impl": "switchyard",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 1024
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016599268393847585,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016599268393847585,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.00780940055847168,
+        "max_abs_err_over_rms": 0.016966872964002764,
+        "output_rms": 0.460273414850235,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.06963200122117996,
+        "p10_ms": 0.06758400052785873,
+        "p90_ms": 0.07372800260782242,
+        "min_ms": 0.0655359998345375,
+        "mean_ms": 0.0704720015078783,
+        "cv": 0.03023044508393231,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1204.7058612252606,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 27.090800000000012,
+        "by_name": {
+          "_fwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 27.090800000000012
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 528615424,
+        "workspace_bytes": 444727296,
+        "resident_bytes": 83888128,
+        "allocation_count": 1
+      },
+      "fwd_bwd": {
+        "median_ms": 0.1796800047159195,
+        "p10_ms": 0.17958399653434753,
+        "p90_ms": 0.18172800540924072,
+        "min_ms": 0.17795200645923615,
+        "mean_ms": 0.1801689612865448,
+        "cv": 0.006973227094400931,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 4.0,
+        "total_cuda_us": 136.26666666666657,
+        "by_name": {
+          "_fwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 32.69333333333335
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8213333333333518
+          },
+          "_bwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 101.7063333333333
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.0456666666665722
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 1.0
+    },
+    {
+      "impl": "liger",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 1024
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0021412143884411592,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016599268393847585,
+        "err_vs_dtype_floor": 1.2899450371166883,
+        "max_abs_err": 0.01146872527897358,
+        "max_abs_err_over_rms": 0.024917201187266712,
+        "output_rms": 0.460273414850235,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.10444799810647964,
+        "p10_ms": 0.10444799810647964,
+        "p90_ms": 0.10649599879980087,
+        "min_ms": 0.10444799810647964,
+        "mean_ms": 0.1055945584923029,
+        "cv": 0.012357372114173029,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 803.1372694619022,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 37.13300000000002,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8509999999999763
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 36.28200000000004
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 528912384,
+        "workspace_bytes": 445024256,
+        "resident_bytes": 83888128,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 0.23744000494480133,
+        "p10_ms": 0.23228800296783447,
+        "p90_ms": 0.24726399779319763,
+        "min_ms": 0.22755199670791626,
+        "mean_ms": 0.2388748797774315,
+        "cv": 0.026909655412879235,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 7.0,
+        "total_cuda_us": 144.15800000000007,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8106666666667669
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 40.0316666666666
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 1.6420000000000528
+          },
+          "_attn_res_bwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 99.53000000000002
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 2.143666666666642
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.6666666904443064
+    },
+    {
+      "impl": "fla",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 1024
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016599268393847585,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016599268393847585,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.00780940055847168,
+        "max_abs_err_over_rms": 0.016966872964002764,
+        "output_rms": 0.460273414850235,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.0655359998345375,
+        "p10_ms": 0.06348799914121628,
+        "p90_ms": 0.06860800087451935,
+        "min_ms": 0.062463998794555664,
+        "mean_ms": 0.06554559983313084,
+        "cv": 0.032639634206299346,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1280.000003231689,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 50.43859999999995,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.9023999999999888
+          },
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 49.536199999999965
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 528928768,
+        "workspace_bytes": 445040640,
+        "resident_bytes": 83888128,
+        "allocation_count": 5
+      },
+      "fwd_bwd": {
+        "median_ms": 0.8023359775543213,
+        "p10_ms": 0.7867519855499268,
+        "p90_ms": 1.118399977684021,
+        "min_ms": 0.776416003704071,
+        "mean_ms": 0.9253407979011535,
+        "cv": 0.17120294719319648,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 3.0,
+        "total_cuda_us": 150.04933333333352,
+        "by_name": {
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 34.40000000000001
+          },
+          "attnres_bwd_kernel_dv": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 98.11300000000006
+          },
+          "attnres_bwd_kernel_dqdw": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 17.53633333333346
+          }
+        }
+      },
+      "fwd_bwd_input_form": "separate leaves",
+      "fwd_bwd_stacked_leaf": {
+        "median_ms": 2.3101439476013184,
+        "p10_ms": 2.298880100250244,
+        "p90_ms": 2.3214080333709717,
+        "min_ms": 2.2896640300750732,
+        "mean_ms": 2.3107379150390623,
+        "cv": 0.00403833293234166,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fraction_of_speed_of_light": 1.062500021316282
+    },
+    {
+      "impl": "catswe",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 1024
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016599268393847585,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016599268393847585,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.00780940055847168,
+        "max_abs_err_over_rms": 0.016966872964002764,
+        "output_rms": 0.460273414850235,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.07168000191450119,
+        "p10_ms": 0.06963200122117996,
+        "p90_ms": 0.07372800260782242,
+        "min_ms": 0.06963200122117996,
+        "mean_ms": 0.07223296210169793,
+        "cv": 0.022272678486595636,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1170.2856830285527,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 19.558399999999892,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 19.558399999999892
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 528926720,
+        "workspace_bytes": 445038592,
+        "resident_bytes": 83888128,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 0.6543359756469727,
+        "p10_ms": 0.6379200220108032,
+        "p90_ms": 0.7025600075721741,
+        "min_ms": 0.5234559774398804,
+        "mean_ms": 0.6502079987525939,
+        "cv": 0.06485880349968261,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 10.0,
+        "total_cuda_us": 333.0916666666671,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 61.30233333333339
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 2.954666666666602
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 4.0,
+            "cuda_us_per_call": 3.34933333333341
+          },
+          "phase_1_batched_attention_backward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 146.45500000000015
+          },
+          "reduce_grad_queries_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 8.928000000000035
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 110.10233333333349
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.9714285625192358
+    },
+    {
+      "impl": "speed_of_light",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 4096
+      },
+      "forward": {
+        "median_ms": 0.22323200106620789,
+        "p10_ms": 0.22323200106620789,
+        "p90_ms": 0.2252800017595291,
+        "min_ms": 0.22118400037288666,
+        "mean_ms": 0.22411946803331376,
+        "cv": 0.006323651048923821,
+        "reps": 60,
+        "warmup": 10,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1503.119258875799,
+      "note": "ceiling, not an implementation"
+    },
+    {
+      "impl": "switchyard",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 4096
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016586989616351362,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016586989616351362,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.007811307907104492,
+        "max_abs_err_over_rms": 0.016968242744843605,
+        "output_rms": 0.4603486657142639,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.23552000522613525,
+        "p10_ms": 0.23347200453281403,
+        "p90_ms": 0.2396160066127777,
+        "min_ms": 0.2314240038394928,
+        "mean_ms": 0.23613408505916594,
+        "cv": 0.009381732440235666,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1424.6956205602412,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 209.824,
+        "by_name": {
+          "_fwd_tiled": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 209.824
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 880943104,
+        "workspace_bytes": 545390592,
+        "resident_bytes": 335552512,
+        "allocation_count": 1
+      },
+      "fwd_bwd": {
+        "median_ms": 0.9175040125846863,
+        "p10_ms": 0.9134079813957214,
+        "p90_ms": 0.9236479997634888,
+        "min_ms": 0.913375973701477,
+        "mean_ms": 0.9183225667476654,
+        "cv": 0.0035413220569773477,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 5.0,
+        "total_cuda_us": 898.2720000000003,
+        "by_name": {
+          "_fwd_tiled": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 219.00800000000004
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.9386666666668285
+          },
+          "_bwd_stats": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 293.312
+          },
+          "_bwd_apply": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 383.328
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.6853333333333467
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.9478260704515142
+    },
+    {
+      "impl": "liger",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 4096
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0021465348177395122,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016586989616351362,
+        "err_vs_dtype_floor": 1.2941075308948589,
+        "max_abs_err": 0.012874126434326172,
+        "max_abs_err_over_rms": 0.0279660339937144,
+        "output_rms": 0.4603486657142639,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.2764799892902374,
+        "p10_ms": 0.27238398790359497,
+        "p90_ms": 0.2826240062713623,
+        "min_ms": 0.27033600211143494,
+        "mean_ms": 0.27764767736196516,
+        "cv": 0.014042618725473154,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1213.6296766409348,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 216.929,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.26099999999999
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 215.66800000000003
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 881246208,
+        "workspace_bytes": 545693696,
+        "resident_bytes": 335552512,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 0.7526400089263916,
+        "p10_ms": 0.7485439777374268,
+        "p90_ms": 0.7567359805107117,
+        "min_ms": 0.7444480061531067,
+        "mean_ms": 0.7524703991413116,
+        "cv": 0.00448949357297965,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 7.0,
+        "total_cuda_us": 709.3736666666665,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.863999999999938
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 218.96466666666666
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 1.8883333333332455
+          },
+          "_attn_res_bwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 485.19266666666675
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 2.463999999999942
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.8074074425396046
+    },
+    {
+      "impl": "fla",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 4096
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016586989616351362,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016586989616351362,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.007811307907104492,
+        "max_abs_err_over_rms": 0.016968242744843605,
+        "output_rms": 0.4603486657142639,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.2252800017595291,
+        "p10_ms": 0.22323200106620789,
+        "p90_ms": 0.22732800245285034,
+        "min_ms": 0.22220799326896667,
+        "mean_ms": 0.22538207799196244,
+        "cv": 0.009075534659057699,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1489.4545338212952,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 186.66099999999992,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8575999999999567
+          },
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 185.80339999999995
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 881262592,
+        "workspace_bytes": 545710080,
+        "resident_bytes": 335552512,
+        "allocation_count": 5
+      },
+      "fwd_bwd": {
+        "median_ms": 1.0321919918060303,
+        "p10_ms": 1.0240000486373901,
+        "p90_ms": 1.1724799871444702,
+        "min_ms": 1.0127359628677368,
+        "mean_ms": 1.082507519721985,
+        "cv": 0.06550378102407522,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 3.0,
+        "total_cuda_us": 717.3466666666669,
+        "by_name": {
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 204.385
+          },
+          "attnres_bwd_kernel_dv": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 473.35633333333334
+          },
+          "attnres_bwd_kernel_dqdw": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 39.60533333333357
+          }
+        }
+      },
+      "fwd_bwd_input_form": "separate leaves",
+      "fwd_bwd_stacked_leaf": {
+        "median_ms": 7.786464214324951,
+        "p10_ms": 7.775231838226318,
+        "p90_ms": 7.798783779144287,
+        "min_ms": 7.769087791442871,
+        "mean_ms": 7.786716785430908,
+        "cv": 0.001779472921623528,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fraction_of_speed_of_light": 0.9909090879024969
+    },
+    {
+      "impl": "catswe",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 4096
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016586989616351362,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016586989616351362,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.007811307907104492,
+        "max_abs_err_over_rms": 0.016968242744843605,
+        "output_rms": 0.4603486657142639,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.2252800017595291,
+        "p10_ms": 0.22323200106620789,
+        "p90_ms": 0.22732800245285034,
+        "min_ms": 0.22118400037288666,
+        "mean_ms": 0.22466560155153276,
+        "cv": 0.008204195975084866,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1489.4545338212952,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 196.9804000000001,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 196.9804000000001
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 881254400,
+        "workspace_bytes": 545701888,
+        "resident_bytes": 335552512,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 1.8851840496063232,
+        "p10_ms": 1.7233920097351074,
+        "p90_ms": 1.8954240083694458,
+        "min_ms": 1.7172479629516602,
+        "mean_ms": 1.8438540768623353,
+        "cv": 0.03515944525386301,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 10.0,
+        "total_cuda_us": 1536.284333333333,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 215.51033333333325
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 9.823999999999918
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 4.0,
+            "cuda_us_per_call": 3.4026666666663914
+          },
+          "phase_1_batched_attention_backward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 683.6509999999998
+          },
+          "reduce_grad_queries_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 45.547000000000025
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 578.3493333333339
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.9909090879024969
+    },
+    {
+      "impl": "speed_of_light",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 8192
+      },
+      "forward": {
+        "median_ms": 0.4423680007457733,
+        "p10_ms": 0.4403199851512909,
+        "p90_ms": 0.44646400213241577,
+        "min_ms": 0.43827199935913086,
+        "mean_ms": 0.4429141292969386,
+        "cv": 0.005717395403653969,
+        "reps": 60,
+        "warmup": 10,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1517.0370344795153,
+      "note": "ceiling, not an implementation"
+    },
+    {
+      "impl": "switchyard",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 8192
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016591429939523323,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016591429939523323,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.0078125,
+        "max_abs_err_over_rms": 0.016956613169047167,
+        "output_rms": 0.46073469519615173,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.532480001449585,
+        "p10_ms": 0.52019202709198,
+        "p90_ms": 0.5447679758071899,
+        "min_ms": 0.5038080215454102,
+        "mean_ms": 0.5315939193964004,
+        "cv": 0.019089689441938524,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1260.3076888767218,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 466.13200000000006,
+        "by_name": {
+          "_fwd_tiled": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 466.13200000000006
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 1350713344,
+        "workspace_bytes": 679608320,
+        "resident_bytes": 671105024,
+        "allocation_count": 1
+      },
+      "fwd_bwd": {
+        "median_ms": 1.9322880506515503,
+        "p10_ms": 1.9066879749298096,
+        "p90_ms": 1.9957760572433472,
+        "min_ms": 1.8984960317611694,
+        "mean_ms": 1.9458803272247314,
+        "cv": 0.018828027521146602,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 5.0,
+        "total_cuda_us": 1960.8263333333332,
+        "by_name": {
+          "_fwd_tiled": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 498.54000000000013
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.5466666666665485
+          },
+          "_bwd_stats": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 613.6659999999999
+          },
+          "_bwd_apply": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 845.3246666666665
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.7489999999997963
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.8307692299081707
+    },
+    {
+      "impl": "liger",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 8192
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0021730425842772893,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016591429939523323,
+        "err_vs_dtype_floor": 1.3097379744833022,
+        "max_abs_err": 0.013520479202270508,
+        "max_abs_err_over_rms": 0.029345476568710203,
+        "output_rms": 0.46073469519615173,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.5079360008239746,
+        "p10_ms": 0.5017920136451721,
+        "p90_ms": 0.5181760191917419,
+        "min_ms": 0.49564799666404724,
+        "mean_ms": 0.5093164810538292,
+        "cv": 0.011531284128245778,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1321.207079063817,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 450.1995999999999,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.4015999999999962
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 448.79799999999994
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 1351024640,
+        "workspace_bytes": 679919616,
+        "resident_bytes": 671105024,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 1.4223999977111816,
+        "p10_ms": 1.4183039665222168,
+        "p90_ms": 1.4736319780349731,
+        "min_ms": 1.4090559482574463,
+        "mean_ms": 1.4308140802383422,
+        "cv": 0.013931669085817406,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 7.0,
+        "total_cuda_us": 1452.1746666666668,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.0456666666667427
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 472.2463333333333
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 2.6666666666668184
+          },
+          "_attn_res_bwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 972.9733333333334
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 3.2426666666666883
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.8709128709683173
+    },
+    {
+      "impl": "fla",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 8192
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016591429939523323,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016591429939523323,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.0078125,
+        "max_abs_err_over_rms": 0.016956613169047167,
+        "output_rms": 0.46073469519615173,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.4352000057697296,
+        "p10_ms": 0.4331519901752472,
+        "p90_ms": 0.43724799156188965,
+        "min_ms": 0.43110400438308716,
+        "mean_ms": 0.4348921620845795,
+        "cv": 0.0035458305645663275,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1542.0235089681555,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 386.491,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8448000000000093
+          },
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 385.6462
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 1351041024,
+        "workspace_bytes": 679936000,
+        "resident_bytes": 671105024,
+        "allocation_count": 5
+      },
+      "fwd_bwd": {
+        "median_ms": 1.5534080266952515,
+        "p10_ms": 1.546239972114563,
+        "p90_ms": 1.5646719932556152,
+        "min_ms": 1.5370240211486816,
+        "mean_ms": 1.5542649626731873,
+        "cv": 0.005120473534593197,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 3.0,
+        "total_cuda_us": 1451.7006666666666,
+        "by_name": {
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 412.30166666666656
+          },
+          "attnres_bwd_kernel_dv": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 957.5423333333333
+          },
+          "attnres_bwd_kernel_dqdw": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 81.85666666666687
+          }
+        }
+      },
+      "fwd_bwd_input_form": "separate leaves",
+      "fwd_bwd_stacked_leaf": {
+        "median_ms": 15.167488098144531,
+        "p10_ms": 15.141887664794922,
+        "p90_ms": 15.24630355834961,
+        "min_ms": 15.121408462524414,
+        "mean_ms": 15.17942403793335,
+        "cv": 0.002663409415504076,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fraction_of_speed_of_light": 1.0164705764729158
+    },
+    {
+      "impl": "catswe",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 8192
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016591429939523323,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016591429939523323,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.0078125,
+        "max_abs_err_over_rms": 0.016956613169047167,
+        "output_rms": 0.46073469519615173,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.5058879852294922,
+        "p10_ms": 0.5017920136451721,
+        "p90_ms": 0.5120000243186951,
+        "min_ms": 0.4997439980506897,
+        "mean_ms": 0.5065820854902268,
+        "cv": 0.0064973919289439165,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1326.5557981092707,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 464.43319999999983,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 464.43319999999983
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 1351024640,
+        "workspace_bytes": 679919616,
+        "resident_bytes": 671105024,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 4.941823959350586,
+        "p10_ms": 4.919295787811279,
+        "p90_ms": 4.960256099700928,
+        "min_ms": 4.890624046325684,
+        "mean_ms": 4.93885630607605,
+        "cv": 0.003446031033617498,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 10.0,
+        "total_cuda_us": 4868.398666666667,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 514.3816666666668
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 22.773333333333085
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 4.0,
+            "cuda_us_per_call": 4.138999999999442
+          },
+          "phase_1_batched_attention_backward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 3069.967666666667
+          },
+          "reduce_grad_queries_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 90.38966666666693
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 1166.7473333333337
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.8744386379231689
+    },
+    {
+      "impl": "speed_of_light",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 8192,
+        "d": 2048
+      },
+      "forward": {
+        "median_ms": 0.22323200106620789,
+        "p10_ms": 0.22118400037288666,
+        "p90_ms": 0.2252800017595291,
+        "min_ms": 0.22118400037288666,
+        "mean_ms": 0.22299306765198706,
+        "cv": 0.007326558666372411,
+        "reps": 60,
+        "warmup": 10,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1503.119258875799,
+      "note": "ceiling, not an implementation"
+    },
+    {
+      "impl": "switchyard",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 8192,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016585658059126553,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016585658059126553,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.007811546325683594,
+        "max_abs_err_over_rms": 0.01700626932298358,
+        "output_rms": 0.4593333303928375,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.22735999524593353,
+        "p10_ms": 0.2252800017595291,
+        "p90_ms": 0.2314240038394928,
+        "min_ms": 0.2252800017595291,
+        "mean_ms": 0.22870048269629478,
+        "cv": 0.012280316945544992,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1475.8283207960321,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 217.6126,
+        "by_name": {
+          "_fwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 217.6126
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 880939008,
+        "workspace_bytes": 545390592,
+        "resident_bytes": 335548416,
+        "allocation_count": 1
+      },
+      "fwd_bwd": {
+        "median_ms": 0.6799359917640686,
+        "p10_ms": 0.6758400201797485,
+        "p90_ms": 0.6860799789428711,
+        "min_ms": 0.6737920045852661,
+        "mean_ms": 0.6807123172283173,
+        "cv": 0.005596911756763668,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 4.0,
+        "total_cuda_us": 661.975,
+        "by_name": {
+          "_fwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 214.48599999999996
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.0240000000000389
+          },
+          "_bwd_resident": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 444.97166666666664
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.4933333333334151
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.9818437972112886
+    },
+    {
+      "impl": "liger",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 8192,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.002131349551219844,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016585658059126553,
+        "err_vs_dtype_floor": 1.2850557654220003,
+        "max_abs_err": 0.013180255889892578,
+        "max_abs_err_over_rms": 0.02869431634456044,
+        "output_rms": 0.4593333303928375,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.24988800287246704,
+        "p10_ms": 0.24780799448490143,
+        "p90_ms": 0.25804799795150757,
+        "min_ms": 0.2457599937915802,
+        "mean_ms": 0.2515375982224941,
+        "cv": 0.01878572815554392,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1342.7788294872585,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 228.66819999999998,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 1.3500000000000227
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 227.31819999999993
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 881532928,
+        "workspace_bytes": 545984512,
+        "resident_bytes": 335548416,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 0.7188799977302551,
+        "p10_ms": 0.7168319821357727,
+        "p90_ms": 0.7219520211219788,
+        "min_ms": 0.7157760262489319,
+        "mean_ms": 0.7191820776462555,
+        "cv": 0.0029413823065646176,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 7.0,
+        "total_cuda_us": 693.5999999999998,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8746666666668451
+          },
+          "_attn_res_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 215.86166666666668
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 2.015333333333236
+          },
+          "_attn_res_bwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 472.19233333333324
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 2.655999999999873
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.8933282050364646
+    },
+    {
+      "impl": "fla",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 8192,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016585658059126553,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016585658059126553,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.007811546325683594,
+        "max_abs_err_over_rms": 0.01700626932298358,
+        "output_rms": 0.4593333303928375,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.22323200106620789,
+        "p10_ms": 0.22220799326896667,
+        "p90_ms": 0.22630399465560913,
+        "min_ms": 0.22015999257564545,
+        "mean_ms": 0.2246038369834423,
+        "cv": 0.03436793997727139,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1503.119258875799,
+      "forward_kernels": {
+        "total_kernels": 2.0,
+        "total_cuda_us": 186.93540000000002,
+        "by_name": {
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 0.8512000000000057
+          },
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 186.08420000000004
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 881565696,
+        "workspace_bytes": 546017280,
+        "resident_bytes": 335548416,
+        "allocation_count": 5
+      },
+      "fwd_bwd": {
+        "median_ms": 1.0598080158233643,
+        "p10_ms": 1.0475519895553589,
+        "p90_ms": 1.193984031677246,
+        "min_ms": 1.04038405418396,
+        "mean_ms": 1.0809401607513427,
+        "cv": 0.048003203068031,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 3.0,
+        "total_cuda_us": 742.9436666666666,
+        "by_name": {
+          "attnres_fwd_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 200.85333333333324
+          },
+          "attnres_bwd_kernel_dv": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 497.6636666666666
+          },
+          "attnres_bwd_kernel_dqdw": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 44.42666666666673
+          }
+        }
+      },
+      "fwd_bwd_input_form": "separate leaves",
+      "fwd_bwd_stacked_leaf": {
+        "median_ms": 7.8008317947387695,
+        "p10_ms": 7.79366397857666,
+        "p90_ms": 7.822336196899414,
+        "min_ms": 7.789567947387695,
+        "mean_ms": 7.804312295913697,
+        "cv": 0.0015103179920564376,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fraction_of_speed_of_light": 1.0
+    },
+    {
+      "impl": "catswe",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 8192,
+        "d": 2048
+      },
+      "correctness": {
+        "ok": true,
+        "rel_l2": 0.0016585658059126553,
+        "rel_l2_tol": 0.02,
+        "dtype_floor_rel_l2": 0.0016585658059126553,
+        "err_vs_dtype_floor": 1.0,
+        "max_abs_err": 0.007811546325683594,
+        "max_abs_err_over_rms": 0.01700626932298358,
+        "output_rms": 0.4593333303928375,
+        "has_nan": false,
+        "has_inf": false
+      },
+      "forward": {
+        "median_ms": 0.2252800017595291,
+        "p10_ms": 0.22323200106620789,
+        "p90_ms": 0.22732800245285034,
+        "min_ms": 0.22323200106620789,
+        "mean_ms": 0.22586336180567743,
+        "cv": 0.007143970371919298,
+        "reps": 100,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "forward_achieved_gbps": 1489.4545338212952,
+      "forward_kernels": {
+        "total_kernels": 1.0,
+        "total_cuda_us": 194.33319999999998,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 194.33319999999998
+          }
+        }
+      },
+      "forward_memory": {
+        "peak_allocated_bytes": 881561600,
+        "workspace_bytes": 546013184,
+        "resident_bytes": 335548416,
+        "allocation_count": 4
+      },
+      "fwd_bwd": {
+        "median_ms": 1.8780159950256348,
+        "p10_ms": 1.716223955154419,
+        "p90_ms": 1.8944000005722046,
+        "min_ms": 1.70905601978302,
+        "mean_ms": 1.8401068782806396,
+        "cv": 0.03647531254431679,
+        "reps": 50,
+        "warmup": 25,
+        "l2_flushed": true
+      },
+      "fwd_bwd_kernels": {
+        "total_kernels": 10.0,
+        "total_cuda_us": 1530.0029999999997,
+        "by_name": {
+          "phase_1_batched_attention_forward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 215.85233333333318
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 10.03733333333336
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)": {
+            "launches_per_call": 4.0,
+            "cuda_us_per_call": 3.370333333333216
+          },
+          "phase_1_batched_attention_backward_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 676.2386666666667
+          },
+          "reduce_grad_queries_kernel": {
+            "launches_per_call": 1.0,
+            "cuda_us_per_call": 42.17599999999993
+          },
+          "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": {
+            "launches_per_call": 2.0,
+            "cuda_us_per_call": 582.3283333333334
+          }
+        }
+      },
+      "fwd_bwd_input_form": "stacked leaf",
+      "fraction_of_speed_of_light": 0.9909090879024969
+    }
+  ],
+  "batched_queries": [
+    {
+      "impl": "switchyard x8 calls",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "n_queries": 8,
+      "forward": {
+        "median_ms": 0.9297599792480469,
+        "p10_ms": 0.9256640076637268,
+        "p90_ms": 0.9318400025367737,
+        "min_ms": 0.9215999841690063,
+        "mean_ms": 0.9287290652592977,
+        "cv": 0.0034817439094536216,
+        "reps": 60,
+        "warmup": 20,
+        "l2_flushed": true
+      }
+    },
+    {
+      "impl": "catswe phase1 S=8",
+      "shape": {
+        "n": 9,
+        "b": 1,
+        "t": 4096,
+        "d": 2048
+      },
+      "n_queries": 8,
+      "forward": {
+        "median_ms": 0.21507200598716736,
+        "p10_ms": 0.21302400529384613,
+        "p90_ms": 0.21916800737380981,
+        "min_ms": 0.20892800390720367,
+        "mean_ms": 0.21589013834794363,
+        "cv": 0.013552291683664657,
+        "reps": 60,
+        "warmup": 20,
+        "l2_flushed": true
+      }
+    }
+  ]
+}

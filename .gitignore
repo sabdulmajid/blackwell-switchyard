@@ -36,6 +36,10 @@ scratch/
 tmp/
 *.log
 
+# Upstream kernels cloned by scripts/fetch_third_party.sh for the head-to-head.
+# Never vendored: each has its own licence and release cadence.
+third_party/
+
 # Committed results are curated JSON only; block stray large artifacts
 results/**/*.pt
 results/**/*.bin
