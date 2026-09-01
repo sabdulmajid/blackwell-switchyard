@@ -45,7 +45,13 @@ from torch import Tensor
 
 from .reference import DEFAULT_EPS
 
-__all__ = ["paper_form", "folded_form", "chunked_form", "FORMULATIONS"]
+__all__ = [
+    "paper_form",
+    "folded_form",
+    "batched_folded_form",
+    "chunked_form",
+    "FORMULATIONS",
+]
 
 
 def paper_form(v: Tensor, w: Tensor, eps: float = DEFAULT_EPS) -> Tensor:
@@ -65,6 +71,14 @@ def folded_form(v: Tensor, w: Tensor, eps: float = DEFAULT_EPS) -> Tensor:
     inv_rms = torch.rsqrt(v.pow(2).mean(-1) + eps)           # [N, B, T]
     alpha = (dots * inv_rms).softmax(0)
     return torch.einsum("nbt,nbtd->btd", alpha, v)
+
+
+def batched_folded_form(v: Tensor, queries: Tensor, eps: float = DEFAULT_EPS) -> Tensor:
+    """Folded framework baseline for ``S`` queries sharing the same sources."""
+    dots = torch.einsum("sd,nbtd->snbt", queries, v)
+    inv_rms = torch.rsqrt(v.pow(2).mean(-1) + eps)
+    alpha = (dots * inv_rms.unsqueeze(0)).softmax(1)
+    return torch.einsum("snbt,nbtd->sbtd", alpha, v)
 
 
 def chunked_form(v: Tensor, w: Tensor, eps: float = DEFAULT_EPS, chunk: int = 2048) -> Tensor:

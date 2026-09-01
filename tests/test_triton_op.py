@@ -22,8 +22,10 @@ from switchyard.baselines import folded_form  # noqa: E402
 from switchyard.reference import DEFAULT_EPS, block_attn_res_oracle  # noqa: E402
 from switchyard.triton_op import (  # noqa: E402
     BlockAttnResTriton,
+    _batched_launch,
     _bwd_launch,
     _launch_config,
+    block_attn_res_batched,
     block_attn_res_triton,
 )
 
@@ -31,12 +33,15 @@ DEV = "cuda"
 
 
 def _rel_l2(got: torch.Tensor, oracle: torch.Tensor) -> float:
-    return ((got.float() - oracle.float()).norm() / oracle.float().norm()).item()
+    got64 = got.to(torch.float64)
+    oracle64 = oracle.to(torch.float64)
+    return ((got64 - oracle64).norm() / oracle64.norm()).item()
 
 
 def _dtype_floor(oracle: torch.Tensor, dtype: torch.dtype) -> float:
-    o = oracle.float()
-    return ((o.to(dtype).float() - o).norm() / o.norm()).item()
+    oracle64 = oracle.to(torch.float64)
+    round_trip = oracle64.to(dtype).to(torch.float64)
+    return ((round_trip - oracle64).norm() / oracle64.norm()).item()
 
 
 def _make(n, b, t, d, dtype, seed=0, scale=1.0):
@@ -85,6 +90,62 @@ def test_more_accurate_than_the_eager_baseline(shape):
     assert _rel_l2(block_attn_res_triton(v, w, DEFAULT_EPS), oracle) < _rel_l2(
         folded_form(v, w, DEFAULT_EPS), oracle
     )
+
+
+@pytest.mark.parametrize(
+    ("shape", "n_queries"),
+    [((2, 1, 7, 32), 2), ((5, 1, 17, 777), 3),
+     ((9, 1, 16, 2048), 8), ((9, 1, 4, 4096), 4)],
+)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+def test_batched_forward_is_at_the_dtype_floor(shape, n_queries, dtype):
+    v, _ = _make(*shape, dtype)
+    q = torch.randn(n_queries, shape[-1], device=DEV, dtype=torch.float32)
+    q = (q / q.norm(dim=-1, keepdim=True)).to(dtype)
+    oracle = torch.stack([block_attn_res_oracle(v, q[i], DEFAULT_EPS) for i in range(n_queries)])
+    got = block_attn_res_batched(v, q, DEFAULT_EPS)
+
+    assert got.shape == oracle.shape
+    assert got.dtype == dtype
+    assert torch.isfinite(got).all()
+    err = _rel_l2(got, oracle)
+    floor = _dtype_floor(oracle, dtype)
+    assert err <= max(floor * 1.05, 1e-6), f"rel_l2 {err:.3e} vs floor {floor:.3e}"
+
+    for i in range(n_queries):
+        err_i = _rel_l2(got[i], oracle[i])
+        floor_i = _dtype_floor(oracle[i], dtype)
+        assert err_i <= max(floor_i * 1.05, 1e-6)
+
+
+def test_batched_forward_handles_non_contiguous_inputs():
+    base = torch.randn(2, 5, 11, 63, device=DEV, dtype=torch.bfloat16)
+    v = base.transpose(0, 1)
+    q = torch.randn(63, 3, device=DEV, dtype=torch.bfloat16).T
+    assert not v.is_contiguous() and not q.is_contiguous()
+    torch.testing.assert_close(
+        block_attn_res_batched(v, q),
+        block_attn_res_batched(v.contiguous(), q.contiguous()),
+    )
+
+
+def test_batched_forward_rejects_gradients_and_bad_inputs():
+    v = torch.randn(4, 1, 8, 32, device=DEV)
+    q = torch.randn(3, 32, device=DEV)
+    with pytest.raises(RuntimeError, match="no backward"):
+        block_attn_res_batched(v.requires_grad_(), q)
+    with pytest.raises(ValueError, match="same dtype"):
+        block_attn_res_batched(v.detach(), q.half())
+    with pytest.raises(ValueError, match="CUDA"):
+        block_attn_res_batched(v.detach().cpu(), q.cpu())
+    with pytest.raises(ValueError, match="positive"):
+        block_attn_res_batched(v.detach()[:0], q)
+
+
+def test_batched_dispatch_uses_only_the_measured_resident_regime():
+    assert _batched_launch(9, 2048, 8)[0]
+    assert not _batched_launch(9, 4096, 8)[0]
+    assert not _batched_launch(9, 2048, 17)[0]
 
 
 @pytest.mark.parametrize("shape", SHAPES)

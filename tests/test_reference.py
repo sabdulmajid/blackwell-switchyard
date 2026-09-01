@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from switchyard.baselines import batched_folded_form
 from switchyard.reference import (
     DEFAULT_EPS,
     BlockAttnRes,
@@ -190,6 +191,14 @@ def test_module_initializes_query_to_zero():
     assert torch.equal(m.w, torch.zeros(32))
     v = torch.randn(4, 1, 3, 32)
     torch.testing.assert_close(m(v), v.mean(0), rtol=1e-6, atol=1e-6)
+
+
+def test_batched_folded_form_matches_individual_queries():
+    v, _ = _inputs(n=5, b=2, t=3, d=16)
+    queries = torch.randn(4, 16, **F64)
+    got = batched_folded_form(v, queries)
+    expected = torch.stack([block_attn_res_reference(v, q) for q in queries])
+    torch.testing.assert_close(got, expected, rtol=1e-12, atol=1e-12)
 
 
 def test_rmsnorm_gain_is_redundant_with_the_query():

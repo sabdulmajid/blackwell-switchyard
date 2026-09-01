@@ -44,7 +44,7 @@ import triton.language as tl
 
 from .reference import DEFAULT_EPS
 
-__all__ = ["block_attn_res_triton", "BlockAttnResTriton"]
+__all__ = ["block_attn_res_triton", "block_attn_res_batched", "BlockAttnResTriton"]
 
 
 @triton.jit
@@ -373,6 +373,132 @@ def _bwd_apply(
             dw_acc += tl.sum(da[:, None] * v, axis=0)
 
     tl.atomic_add(dw_ptr + offs_d, dw_acc, mask=d_mask)
+
+
+@triton.jit
+def _fwd_batched_resident(
+    v_ptr, q_ptr, out_ptr,
+    n_src: tl.constexpr, n_q: tl.constexpr, D: tl.constexpr, eps,
+    stride_vn, stride_vt, stride_vd,
+    stride_qs, stride_qd,
+    stride_os, stride_ot, stride_od,
+    BLOCK_N: tl.constexpr, BLOCK_S: tl.constexpr, BLOCK_D: tl.constexpr,
+):
+    """Answer several queries while keeping the source tile resident."""
+    tok = tl.program_id(0)
+    offs_n = tl.arange(0, BLOCK_N)
+    offs_d = tl.arange(0, BLOCK_D)
+    n_mask = offs_n < n_src
+    d_mask = offs_d < D
+
+    v = tl.load(
+        v_ptr + tok * stride_vt + offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vd,
+        mask=n_mask[:, None] & d_mask[None, :], other=0.0,
+    ).to(tl.float32)
+    inv_rms = tl.rsqrt(tl.sum(v * v, axis=1) / D + eps)
+
+    for s in tl.static_range(0, BLOCK_S):
+        q = tl.load(
+            q_ptr + s * stride_qs + offs_d * stride_qd,
+            mask=(s < n_q) & d_mask, other=0.0,
+        ).to(tl.float32)
+        logit = tl.sum(v * q[None, :], axis=1) * inv_rms
+        logit = tl.where(n_mask, logit, float("-inf"))
+        p = tl.exp(logit - tl.max(logit, axis=0))
+        alpha = p / tl.sum(p, axis=0)
+        out = tl.sum(alpha[:, None] * v, axis=0)
+        tl.store(
+            out_ptr + s * stride_os + tok * stride_ot + offs_d * stride_od,
+            out,
+            mask=(s < n_q) & d_mask,
+        )
+
+
+_BATCHED_QUERY_MAX = 16
+
+
+def _batched_launch(n: int, d: int, s: int) -> tuple[bool, int, int, int, int]:
+    """Return ``(resident, block_n, block_s, block_d, warps)`` for batched forward."""
+    block_n = triton.next_power_of_2(n)
+    block_s = triton.next_power_of_2(s)
+    block_d = triton.next_power_of_2(d)
+    if block_n * block_d > _RESIDENT_TILE_MAX or block_s > _BATCHED_QUERY_MAX:
+        return False, block_n, block_s, block_d, 0
+
+    # Measured on the target Blackwell part. The full-D reduction needs more
+    # warps as D, the number of live sources, or the unrolled query count grows.
+    warps = max(2, block_d // 1024)
+    if d >= 2048 and n >= 8:
+        warps *= 2
+    if n >= 15 or block_s >= 16:
+        warps *= 2
+    return True, block_n, block_s, block_d, min(8, warps)
+
+
+def block_attn_res_batched(
+    v: torch.Tensor, queries: torch.Tensor, eps: float = DEFAULT_EPS
+) -> torch.Tensor:
+    """Answer several pseudo-queries against one shared source tensor.
+
+    The optimized path keeps the source tile resident and reuses it across all
+    queries, reducing ``S`` calls that move ``S * (N + 1)`` slabs to one call
+    that moves ``N + S``. It applies when the resident tile is within the same
+    measured 32768-value budget as the single-query kernel and ``S <= 16``;
+    other shapes fall back to accurate per-query calls.
+
+    This output-only API does not return the log-sum-exp statistics needed to
+    merge later intra-block sources, so it is not by itself the paper's complete
+    two-phase schedule. It is forward-only; training should use the single-query
+    autograd operator until a batched backward exists.
+
+    Args:
+        v: ``[N, B, T, D]`` sources.
+        queries: ``[S, D]`` pseudo-queries.
+        eps: RMSNorm epsilon.
+
+    Returns:
+        ``[S, B, T, D]``; entry ``s`` equals
+        ``block_attn_res_triton(v, queries[s], eps)``.
+    """
+    if v.ndim != 4:
+        raise ValueError(f"v must be [N, B, T, D], got {tuple(v.shape)}")
+    if queries.ndim != 2 or queries.shape[1] != v.shape[-1]:
+        raise ValueError(f"queries must be [S, {v.shape[-1]}], got {tuple(queries.shape)}")
+    if not v.is_cuda or not queries.is_cuda:
+        raise ValueError("v and queries must be CUDA tensors")
+    if v.device != queries.device:
+        raise ValueError("v and queries must be on the same CUDA device")
+    if v.dtype != queries.dtype:
+        raise ValueError("v and queries must have the same dtype")
+    if v.shape[0] == 0 or queries.shape[0] == 0 or v.shape[-1] == 0:
+        raise ValueError("N, S, and D must be positive")
+    if v.requires_grad or queries.requires_grad:
+        raise RuntimeError(
+            "block_attn_res_batched has no backward; use block_attn_res_triton per query "
+            "for training, or run this under torch.no_grad() for inference"
+        )
+
+    n, b, t, d = v.shape
+    s = queries.shape[0]
+    v = v.contiguous()
+    queries = queries.contiguous()
+    resident, block_n, block_s, block_d, warps = _batched_launch(n, d, s)
+    if not resident:
+        return torch.stack([block_attn_res_triton(v, queries[i], eps) for i in range(s)])
+
+    out = torch.empty(s, b, t, d, device=v.device, dtype=v.dtype)
+    if b * t == 0:
+        return out
+    _fwd_batched_resident[(b * t,)](
+        v, queries, out,
+        n, s, d, eps,
+        v.stride(0), v.stride(2), v.stride(3),
+        queries.stride(0), queries.stride(1),
+        out.stride(0), out.stride(2), out.stride(3),
+        BLOCK_N=block_n, BLOCK_S=block_s, BLOCK_D=block_d,
+        num_warps=warps, num_stages=1,
+    )
+    return out
 
 
 class _BlockAttnResTriton(torch.autograd.Function):
