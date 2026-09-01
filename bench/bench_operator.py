@@ -207,7 +207,10 @@ def bench_one(
         except Exception as exc:  # noqa: BLE001
             rec["fwd_bwd_kernels"] = {"error": str(exc)[:200]}
         rec["fwd_bwd_memory"] = measure_memory(
-            fwd_bwd, device=device, resident_bytes=resident
+            fwd_bwd,
+            device=device,
+            resident_bytes=resident,
+            output_bytes=shape.b * shape.t * shape.d * v.element_size(),
         ).as_dict()
         fb_busy = rec.get("fwd_bwd_kernels", {}).get("total_cuda_us")
         if fb_busy:

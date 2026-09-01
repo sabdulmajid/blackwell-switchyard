@@ -38,6 +38,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -62,12 +63,17 @@ from harness import (  # noqa: E402
     measure_latency,
     measure_memory,
 )
+from switchyard.baselines import batched_folded_form  # noqa: E402
 from switchyard.reference import (  # noqa: E402
     DEFAULT_EPS,
     attn_res_min_bytes,
     block_attn_res_oracle,
 )
-from switchyard.triton_op import block_attn_res_triton, speed_of_light  # noqa: E402
+from switchyard.triton_op import (  # noqa: E402
+    block_attn_res_batched,
+    block_attn_res_triton,
+    speed_of_light,
+)
 
 
 @dataclass(frozen=True)
@@ -86,6 +92,16 @@ SHAPES = [
     Shape(9, 1, 4096, 2048), Shape(16, 1, 4096, 2048), Shape(32, 1, 4096, 2048),
     Shape(9, 1, 4096, 1024), Shape(9, 1, 4096, 4096), Shape(9, 1, 4096, 8192),
     Shape(9, 1, 8192, 2048),
+]
+
+BATCHED_CASES = [
+    *((Shape(9, 1, 4096, 2048), s) for s in (1, 2, 4, 8, 16)),
+    (Shape(2, 1, 4096, 2048), 8),
+    (Shape(16, 1, 4096, 2048), 8),
+    (Shape(9, 1, 4096, 1024), 8),
+    (Shape(9, 1, 128, 1024), 8),
+    (Shape(9, 4, 2048, 2048), 8),
+    (Shape(9, 1, 4096, 4096), 8),
 ]
 
 
@@ -229,39 +245,136 @@ def bench_one(name, fn, shape, v, w, oracle, device, quick, tol) -> dict:
     return rec
 
 
-def bench_batched_queries(shape, v, device, quick, n_queries=8) -> list[dict]:
-    """The axis catswe's two-phase design is actually built for.
-
-    Its phase 1 answers ``S`` pseudo-queries in one pass over the sources, which
-    is the paper's own amortization argument (Sec. 4.2): a block's ``S`` layers
-    share one read of the block representations. Our operator has no such API, so
-    the honest comparison is ``S`` separate calls. If catswe wins here, that is a
-    real result and belongs in the report.
-    """
-    out = []
+def bench_batched_queries(shape, v, device, quick, n_queries=8, tol=None) -> list[dict]:
+    """Compare native and framework batched-query paths under one checked contract."""
+    out: list[dict] = []
+    tol = tol or (2e-2 if v.dtype == torch.bfloat16 else 5e-3)
     warmup, reps = (10, 30) if quick else (20, 60)
     torch.manual_seed(1)
     qs = torch.randn(n_queries, shape.d, device=device, dtype=v.dtype)
     qs = qs / qs.norm(dim=-1, keepdim=True)
+    oracle = torch.stack(
+        [block_attn_res_oracle(v, qs[i], DEFAULT_EPS) for i in range(n_queries)]
+    )
 
-    def ours_loop():
+    def ours_loop_native():
         return [block_attn_res_triton(v, qs[i], DEFAULT_EPS) for i in range(n_queries)]
 
-    t = measure_latency(ours_loop, device=device, warmup=warmup, reps=reps)
-    out.append({"impl": f"switchyard x{n_queries} calls", "shape": asdict(shape),
-                "n_queries": n_queries, "forward": t.as_dict()})
+    def ours_loop_tensor(v, queries, eps):
+        return torch.stack([block_attn_res_triton(v, queries[i], eps) for i in range(n_queries)])
+
+    candidates = [
+        {
+            "impl": "framework eager batched",
+            "check_fn": batched_folded_form,
+            "time_fn": lambda: batched_folded_form(v, qs, DEFAULT_EPS),
+            "output_contract": "[S,B,T,D] tensor",
+        },
+        {
+            "impl": f"switchyard x{n_queries} calls",
+            "check_fn": ours_loop_tensor,
+            "time_fn": ours_loop_native,
+            "memory_fn": ours_loop_native,
+            "output_contract": "list of S tensors (native per-query contract)",
+            "correctness_contract": "stacked to [S,B,T,D] only for validation",
+        },
+        {
+            "impl": "switchyard batched",
+            "check_fn": block_attn_res_batched,
+            "time_fn": lambda: block_attn_res_batched(v, qs, DEFAULT_EPS),
+            "output_contract": "[S,B,T,D] tensor; output-only, inference-only",
+        },
+    ]
+
+    # This sweep intentionally crosses more shapes than Dynamo's default
+    # recompilation limit. Reset per case so later rows do not silently become
+    # eager after the eighth specialization.
+    torch._dynamo.reset()
+    compiled = torch.compile(
+        batched_folded_form, mode="max-autotune-no-cudagraphs", dynamic=False
+    )
+    candidates.insert(1, {
+        "impl": "framework compiled batched",
+        "check_fn": compiled,
+        "time_fn": lambda: compiled(v, qs, DEFAULT_EPS),
+        "output_contract": "[S,B,T,D] tensor",
+        "compiled": True,
+    })
 
     try:
         from flash_attn_res import phase_1_batched_attention_triton_op
 
-        def catswe_batched():
-            return phase_1_batched_attention_triton_op(v, qs, DEFAULT_EPS)
+        def catswe_output(v, queries, eps):
+            return phase_1_batched_attention_triton_op(v, queries, eps)[0]
 
-        t = measure_latency(catswe_batched, device=device, warmup=warmup, reps=reps)
-        out.append({"impl": f"catswe phase1 S={n_queries}", "shape": asdict(shape),
-                    "n_queries": n_queries, "forward": t.as_dict()})
+        candidates.append({
+            "impl": f"catswe phase1 S={n_queries}",
+            "check_fn": catswe_output,
+            "time_fn": lambda: catswe_output(v, qs, DEFAULT_EPS),
+            "output_contract": "[S,B,T,D] tensor; also computes LSE and backward auxiliaries",
+        })
     except Exception as exc:  # noqa: BLE001
         out.append({"impl": "catswe phase1", "error": str(exc)[:200]})
+
+    logical_min_bytes = (
+        (shape.n + n_queries) * shape.b * shape.t * shape.d * v.element_size()
+        + qs.numel() * qs.element_size()
+    )
+    resident = (
+        v.numel() * v.element_size()
+        + qs.numel() * qs.element_size()
+        + n_queries * shape.b * shape.t * shape.d * v.element_size()
+    )
+
+    for spec in candidates:
+        rec = {
+            "impl": spec["impl"],
+            "shape": asdict(shape),
+            "n_queries": n_queries,
+            "output_contract": spec["output_contract"],
+            "logical_min_bytes": logical_min_bytes,
+        }
+        if "correctness_contract" in spec:
+            rec["correctness_contract"] = spec["correctness_contract"]
+
+        if spec.get("compiled"):
+            start = time.perf_counter()
+            spec["check_fn"](v, qs, DEFAULT_EPS)
+            torch.cuda.synchronize(device)
+            rec["compile_seconds"] = time.perf_counter() - start
+
+        rec["correctness"] = check_against(
+            spec["check_fn"], oracle, (v, qs, DEFAULT_EPS), rel_l2_tol=tol
+        )
+        if not rec["correctness"]["ok"]:
+            rec["skipped"] = "failed correctness check"
+            out.append(rec)
+            continue
+
+        got = spec["check_fn"](v, qs, DEFAULT_EPS)
+        rec["per_query_correctness"] = [
+            check_against(lambda x=x: x, oracle[i], (), rel_l2_tol=tol)
+            for i, x in enumerate(got)
+        ]
+        del got
+
+        timing = measure_latency(spec["time_fn"], device=device, warmup=warmup, reps=reps)
+        rec["forward"] = timing.as_dict()
+        rec["logical_min_achieved_gbps"] = achieved_bandwidth_gbps(
+            logical_min_bytes, timing.median_ms
+        )
+        try:
+            rec["forward_kernels"] = count_kernels(
+                spec["time_fn"], device=device, iters=1
+            ).as_dict()
+        except Exception as exc:  # noqa: BLE001
+            rec["forward_kernels"] = {"error": str(exc)[:200]}
+        rec["forward_memory"] = measure_memory(
+            spec.get("memory_fn", spec["time_fn"]), device=device, resident_bytes=resident
+        ).as_dict()
+        out.append(rec)
+
+    del oracle
     return out
 
 
@@ -269,6 +382,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--device", type=int, default=0)
     ap.add_argument("--quick", action="store_true")
+    ap.add_argument("--batched-only", action="store_true")
     ap.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16"])
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
@@ -292,6 +406,23 @@ def main() -> None:
         "results": [],
         "batched_queries": [],
     }
+
+    if args.batched_only:
+        for shape, n_queries in BATCHED_CASES:
+            torch.manual_seed(0)
+            v = torch.randn(shape.n, shape.b, shape.t, shape.d, device=device, dtype=dtype)
+            print(f"batched {shape.key()} S={n_queries}", flush=True)
+            report["batched_queries"].extend(
+                bench_batched_queries(shape, v, device, args.quick, n_queries, tol)
+            )
+            del v
+            torch.cuda.empty_cache()
+
+        out = args.out or REPO / "results" / f"batched_queries_{args.dtype}.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(report, indent=2, default=str))
+        print(f"\nwrote {out}")
+        return
 
     print(f"{'shape':>22} {'impl':>14} {'fwd ms':>9} {'GB/s':>7} {'krnl':>5} "
           f"{'f+b ms':>9} {'xfloor':>7}")

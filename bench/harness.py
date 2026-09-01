@@ -112,6 +112,9 @@ class MemoryReport:
     #: and it is the number fusion is supposed to shrink.
     workspace_bytes: int
     resident_bytes: int
+    incremental_peak_bytes: int
+    returned_bytes: int
+    accounted_output_bytes: int
     allocation_count: int
 
     def as_dict(self) -> dict:
@@ -119,7 +122,8 @@ class MemoryReport:
 
 
 def measure_memory(
-    fn: Callable[[], object], *, device: torch.device, resident_bytes: int
+    fn: Callable[[], object], *, device: torch.device, resident_bytes: int,
+    output_bytes: int | None = None,
 ) -> MemoryReport:
     """Peak allocator high-water mark for one call, and the workspace above the data.
 
@@ -127,25 +131,48 @@ def measure_memory(
     it expects back). Reporting the difference separately keeps us honest: the
     sources a Block AttnRes model must keep alive are a property of the
     architecture, not of our kernel, and eliminating a temporary does not make
-    them disappear.
+    them disappear. ``output_bytes`` is needed when ``fn`` consumes its forward
+    output internally (for example, a forward+backward step) and therefore
+    returns no tensor from which the output size can be inferred.
     """
     fn()  # let any lazy workspace or autotune cache allocate first
     torch.cuda.synchronize(device)
     gc.collect()
     torch.cuda.empty_cache()
+    baseline = torch.cuda.memory_allocated(device)
     torch.cuda.reset_peak_memory_stats(device)
     before = torch.cuda.memory_stats(device).get("allocation.all.allocated", 0)
 
     out = fn()
     torch.cuda.synchronize(device)
 
-    peak = torch.cuda.max_memory_allocated(device)
+    absolute_peak = torch.cuda.max_memory_allocated(device)
     after = torch.cuda.memory_stats(device).get("allocation.all.allocated", 0)
+    incremental_peak = max(0, absolute_peak - baseline)
+
+    def tensor_bytes(obj: object) -> int:
+        if isinstance(obj, torch.Tensor):
+            return obj.numel() * obj.element_size()
+        if isinstance(obj, (list, tuple)):
+            return sum(tensor_bytes(x) for x in obj)
+        if isinstance(obj, dict):
+            return sum(tensor_bytes(x) for x in obj.values())
+        return 0
+
+    returned = tensor_bytes(out)
+    accounted_output = returned if output_bytes is None else output_bytes
+    workspace = max(0, incremental_peak - accounted_output)
     del out
     return MemoryReport(
-        peak_allocated_bytes=peak,
-        workspace_bytes=max(0, peak - resident_bytes),
+        # Normalize away unrelated live allocations (notably the L2 flush
+        # buffer and correctness oracle) while retaining the original meaning:
+        # caller-owned resident data plus the implementation's workspace.
+        peak_allocated_bytes=resident_bytes + workspace,
+        workspace_bytes=workspace,
         resident_bytes=resident_bytes,
+        incremental_peak_bytes=incremental_peak,
+        returned_bytes=returned,
+        accounted_output_bytes=accounted_output,
         allocation_count=after - before,
     )
 
@@ -256,8 +283,11 @@ def check_against(
     if got.shape != oracle.shape:
         return {"ok": False, "error": f"shape {tuple(got.shape)} != {tuple(oracle.shape)}"}
 
-    g = got.float()
-    o = oracle.float()
+    # Keep the comparison in the oracle's precision. Casting both sides to
+    # fp32 would make a "float64 oracle" claim untrue and erase part of the
+    # float32 candidate's own rounding floor.
+    o = oracle.to(torch.float64)
+    g = got.to(torch.float64)
     diff = g - o
     o_norm = o.norm().item()
     o_rms = o.pow(2).mean().sqrt().item()
@@ -266,7 +296,7 @@ def check_against(
     # What the same tensor rounded to the candidate's dtype would already cost.
     # If our error is at this level, the implementation is as good as the dtype
     # allows and nothing is left to fix.
-    round_trip = (o.to(got.dtype).float() - o)
+    round_trip = o.to(got.dtype).to(torch.float64) - o
     dtype_floor_rel_l2 = (round_trip.norm().item() / o_norm) if o_norm > 0 else 0.0
 
     return {
