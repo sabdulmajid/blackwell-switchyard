@@ -21,11 +21,13 @@ LABELS = {
     "folded_eager": "eager, folded form",
     "paper_compiled": "compile, paper form",
     "folded_compiled": "compile, folded form",
+    "folded_compiled_autotune": "compile, folded + max-autotune",
     "folded_compiled_cudagraph": "compile + cudagraph",
     "switchyard_triton": "**switchyard**",
 }
 BASELINES = ("paper_eager", "folded_eager", "paper_compiled",
-             "folded_compiled", "folded_compiled_cudagraph")
+             "folded_compiled", "folded_compiled_autotune",
+             "folded_compiled_cudagraph")
 
 
 def load() -> tuple[list[dict], dict]:
@@ -115,7 +117,12 @@ def table_kernels_and_memory(grouped: dict) -> list[str]:
     out = ["| shape | impl | fwd kernels | fwd+bwd kernels | workspace MiB | GPU busy % |",
            "|---|---|---|---|---|---|"]
     for shape, impls in grouped.items():
-        for name in ("paper_compiled", "folded_compiled", "switchyard_triton"):
+        for name in (
+            "paper_compiled",
+            "folded_compiled",
+            "folded_compiled_autotune",
+            "switchyard_triton",
+        ):
             r = impls.get(name)
             if not r or r.get("skipped"):
                 continue

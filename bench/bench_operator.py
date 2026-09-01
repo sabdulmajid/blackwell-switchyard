@@ -34,6 +34,7 @@ from harness import (  # noqa: E402
     environment,
     measure_latency,
     measure_memory,
+    repository_provenance,
 )
 from switchyard.baselines import folded_form, paper_form  # noqa: E402
 from switchyard.reference import (  # noqa: E402
@@ -62,6 +63,9 @@ class Shape:
 # layer of a block) the running partial sum, so a real model produces source
 # counts up to 9-10. Sequence length 8192 is the paper's training context.
 SHAPE_SETS: dict[str, list[Shape]] = {
+    # Canonical headline anchor; useful when methodology changes invalidate
+    # prior artifacts and the full sweep would delay correction of public claims.
+    "representative": [Shape(9, 1, 4096, 2048)],
     # How does cost scale with depth history? The axis the architecture chooses.
     "n-sweep": [Shape(n, 1, 4096, 2048) for n in (2, 4, 8, 9, 16, 32)],
     # How does it scale with model width?
@@ -260,6 +264,7 @@ def main() -> None:
     shapes = SHAPE_SETS[args.set]
     report = {
         "environment": environment(),
+        "provenance": repository_provenance(REPO),
         "dtype": args.dtype,
         "shape_set": args.set,
         "rel_l2_tol": tol,

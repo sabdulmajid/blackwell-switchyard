@@ -25,15 +25,49 @@ from __future__ import annotations
 
 import gc
 import statistics
+import subprocess
+import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import torch
 
 # Large enough to evict this GPU's 128 MiB L2 several times over.
 _L2_FLUSH_BYTES = 384 * 2**20
 _flush_buffer: torch.Tensor | None = None
+
+
+def repository_provenance(
+    repo: Path, third_party: Mapping[str, Path] | None = None
+) -> dict:
+    """Record exact source revisions and seeds alongside raw measurements."""
+
+    def git(path: Path, *args: str) -> str | None:
+        result = subprocess.run(
+            ["git", "-C", str(path), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    revisions = {}
+    for name, path in (third_party or {}).items():
+        if path.is_dir():
+            revisions[name] = git(path, "rev-parse", "HEAD")
+
+    return {
+        "argv": sys.argv.copy(),
+        "repository_commit": git(repo, "rev-parse", "HEAD"),
+        "tracked_worktree_dirty": bool(
+            git(repo, "status", "--porcelain", "--untracked-files=no")
+        ),
+        "third_party_commits": revisions,
+        "input_seed": 0,
+        "query_seed": 1,
+    }
 
 
 def _flush_l2(device: torch.device) -> None:
