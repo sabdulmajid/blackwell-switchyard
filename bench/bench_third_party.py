@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -103,6 +104,34 @@ BATCHED_CASES = [
     (Shape(9, 4, 2048, 2048), 8),
     (Shape(9, 1, 4096, 4096), 8),
 ]
+
+
+def repository_provenance() -> dict:
+    """Record the exact source revisions behind a benchmark artifact."""
+
+    def git(path: Path, *args: str) -> str | None:
+        result = subprocess.run(
+            ["git", "-C", str(path), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    third_party = {}
+    for name in ("Liger-Kernel", "flash-linear-attention", "flash-attention-residuals"):
+        path = THIRD_PARTY / name
+        if path.is_dir():
+            third_party[name] = git(path, "rev-parse", "HEAD")
+
+    return {
+        "argv": sys.argv.copy(),
+        "repository_commit": git(REPO, "rev-parse", "HEAD"),
+        "tracked_worktree_dirty": bool(git(REPO, "status", "--porcelain", "--untracked-files=no")),
+        "third_party_commits": third_party,
+        "input_seed": 0,
+        "query_seed": 1,
+    }
 
 
 def build_adapters() -> tuple[dict, list[str]]:
@@ -399,6 +428,7 @@ def main() -> None:
 
     report = {
         "environment": environment(),
+        "provenance": repository_provenance(),
         "dtype": args.dtype,
         "rel_l2_tol": tol,
         "unavailable": notes,
