@@ -86,25 +86,25 @@ def main() -> None:
     w("and it points at the next piece of work, not at a rounding error.\n")
 
     bq = [b for b in data.get("batched_queries", []) if "forward" in b]
-    if len(bq) >= 2:
-        w("## Batched pseudo-queries: where catswe's design wins\n")
-        w("The paper's two-phase schedule (Sec. 4.2) amortizes one pass over the block")
-        w("representations across all `S` pseudo-queries in a block. catswe implements")
-        w("that; our operator has no such API, so the honest comparison is `S` separate")
-        w("calls.\n")
+    if bq:
+        w("## Batched pseudo-queries\n")
+        w("The switchyard resident path reads the source tile once for all queries.")
+        w("It returns the output only. catswe also computes merge statistics and supports")
+        w("its backward design. These contracts are related, but they are not identical.\n")
         w("| approach | ms |")
         w("|---|---|")
         for b in bq:
             w(f"| {b['impl']} | {b['forward']['median_ms']:.3f} |")
-        ours = next((b for b in bq if "switchyard" in b["impl"]), None)
+        ours = next((b for b in bq if b["impl"] == "switchyard batched"), None)
+        compiled = next((b for b in bq if b["impl"] == "framework compiled batched"), None)
         theirs = next((b for b in bq if "catswe" in b["impl"]), None)
         if ours and theirs:
-            ratio = ours["forward"]["median_ms"] / theirs["forward"]["median_ms"]
-            w(f"\n**catswe is {ratio:.1f}x faster on this axis.** Our per-call kernel is at the")
-            w("memory ceiling, but it reads the sources once *per query*; theirs reads them")
-            w("once per *block*. At `S=8` that is an 8x traffic difference and no amount of")
-            w("kernel tuning closes it -- it is an API and scheduling difference, and the")
-            w("clearest single piece of future work this comparison surfaced.\n")
+            ratio = theirs["forward"]["median_ms"] / ours["forward"]["median_ms"]
+            w(f"\nThe output-only switchyard path is {ratio:.2f}x faster than catswe here.")
+        if ours and compiled:
+            ratio = compiled["forward"]["median_ms"] / ours["forward"]["median_ms"]
+            w(f"It is {ratio:.2f}x faster than max-autotuned Inductor.")
+        w("See `docs/batched_queries.md` for the query-count and shape sweeps.\n")
 
     w("## Accuracy\n")
     ref = rows.get((9, 1, 4096, 2048), {})

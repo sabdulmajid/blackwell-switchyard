@@ -115,14 +115,21 @@ def build_adapters() -> tuple[dict, list[str]]:
         "switchyard": {"fn": block_attn_res_triton, "note": "this repository"},
     }
     notes: list[str] = []
+    gains: dict[tuple[torch.device, torch.dtype, int], torch.Tensor] = {}
+
+    def unit_gain(v: torch.Tensor) -> torch.Tensor:
+        """Return a cached fixed gain so adapters do not allocate in timed calls."""
+        key = (v.device, v.dtype, v.shape[-1])
+        if key not in gains:
+            gains[key] = torch.ones(v.shape[-1], device=v.device, dtype=v.dtype)
+        return gains[key]
 
     try:
         from liger_kernel.ops.attn_res import LigerAttnResFunction
 
         def liger(v, w, eps=DEFAULT_EPS):
             # Liger carries a separate RMSNorm gain; ones makes it our operator.
-            ones = torch.ones(v.shape[-1], device=v.device, dtype=v.dtype)
-            return LigerAttnResFunction.apply(v, w, ones, eps)
+            return LigerAttnResFunction.apply(v, w, unit_gain(v), eps)
 
         adapters["liger"] = {"fn": liger, "note": "linkedin/Liger-Kernel, rms gain set to ones"}
     except Exception as exc:  # noqa: BLE001
@@ -134,8 +141,9 @@ def build_adapters() -> tuple[dict, list[str]]:
         def fla(v, w, eps=DEFAULT_EPS):
             # fla takes a sequence of sources. These are views into the caller's
             # own tensor, so no copy is made for it and none is charged to it.
-            ones = torch.ones(v.shape[-1], device=v.device, dtype=v.dtype)
-            return fused_attnres(w, [v[i] for i in range(v.shape[0])], ones, None, eps, 1.0)
+            return fused_attnres(
+                w, [v[i] for i in range(v.shape[0])], unit_gain(v), None, eps, 1.0
+            )
 
         adapters["fla"] = {"fn": fla, "note": "fla-org/flash-linear-attention, fused backend"}
     except Exception as exc:  # noqa: BLE001
