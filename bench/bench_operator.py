@@ -135,24 +135,35 @@ def bench_one(
 ) -> dict:
     fn = spec["fn"]
     rec: dict = {"impl": name, "compiled": spec["compiled"]}
+    dynamo_counters = None
+    if spec["compiled"]:
+        from torch._dynamo.utils import counters
 
-    # 1. Correctness first. A fast wrong kernel is not a result.
+        counters.clear()
+        dynamo_counters = counters
+
+    # 1. Correctness first. For compiled functions this first call also compiles
+    #    the graph, so report the combined initial check cost without pretending
+    #    that it is a pure compiler measurement.
+    t0 = time.perf_counter()
     correctness = check_against(fn, oracle, (v, w, DEFAULT_EPS), rel_l2_tol=tol)
+    torch.cuda.synchronize(device)
+    rec["initial_check_seconds"] = time.perf_counter() - t0
     rec["correctness"] = correctness
     if not correctness["ok"]:
         rec["skipped"] = "failed correctness check"
         return rec
-
-    # 2. Compile / warmup, timed separately from steady state.
-    if spec["compiled"]:
-        t0 = time.perf_counter()
-        fn(v, w, DEFAULT_EPS)
-        torch.cuda.synchronize(device)
-        rec["compile_seconds"] = time.perf_counter() - t0
+    if dynamo_counters is not None:
+        rec["compiled_execution_verified"] = (
+            dynamo_counters["stats"]["unique_graphs"] >= 1
+            and dynamo_counters["frames"]["ok"] >= 1
+        )
+        if not rec["compiled_execution_verified"]:
+            rec["compiled_fallback_suspected"] = True
 
     warmup, reps = (10, 30) if quick else (25, 100)
 
-    # 3. Forward.
+    # 2. Forward.
     fwd = measure_latency(
         lambda: fn(v, w, DEFAULT_EPS), device=device, warmup=warmup, reps=reps
     )
@@ -162,7 +173,7 @@ def bench_one(
     rec["min_bytes"] = min_bytes
     rec["forward_achieved_gbps"] = achieved_bandwidth_gbps(min_bytes, fwd.median_ms)
 
-    # 4. Kernel count and memory, forward.
+    # 3. Kernel count and memory, forward.
     try:
         rec["forward_kernels"] = count_kernels(
             lambda: fn(v, w, DEFAULT_EPS), device=device
@@ -188,7 +199,7 @@ def bench_one(
         lambda: fn(v, w, DEFAULT_EPS), device=device, resident_bytes=resident
     ).as_dict()
 
-    # 5. Forward + backward. This is a training primitive; forward alone would
+    # 4. Forward + backward. This is a training primitive; forward alone would
     #    be an incomplete picture.
     vg = v.detach().clone().requires_grad_(True)
     wg = w.detach().clone().requires_grad_(True)
@@ -210,6 +221,13 @@ def bench_one(
             rec["fwd_bwd_kernels"] = count_kernels(fwd_bwd, device=device, iters=3).as_dict()
         except Exception as exc:  # noqa: BLE001
             rec["fwd_bwd_kernels"] = {"error": str(exc)[:200]}
+        if dynamo_counters is not None:
+            rec["compiled_fwd_bwd_verified"] = (
+                dynamo_counters["stats"]["unique_graphs"] >= 2
+                and dynamo_counters["frames"]["ok"] >= 2
+            )
+            if not rec["compiled_fwd_bwd_verified"]:
+                rec["compiled_fwd_bwd_fallback_suspected"] = True
         rec["fwd_bwd_memory"] = measure_memory(
             fwd_bwd,
             device=device,
@@ -253,13 +271,7 @@ def main() -> None:
     tolerances = {torch.bfloat16: 2e-2, torch.float16: 5e-3, torch.float32: 1e-5}
     tol = tolerances[dtype]
 
-    impls = build_impls(1)
-    if args.impls:
-        want = set(args.impls.split(","))
-        impls = {k: v for k, v in impls.items() if k in want}
-        missing = want - set(impls)
-        if missing:
-            sys.exit(f"unknown implementations: {sorted(missing)}")
+    want = set(args.impls.split(",")) if args.impls else None
 
     shapes = SHAPE_SETS[args.set]
     report = {
@@ -277,6 +289,17 @@ def main() -> None:
     print("-" * 92)
 
     for shape in shapes:
+        # Compiled forward and autograd graphs specialize independently. Reset
+        # per shape so a sweep cannot hit Dynamo's recompilation limit and then
+        # silently time eager execution under a compiled label.
+        torch._dynamo.reset()
+        impls = build_impls(1)
+        if want:
+            impls = {k: v for k, v in impls.items() if k in want}
+            missing = want - set(impls)
+            if missing:
+                sys.exit(f"unknown implementations: {sorted(missing)}")
+
         gib = shape.elements() * torch.finfo(dtype).bits / 8 / 2**30
         if gib > 24:
             print(f"skipping {shape.key()}: {gib:.1f} GiB of sources")

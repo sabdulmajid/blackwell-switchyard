@@ -225,7 +225,7 @@ class KernelReport:
         }
 
 
-def count_kernels(fn: Callable[[], object], *, device: torch.device, iters: int = 5) -> KernelReport:
+def count_kernels(fn: Callable[[], object], *, device: torch.device, iters: int = 1) -> KernelReport:
     """How many CUDA kernels one call launches, and what they are.
 
     This is the central piece of evidence for whether a fusion opportunity
@@ -253,8 +253,7 @@ def count_kernels(fn: Callable[[], object], *, device: torch.device, iters: int 
             continue
         if evt.key.startswith(("Memcpy", "Memset", "cuda")):
             continue
-        n = evt.count // iters
-        if n == 0 and evt.count == 0:
+        if evt.count == 0:
             continue
         by_name[evt.key] = {
             "launches_per_call": evt.count / iters,
@@ -274,8 +273,20 @@ def count_kernels(fn: Callable[[], object], *, device: torch.device, iters: int 
             by_name={"_unavailable": "profiler returned no CUDA events for this call"},
         )
 
+    if total % iters:
+        return KernelReport(
+            total_kernels=None,
+            total_cuda_us=None,
+            by_name={
+                "_unavailable": (
+                    f"profiler counted {total} kernels across {iters} calls; "
+                    "the count is not stable per call"
+                )
+            },
+        )
+
     return KernelReport(
-        total_kernels=round(total / iters, 2),
+        total_kernels=total // iters,
         total_cuda_us=total_us / iters,
         by_name=by_name,
     )

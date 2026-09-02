@@ -57,6 +57,8 @@ def by_shape(rows: list[dict]) -> dict:
 def fmt_ms(r: dict | None) -> str:
     if not r or r.get("skipped") or "median_ms" not in r.get("forward", {}):
         return "--"
+    if r.get("compiled") and r.get("compiled_execution_verified") is False:
+        return "fallback"
     return f"{r['forward']['median_ms']:.3f}"
 
 
@@ -66,6 +68,11 @@ def best_baseline(impls: dict, field: str) -> tuple[str, float] | None:
     for name in BASELINES:
         r = impls.get(name)
         if not r or r.get("skipped"):
+            continue
+        verification = (
+            "compiled_fwd_bwd_verified" if field == "fwd_bwd" else "compiled_execution_verified"
+        )
+        if r.get("compiled") and r.get(verification) is False:
             continue
         block = r.get(field, {})
         v = block.get("median_ms")
@@ -102,7 +109,10 @@ def table_fwd_bwd(grouped: dict) -> list[str]:
         for k in cols:
             r = impls.get(k)
             fb = (r or {}).get("fwd_bwd", {})
-            cells.append(f"{fb['median_ms']:.3f}" if "median_ms" in fb else "--")
+            if r and r.get("compiled") and r.get("compiled_fwd_bwd_verified") is False:
+                cells.append("fallback")
+            else:
+                cells.append(f"{fb['median_ms']:.3f}" if "median_ms" in fb else "--")
         ours = impls.get("switchyard_triton")
         bb = best_baseline(impls, "fwd_bwd")
         sp = "--"
