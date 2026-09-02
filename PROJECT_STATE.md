@@ -3,7 +3,7 @@
 Living status document for `blackwell-switchyard`. The authoritative per-change detail lives
 in the branch descriptions on issue #1; this file is the index.
 
-**Last updated:** 2026-08-31
+**Last updated:** 2026-09-02
 
 ---
 
@@ -16,18 +16,21 @@ the residual mechanism costs **39% of a training step** framework-implemented an
 fused — a 3.4× reduction in its overhead, worth **1.46× on the whole step**
 (704.5 → 484.2 ms, 11627 → 16918 tokens/s).
 
-**Operator**, `N=9 B=1 T=4096 D=2048`, median of 100 CUDA-event reps with L2 flushed:
-forward **3.50×** and forward+backward **5.29×** over the fastest of six framework
-configurations, 6 → 1 and 16 → 4 kernels, workspace −22%. Forward sustains
-**94–101% of speed of light**.
+**Operator**, `N=9 B=1 T=4096 D=2048`, with L2 flushed between measurements:
+forward is **1.70×** faster and forward+backward is **3.71×** faster than
+max-autotuned Inductor. Kernel counts are 3 → 1 and 13 → 4. Forward workspace is
+0.312 → 0 MiB. Forward+backward workspace is 144.887 → 0.008 MiB. Both paths are
+at 1.00× the bf16 rounding floor. The forward reaches 97% of the traffic-only limit.
 
-**Against the other public kernels**: the forward is a four-way tie at the memory ceiling;
-we take 7 of 10 shapes on forward+backward, Liger takes 3, and catswe is 4.3× faster on
-batched pseudo-queries. See [`docs/third_party.md`](docs/third_party.md).
+**Batched-query forward**, `N=9 B=1 T=4096 D=2048 S=8`: the output-only resident
+path takes 0.199 ms. This is 1.77× faster than max-autotuned Inductor and 4.70× faster
+than eight separate switchyard calls. It uses one kernel, no temporary workspace, and
+has rounding-floor accuracy. See [`docs/batched_queries.md`](docs/batched_queries.md).
 
 ## Current best implementation
 
-`src/switchyard/triton_op.py` — two forward and two backward strategies, dispatched by a
+`src/switchyard/triton_op.py` contains two single-query forward strategies and two backward
+strategies. It also contains one output-only batched forward strategy. Dispatch uses a
 measured tile budget.
 
 ---
@@ -58,24 +61,26 @@ measured tile budget.
   verified locally; see BLOCKED).
 - **Technical report** ([`docs/report.md`](docs/report.md)), including every measurement bug
   found and fixed.
+- **Output-only batched-query forward.** One resident kernel reuses a source tile across up
+  to 16 queries. Unsupported shapes use an accurate per-query fallback. The public API
+  rejects autograd because no batched backward exists.
 
 ## NEXT
 
 Ordered by how much the measurements say they are worth.
 
-1. **A batched-query API.** catswe is 4.3× faster on the axis the paper's own two-phase
-   schedule targets, because it reads the sources once per *block* rather than once per
-   *call*. Our kernel is at the ceiling for what it is asked to do; it is asked to do the
-   wrong thing S times. This is the largest remaining win and it is not a kernel problem.
-2. **Improve the tiled backward.** Liger beats it at `D ≥ 4096` and `N=32`. The resident
+1. **Improve the tiled backward.** Liger beats it at `D ≥ 4096` and `N=32`. The resident
    backward is comfortably ahead everywhere it applies, so the gap is specific and local.
-3. Sweep fp16 and fp32 for performance; they are currently correctness-tested only.
+2. **Complete the batched training contract.** The current batched API does not return
+   merge statistics and does not implement backward. The resident forward is useful, but
+   it is not the complete paper schedule.
+3. **Sweep fp16 and fp32 for performance.** They are currently correctness-tested only.
 
 ## BLOCKED
 
 - **Opening pull requests.** The token has `contents:write` and `issues:write` but not
-  `pull_requests:write`. Branches are pushed; descriptions are posted as comments on
-  issue #1 with one-click compare links.
+  `pull_requests:write`. GitHub has no draft pull requests for this repository. The owner
+  authorized a direct fast-forward merge of the reviewed linear branch stack on 2026-09-02.
 - **Pushing CI.** The token lacks the `workflow` scope, so `.github/workflows/` cannot be
   pushed. The workflow is written and verified locally and its contents are on issue #1.
 
@@ -124,3 +129,6 @@ Decisions that changed direction, with the evidence that forced them. Append-onl
 | 2026-08-30 | Scale benchmark inputs so `‖w‖₂ ≈ 1`. | Logits are distributed as `N(0, ‖w‖²)`. Drawing `w ~ N(0,1)` puts the logit standard deviation at `sqrt(D)`, saturating the softmax into a regime no trained model occupies. |
 | 2026-08-31 | **Give each third-party kernel its own native input form.** | Handing fla `N` views of one leaf made autograd route gradients through `N` slice-backwards and reported it as 11× slower than us at `N=9` and 29× at `N=32`. With its actual sequence API the figures are 2.7× and 1.5×. The flattering number was one commit from being published. |
 | 2026-08-31 | Report the arena *and* the stacking cost rather than only the fast path. | The paper's pseudocode stacks at every site, costing 265 slab copies per forward and 6.75 GiB. Hiding that would have compared our plumbing against their arithmetic. |
+| 2026-09-02 | Keep the batched-query resident forward, but limit its contract to output-only inference. | At `N=9 B=1 T=4096 D=2048 S=8`, it takes 0.199 ms in one kernel with no workspace and 1.00× floor error. It beats max-autotuned Inductor by 1.77×. At `D=4096`, the fallback loses to catswe, so the resident dispatch boundary remains explicit. |
+| 2026-09-02 | Include max-autotuned Inductor in every best-baseline calculation. | The representative baseline is 0.209 ms forward and 1.354 ms forward+backward. The old public claims used 0.430 ms and 1.918 ms, which overstated speedups. |
+| 2026-09-02 | Measure allocator peaks relative to live allocations. | The old method charged the 384 MiB L2 flush buffer and live oracle storage to operator workspace. The corrected representative workspaces are 0.312 MiB for max-autotuned Inductor and 0 MiB for switchyard forward. |
