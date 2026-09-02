@@ -132,6 +132,7 @@ def bench_one(
     w: torch.Tensor,
     quick: bool,
     tol: float,
+    profile_kernels: bool,
 ) -> dict:
     fn = spec["fn"]
     rec: dict = {"impl": name, "compiled": spec["compiled"]}
@@ -174,12 +175,17 @@ def bench_one(
     rec["forward_achieved_gbps"] = achieved_bandwidth_gbps(min_bytes, fwd.median_ms)
 
     # 3. Kernel count and memory, forward.
-    try:
-        rec["forward_kernels"] = count_kernels(
-            lambda: fn(v, w, DEFAULT_EPS), device=device
-        ).as_dict()
-    except Exception as exc:  # noqa: BLE001
-        rec["forward_kernels"] = {"error": str(exc)[:200]}
+    if profile_kernels:
+        try:
+            rec["forward_kernels"] = count_kernels(
+                lambda: fn(v, w, DEFAULT_EPS), device=device
+            ).as_dict()
+        except Exception as exc:  # noqa: BLE001
+            rec["forward_kernels"] = {"error": str(exc)[:200]}
+    else:
+        rec["forward_kernels"] = {
+            "skipped": "disabled for multi-shape run; use the isolated representative run"
+        }
 
     # Separate the time the GPU spent working from the time it spent waiting.
     # A memory-bound operator that is actually dispatch-bound looks identical in
@@ -217,10 +223,17 @@ def bench_one(
         fb = measure_latency(fwd_bwd, device=device, warmup=warmup, reps=max(20, reps // 2))
         rec["fwd_bwd"] = fb.as_dict()
         rec["backward_only_ms"] = fb.median_ms - fwd.median_ms
-        try:
-            rec["fwd_bwd_kernels"] = count_kernels(fwd_bwd, device=device, iters=3).as_dict()
-        except Exception as exc:  # noqa: BLE001
-            rec["fwd_bwd_kernels"] = {"error": str(exc)[:200]}
+        if profile_kernels:
+            try:
+                rec["fwd_bwd_kernels"] = count_kernels(
+                    fwd_bwd, device=device, iters=3
+                ).as_dict()
+            except Exception as exc:  # noqa: BLE001
+                rec["fwd_bwd_kernels"] = {"error": str(exc)[:200]}
+        else:
+            rec["fwd_bwd_kernels"] = {
+                "skipped": "disabled for multi-shape run; use the isolated representative run"
+            }
         if dynamo_counters is not None:
             rec["compiled_fwd_bwd_verified"] = (
                 dynamo_counters["stats"]["unique_graphs"] >= 2
@@ -251,6 +264,11 @@ def main() -> None:
     ap.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
     ap.add_argument("--device", type=int, default=0)
     ap.add_argument("--quick", action="store_true")
+    ap.add_argument(
+        "--skip-kernel-profile",
+        action="store_true",
+        help="skip torch.profiler; use for multi-shape sweeps because repeated profiles can lose events",
+    )
     ap.add_argument("--impls", default=None, help="comma-separated subset")
     ap.add_argument("--query-scale", type=float, default=1.0,
                     help="||w||_2, which is the logit standard deviation. 1.0 is realistic; "
@@ -352,7 +370,12 @@ def main() -> None:
         for name, spec in impls.items():
             rec = bench_one(
                 name, spec, shape, dtype, device,
-                oracle=oracle, v=v, w=w, quick=args.quick, tol=tol,
+                oracle=oracle,
+                v=v,
+                w=w,
+                quick=args.quick,
+                tol=tol,
+                profile_kernels=not args.skip_kernel_profile,
             )
             rec["shape"] = asdict(shape)
             if sol_rec and not rec.get("skipped"):
