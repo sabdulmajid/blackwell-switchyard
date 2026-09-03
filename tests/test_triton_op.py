@@ -23,6 +23,7 @@ from switchyard.reference import DEFAULT_EPS, block_attn_res_oracle  # noqa: E40
 from switchyard.triton_op import (  # noqa: E402
     BlockAttnResTriton,
     _batched_launch,
+    _block_attn_res_source_serial,
     _bwd_launch,
     _launch_config,
     block_attn_res_batched,
@@ -142,6 +143,15 @@ def test_batched_forward_rejects_gradients_and_bad_inputs():
         block_attn_res_batched(v.detach()[:0], q)
 
 
+def test_batched_forward_accepts_parameters_under_no_grad():
+    v = torch.nn.Parameter(torch.randn(4, 1, 8, 32, device=DEV))
+    q = torch.nn.Parameter(torch.randn(3, 32, device=DEV))
+    with torch.no_grad():
+        got = block_attn_res_batched(v, q)
+    assert got.shape == (3, 1, 8, 32)
+    assert not got.requires_grad
+
+
 def test_batched_dispatch_uses_only_the_measured_resident_regime():
     assert _batched_launch(9, 2048, 8)[0]
     assert not _batched_launch(9, 4096, 8)[0]
@@ -207,6 +217,38 @@ def test_backward_accumulates_dw_in_fp32():
     assert _rel_l2(wt.grad.cpu(), ww.grad) < 0.06
 
 
+@pytest.mark.parametrize(
+    "shape",
+    [(9, 1, 7, 4097), (17, 2, 3, 2049)],
+)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+def test_source_serial_candidate_preserves_gradient_accuracy(shape, dtype):
+    """The private candidate must earn dispatch with the accepted tolerances.
+
+    These masked-tail shapes cover non-power-of-two source and feature counts.
+    Performance tests use production sizes after this correctness gate passes.
+    """
+    n, b, t, d = shape
+    torch.manual_seed(3)
+    v64 = torch.randn(n, b, t, d, dtype=torch.float64)
+    w64 = torch.randn(d, dtype=torch.float64)
+    w64 /= w64.norm()
+    g64 = torch.randn(b, t, d, dtype=torch.float64)
+
+    vv = v64.clone().requires_grad_(True)
+    ww = w64.clone().requires_grad_(True)
+    block_attn_res_oracle(vv, ww).backward(g64)
+
+    vt = v64.to(dtype).to(DEV).requires_grad_(True)
+    wt = w64.to(dtype).to(DEV).requires_grad_(True)
+    _block_attn_res_source_serial(vt, wt).backward(g64.to(dtype).to(DEV))
+
+    dv_tol = {torch.bfloat16: 0.03, torch.float16: 0.01, torch.float32: 1e-4}[dtype]
+    dw_tol = {torch.bfloat16: 0.06, torch.float16: 0.03, torch.float32: 1e-3}[dtype]
+    assert _rel_l2(vt.grad.cpu(), vv.grad) <= dv_tol
+    assert _rel_l2(wt.grad.cpu(), ww.grad) <= dw_tol
+
+
 def test_zero_query_averages():
     v = torch.randn(6, 2, 64, 512, device=DEV, dtype=torch.float32)
     w = torch.zeros(512, device=DEV, dtype=torch.float32)
@@ -266,6 +308,23 @@ def test_rejects_bad_input(bad):
     else:
         with pytest.raises(ValueError, match="CUDA"):
             block_attn_res_triton(v.cpu(), w.cpu(), DEFAULT_EPS)
+
+
+def test_training_api_rejects_invalid_device_dtype_shape_and_epsilon():
+    v = torch.randn(4, 1, 8, 32, device=DEV)
+    w = torch.randn(32, device=DEV)
+    with pytest.raises(ValueError, match="CUDA"):
+        block_attn_res_triton(v, w.cpu())
+    with pytest.raises(ValueError, match="same dtype"):
+        block_attn_res_triton(v, w.half())
+    with pytest.raises(TypeError, match="float16"):
+        block_attn_res_triton(v.to(torch.int32), w.to(torch.int32))
+    with pytest.raises(ValueError, match="positive"):
+        block_attn_res_triton(v[:, :, :0], w)
+    with pytest.raises(ValueError, match="eps"):
+        block_attn_res_triton(v, w, 0.0)
+    with pytest.raises(ValueError, match="eps"):
+        block_attn_res_triton(v, w, float("inf"))
 
 
 def test_dispatch_sends_the_representative_shape_to_the_resident_kernel():

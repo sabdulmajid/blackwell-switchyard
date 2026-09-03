@@ -38,6 +38,8 @@ All reductions accumulate in fp32 regardless of input dtype.
 
 from __future__ import annotations
 
+import math
+
 import torch
 import triton
 import triton.language as tl
@@ -45,6 +47,34 @@ import triton.language as tl
 from .reference import DEFAULT_EPS
 
 __all__ = ["block_attn_res_triton", "block_attn_res_batched", "BlockAttnResTriton"]
+
+_SUPPORTED_DTYPES = {torch.float16, torch.bfloat16, torch.float32}
+
+
+def _validate_eps(eps: float) -> None:
+    if not isinstance(eps, (float, int)) or not math.isfinite(eps) or eps <= 0:
+        raise ValueError(f"eps must be a finite positive number, got {eps!r}")
+
+
+def _validate_inputs(v: torch.Tensor, w: torch.Tensor, eps: float) -> tuple[int, int, int, int]:
+    """Validate the public single-query contract before entering Triton."""
+    if v.ndim != 4:
+        raise ValueError(f"v must be [N, B, T, D], got {tuple(v.shape)}")
+    n, b, t, d = v.shape
+    if min(n, b, t, d) <= 0:
+        raise ValueError(f"N, B, T, and D must be positive, got {tuple(v.shape)}")
+    if w.shape != (d,):
+        raise ValueError(f"w must be [{d}], got {tuple(w.shape)}")
+    if not v.is_cuda or not w.is_cuda:
+        raise ValueError("v and w must be CUDA tensors")
+    if v.device != w.device:
+        raise ValueError("v and w must be on the same CUDA device")
+    if v.dtype != w.dtype:
+        raise ValueError("v and w must have the same dtype")
+    if v.dtype not in _SUPPORTED_DTYPES:
+        raise TypeError(f"v and w must use float16, bfloat16, or float32, got {v.dtype}")
+    _validate_eps(eps)
+    return n, b, t, d
 
 
 @triton.jit
@@ -376,6 +406,111 @@ def _bwd_apply(
 
 
 @triton.jit
+def _bwd_source_serial(
+    v_ptr, w_ptr, g_ptr, dv_ptr, dw_ptr,
+    n_src, D, eps,
+    stride_vn, stride_vt, stride_vd,
+    stride_gt, stride_gd,
+    BLOCK_N: tl.constexpr, BLOCK_D: tl.constexpr,
+):
+    """Experimental one-kernel backward with one program per token.
+
+    The production tiled path keeps ``N`` sources in one ``[N, BLOCK_D]`` tile.
+    That becomes expensive when ``N * D`` exceeds the resident budget. This
+    candidate instead visits the sources one at a time. It keeps only full-``D``
+    vectors and ``N`` scalar statistics live, which makes register use largely
+    independent of the source count.
+
+    The tradeoff is deliberate and must be measured. A program contributes to
+    ``dw`` once per token, rather than once per 32-token chunk, so this design
+    issues 32 times as many contended fp32 atomics as ``_bwd_apply``. It is kept
+    outside normal dispatch until the dedicated benchmark proves where that
+    cost is lower than the current two-kernel path.
+
+    Forward statistics are recomputed in fp32. The kernel does not use
+    ``tl.dot`` or lower a contraction to bf16, so its intended numerical
+    contract is the same dtype-floor contract as the accepted path.
+    """
+    tok = tl.program_id(0)
+    offs_n = tl.arange(0, BLOCK_N)
+    offs_d = tl.arange(0, BLOCK_D)
+    n_mask = offs_n < n_src
+    d_mask = offs_d < D
+
+    w = tl.load(w_ptr + offs_d, mask=d_mask, other=0.0).to(tl.float32)
+    g = tl.load(
+        g_ptr + tok * stride_gt + offs_d * stride_gd,
+        mask=d_mask,
+        other=0.0,
+    ).to(tl.float32)
+
+    rstd = tl.zeros([BLOCK_N], dtype=tl.float32)
+    query_dot = tl.zeros([BLOCK_N], dtype=tl.float32)
+    grad_dot = tl.zeros([BLOCK_N], dtype=tl.float32)
+
+    # First pass: compute the full-D statistics for one source at a time. The
+    # tl.where insertion pattern keeps only scalar source statistics after each
+    # loop iteration instead of retaining an [N, D] value tile.
+    for i in tl.static_range(0, BLOCK_N):
+        if i < n_src:
+            vp = v_ptr + tok * stride_vt + i * stride_vn + offs_d * stride_vd
+            v = tl.load(vp, mask=d_mask, other=0.0).to(tl.float32)
+            ssq_i = tl.sum(v * v, axis=0)
+            query_dot_i = tl.sum(v * w, axis=0)
+            grad_dot_i = tl.sum(v * g, axis=0)
+            rstd_i = tl.rsqrt(ssq_i / D + eps)
+            select_i = offs_n == i
+            rstd = tl.where(select_i, rstd_i, rstd)
+            query_dot = tl.where(select_i, query_dot_i, query_dot)
+            grad_dot = tl.where(select_i, grad_dot_i, grad_dot)
+
+    logits = tl.where(n_mask, query_dot * rstd, float("-inf"))
+    unnormalized = tl.where(n_mask, tl.exp(logits - tl.max(logits, axis=0)), 0.0)
+    alpha = unnormalized / tl.sum(unnormalized, axis=0)
+    dlogit = alpha * (grad_dot - tl.sum(alpha * grad_dot, axis=0))
+
+    # Second pass: apply dv and retain one full-D dw reduction per token.
+    dw_acc = tl.zeros([BLOCK_D], dtype=tl.float32)
+    for i in tl.static_range(0, BLOCK_N):
+        if i < n_src:
+            select_i = offs_n == i
+            alpha_i = tl.sum(tl.where(select_i, alpha, 0.0), axis=0)
+            dlogit_i = tl.sum(tl.where(select_i, dlogit, 0.0), axis=0)
+            rstd_i = tl.sum(tl.where(select_i, rstd, 0.0), axis=0)
+            query_dot_i = tl.sum(tl.where(select_i, query_dot, 0.0), axis=0)
+
+            vp = v_ptr + tok * stride_vt + i * stride_vn + offs_d * stride_vd
+            v = tl.load(vp, mask=d_mask, other=0.0).to(tl.float32)
+            da_i = dlogit_i * rstd_i
+            dssq_i = -dlogit_i * query_dot_i * rstd_i * rstd_i * rstd_i / (2.0 * D)
+            dv = alpha_i * g + da_i * w + 2.0 * dssq_i * v
+            tl.store(
+                dv_ptr + tok * stride_vt + i * stride_vn + offs_d * stride_vd,
+                dv,
+                mask=d_mask,
+            )
+            dw_acc += da_i * v
+
+    tl.atomic_add(dw_ptr + offs_d, dw_acc, mask=d_mask)
+
+
+def _source_serial_launch(d: int) -> tuple[int, int]:
+    """Launch parameters for the opt-in backward candidate.
+
+    These values copy the broad full-width policy of the strongest public
+    comparison, not a claimed optimum. The GPU sweep must tune or reject them
+    before this candidate can enter production dispatch.
+    """
+    block_d = triton.next_power_of_2(d)
+    warps = 4
+    if block_d >= 2048:
+        warps = 8
+    if block_d >= 8192:
+        warps = 16
+    return block_d, warps
+
+
+@triton.jit
 def _fwd_batched_resident(
     v_ptr, q_ptr, out_ptr,
     n_src: tl.constexpr, n_q: tl.constexpr, D: tl.constexpr, eps,
@@ -470,9 +605,14 @@ def block_attn_res_batched(
         raise ValueError("v and queries must be on the same CUDA device")
     if v.dtype != queries.dtype:
         raise ValueError("v and queries must have the same dtype")
-    if v.shape[0] == 0 or queries.shape[0] == 0 or v.shape[-1] == 0:
-        raise ValueError("N, S, and D must be positive")
-    if v.requires_grad or queries.requires_grad:
+    if v.dtype not in _SUPPORTED_DTYPES:
+        raise TypeError(
+            f"v and queries must use float16, bfloat16, or float32, got {v.dtype}"
+        )
+    if min(*v.shape, queries.shape[0]) <= 0:
+        raise ValueError("N, B, T, D, and S must be positive")
+    _validate_eps(eps)
+    if torch.is_grad_enabled() and (v.requires_grad or queries.requires_grad):
         raise RuntimeError(
             "block_attn_res_batched has no backward; use block_attn_res_triton per query "
             "for training, or run this under torch.no_grad() for inference"
@@ -487,8 +627,6 @@ def block_attn_res_batched(
         return torch.stack([block_attn_res_triton(v, queries[i], eps) for i in range(s)])
 
     out = torch.empty(s, b, t, d, device=v.device, dtype=v.dtype)
-    if b * t == 0:
-        return out
     _fwd_batched_resident[(b * t,)](
         v, queries, out,
         n, s, d, eps,
@@ -503,14 +641,10 @@ def block_attn_res_batched(
 
 class _BlockAttnResTriton(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, v: torch.Tensor, w: torch.Tensor, eps: float):
-        if v.ndim != 4:
-            raise ValueError(f"v must be [N, B, T, D], got {tuple(v.shape)}")
-        n, b, t, d = v.shape
-        if w.shape != (d,):
-            raise ValueError(f"w must be [{d}], got {tuple(w.shape)}")
-        if not v.is_cuda:
-            raise ValueError("v must be on a CUDA device")
+    def forward(ctx, v: torch.Tensor, w: torch.Tensor, eps: float, backward_strategy: str):
+        n, b, t, d = _validate_inputs(v, w, eps)
+        if backward_strategy not in {"auto", "source_serial"}:
+            raise ValueError(f"unknown backward strategy: {backward_strategy}")
 
         # The kernel walks tokens with a single stride, so B and T are flattened.
         # Requiring contiguity here keeps the indexing honest rather than
@@ -533,6 +667,7 @@ class _BlockAttnResTriton(torch.autograd.Function):
         ctx.save_for_backward(v, w)
         ctx.eps = eps
         ctx.strategy = "resident" if resident else "tiled"
+        ctx.backward_strategy = backward_strategy
         return out
 
     @staticmethod
@@ -550,6 +685,18 @@ class _BlockAttnResTriton(torch.autograd.Function):
         dw = torch.zeros(d, device=v.device, dtype=torch.float32)
         n_tokens = b * t
 
+        if ctx.backward_strategy == "source_serial":
+            block_d, warps = _source_serial_launch(d)
+            _bwd_source_serial[(n_tokens,)](
+                v, w, grad_out, dv, dw,
+                n, d, ctx.eps,
+                v.stride(0), v.stride(2), v.stride(3),
+                grad_out.stride(1), grad_out.stride(2),
+                BLOCK_N=n_pow2, BLOCK_D=block_d,
+                num_warps=warps, num_stages=1,
+            )
+            return dv, dw.to(w.dtype), None, None
+
         if usable:
             _bwd_resident[(triton.cdiv(n_tokens, tokens),)](
                 v, w, grad_out, dv, dw,
@@ -560,7 +707,7 @@ class _BlockAttnResTriton(torch.autograd.Function):
                 BLOCK_N=n_pow2, BLOCK_D=triton.next_power_of_2(d),
                 TOKENS=tokens, num_warps=warps, num_stages=stages,
             )
-            return dv, dw.to(w.dtype), None
+            return dv, dw.to(w.dtype), None, None
 
         # Tiled backward: two kernels, because dw reduces over every token while
         # the softmax statistics need a full-D reduction per token, and no single
@@ -586,12 +733,27 @@ class _BlockAttnResTriton(torch.autograd.Function):
             BLOCK_N=n_pow2, BLOCK_D=block_d, TOKENS=tokens_per_cta,
             num_warps=8, num_stages=1,
         )
-        return dv, dw.to(w.dtype), None
+        return dv, dw.to(w.dtype), None, None
 
 
-def block_attn_res_triton(v: torch.Tensor, w: torch.Tensor, eps: float = DEFAULT_EPS):
+def block_attn_res_triton(
+    v: torch.Tensor, w: torch.Tensor, eps: float = DEFAULT_EPS
+) -> torch.Tensor:
     """Fused Block AttnRes. Same contract as ``block_attn_res_reference``."""
-    return _BlockAttnResTriton.apply(v, w, eps)
+    return _BlockAttnResTriton.apply(v, w, eps, "auto")
+
+
+def _block_attn_res_source_serial(
+    v: torch.Tensor, w: torch.Tensor, eps: float = DEFAULT_EPS
+) -> torch.Tensor:
+    """Run the opt-in source-serial backward candidate.
+
+    This private entry point exists only for ``bench/bench_backward.py`` and
+    candidate correctness tests. It shares the accepted forward kernel. It must
+    not be exported or selected by normal dispatch until stored GPU evidence
+    passes the promotion gates in ``docs/backward_experiment.md``.
+    """
+    return _BlockAttnResTriton.apply(v, w, eps, "source_serial")
 
 
 class BlockAttnResTriton(torch.nn.Module):

@@ -24,6 +24,7 @@ mean quietly absorbs.
 from __future__ import annotations
 
 import gc
+import hashlib
 import statistics
 import subprocess
 import sys
@@ -54,17 +55,29 @@ def repository_provenance(
         return result.stdout.strip() if result.returncode == 0 else None
 
     revisions = {}
+    third_party_dirty = {}
     for name, path in (third_party or {}).items():
         if path.is_dir():
             revisions[name] = git(path, "rev-parse", "HEAD")
+            third_party_dirty[name] = bool(git(path, "status", "--porcelain"))
+
+    status = git(repo, "status", "--porcelain") or ""
+    diff = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--binary", "HEAD"],
+        check=False,
+        capture_output=True,
+    ).stdout
 
     return {
         "argv": sys.argv.copy(),
         "repository_commit": git(repo, "rev-parse", "HEAD"),
-        "tracked_worktree_dirty": bool(
-            git(repo, "status", "--porcelain", "--untracked-files=no")
-        ),
+        "repository_tree": git(repo, "rev-parse", "HEAD^{tree}"),
+        "repository_branch": git(repo, "branch", "--show-current"),
+        "tracked_worktree_dirty": bool(git(repo, "status", "--porcelain", "--untracked-files=no")),
+        "dirty_paths": [line[3:] for line in status.splitlines()],
+        "diff_sha256": hashlib.sha256(diff).hexdigest(),
         "third_party_commits": revisions,
+        "third_party_dirty": third_party_dirty,
         "input_seed": 0,
         "query_seed": 1,
     }
@@ -88,9 +101,13 @@ class Timing:
     reps: int
     warmup: int
     l2_flushed: bool
+    samples_ms: list[float] | None = None
 
     def as_dict(self) -> dict:
-        return self.__dict__.copy()
+        result = self.__dict__.copy()
+        if result["samples_ms"] is None:
+            del result["samples_ms"]
+        return result
 
 
 def measure_latency(
@@ -100,6 +117,7 @@ def measure_latency(
     warmup: int = 25,
     reps: int = 100,
     flush_l2: bool = True,
+    record_samples: bool = False,
 ) -> Timing:
     """Median wall-clock of ``fn`` on the GPU, via CUDA events.
 
@@ -122,6 +140,7 @@ def measure_latency(
         torch.cuda.synchronize(device)
         samples.append(start.elapsed_time(end))
 
+    raw_samples = samples.copy()
     samples.sort()
     n = len(samples)
     mean = statistics.fmean(samples)
@@ -135,6 +154,7 @@ def measure_latency(
         reps=n,
         warmup=warmup,
         l2_flushed=flush_l2,
+        samples_ms=raw_samples if record_samples else None,
     )
 
 
