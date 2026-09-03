@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import tempfile
+from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
@@ -46,6 +47,14 @@ from switchyard.triton_op import _fwd_tiled  # noqa: E402
 
 TARGET = GPUTarget("cuda", 120, 32)
 CUOBJDUMP = Path(os.environ.get("CUDA_HOME", "/usr/local/cuda-12.8")) / "bin/cuobjdump"
+CUDA_INSTANCE_COUNTS = {
+    "shared_backward_kernel": 2,
+    "feature_cluster_backward_kernel": 2,
+}
+CUDA_REGISTER_LIMITS = {
+    "shared_backward_kernel": 64,
+    "feature_cluster_backward_kernel": 64,
+}
 
 POINTER_SIGNATURE = {
     "v_ptr": "*bf16",
@@ -238,10 +247,24 @@ def compile_all() -> dict:
         cuda_resources = _resource_usage(Path(extension.__file__))
     if any(item["local_bytes"] or item["stack_bytes"] for item in cuda_resources):
         raise RuntimeError(f"CUDA candidate spills to local memory: {cuda_resources}")
+    instance_counts = Counter(item["kernel"] for item in cuda_resources)
+    if instance_counts != Counter(CUDA_INSTANCE_COUNTS):
+        raise RuntimeError(
+            "CUDA build must contain bf16 and fp16 instances of both candidates: "
+            f"{dict(instance_counts)}"
+        )
+    for item in cuda_resources:
+        limit = CUDA_REGISTER_LIMITS[item["kernel"]]
+        if item["registers"] > limit:
+            raise RuntimeError(
+                f"{item['kernel']} uses {item['registers']} registers; budget is {limit}"
+            )
     records.append(
         {
             "name": "one_read_cuda",
             "kind": "cuda",
+            "required_template_instances": CUDA_INSTANCE_COUNTS,
+            "register_limits": CUDA_REGISTER_LIMITS,
             "resources": cuda_resources,
         }
     )
