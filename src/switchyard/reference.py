@@ -132,7 +132,7 @@ def block_attn_res_reference(v: Tensor, w: Tensor, eps: float = DEFAULT_EPS) -> 
         raise ValueError("v and w must be on the same device")
     if not v.is_floating_point() or not w.is_floating_point():
         raise TypeError("v and w must be floating-point tensors")
-    if not isinstance(eps, (float, int)) or not math.isfinite(eps) or eps <= 0:
+    if not isinstance(eps, float | int) or not math.isfinite(eps) or eps <= 0:
         raise ValueError(f"eps must be a finite positive number, got {eps!r}")
 
     k = rms_norm(v, eps)                                # [N, B, T, D]

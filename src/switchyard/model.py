@@ -457,7 +457,7 @@ class Transformer(nn.Module):
     def _init_weights(module: nn.Module) -> None:
         # Only Linear and Embedding draw from the RNG, so the three residual
         # modes consume the identical random stream.
-        if isinstance(module, (nn.Linear, nn.Embedding)):
+        if isinstance(module, nn.Linear | nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     # -- parameter accounting ------------------------------------------------

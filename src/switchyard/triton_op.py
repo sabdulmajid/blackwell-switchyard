@@ -53,7 +53,7 @@ _SUPPORTED_DTYPES = {torch.float16, torch.bfloat16, torch.float32}
 
 
 def _validate_eps(eps: float) -> None:
-    if not isinstance(eps, (float, int)) or not math.isfinite(eps) or eps <= 0:
+    if not isinstance(eps, float | int) or not math.isfinite(eps) or eps <= 0:
         raise ValueError(f"eps must be a finite positive number, got {eps!r}")
 
 
