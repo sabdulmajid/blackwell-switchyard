@@ -230,3 +230,17 @@ def test_rejects_wrong_rank():
 def test_rejects_mismatched_query():
     with pytest.raises(ValueError, match="D="):
         block_attn_res_reference(torch.randn(2, 1, 3, 8), torch.randn(7))
+
+
+@pytest.mark.parametrize(
+    ("v", "w", "eps", "error"),
+    [
+        (torch.empty(0, 1, 1, 8), torch.randn(8), DEFAULT_EPS, ValueError),
+        (torch.ones(2, 1, 1, 8, dtype=torch.int64), torch.ones(8), DEFAULT_EPS, TypeError),
+        (torch.randn(2, 1, 1, 8), torch.randn(8), 0.0, ValueError),
+        (torch.randn(2, 1, 1, 8), torch.randn(8), float("nan"), ValueError),
+    ],
+)
+def test_rejects_invalid_domain_inputs(v, w, eps, error):
+    with pytest.raises(error):
+        block_attn_res_reference(v, w, eps)

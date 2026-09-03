@@ -36,6 +36,9 @@ Issues = "https://github.com/sabdulmajid/blackwell-switchyard/issues"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+switchyard = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

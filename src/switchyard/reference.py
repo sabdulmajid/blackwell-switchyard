@@ -126,6 +126,14 @@ def block_attn_res_reference(v: Tensor, w: Tensor, eps: float = DEFAULT_EPS) -> 
         raise ValueError(f"w must be [D], got shape {tuple(w.shape)}")
     if w.shape[0] != v.shape[-1]:
         raise ValueError(f"w has D={w.shape[0]} but v has D={v.shape[-1]}")
+    if min(v.shape) <= 0:
+        raise ValueError(f"N, B, T, and D must be positive, got shape {tuple(v.shape)}")
+    if v.device != w.device:
+        raise ValueError("v and w must be on the same device")
+    if not v.is_floating_point() or not w.is_floating_point():
+        raise TypeError("v and w must be floating-point tensors")
+    if not isinstance(eps, (float, int)) or not math.isfinite(eps) or eps <= 0:
+        raise ValueError(f"eps must be a finite positive number, got {eps!r}")
 
     k = rms_norm(v, eps)                                # [N, B, T, D]
     logits = torch.einsum("d,nbtd->nbt", w, k)          # [N, B, T]

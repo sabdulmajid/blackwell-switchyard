@@ -118,7 +118,6 @@ from torch import Tensor
 
 from .baselines import folded_form
 from .reference import DEFAULT_EPS, BlockAttnRes
-from .triton_op import block_attn_res_triton
 
 __all__ = [
     "ModelConfig",
@@ -137,9 +136,16 @@ SOURCE_MODES = ("arena", "stack")
 
 #: Residual mode -> the callable that evaluates the operator. Both take
 #: ``(v, w, eps)`` and return ``[B, T, D]``.
+def _block_attn_res_triton(v: Tensor, w: Tensor, eps: float) -> Tensor:
+    """Import the optional Triton dependency only when the GPU path is used."""
+    from .triton_op import block_attn_res_triton
+
+    return block_attn_res_triton(v, w, eps)
+
+
 _IMPLS: dict[str, Callable[[Tensor, Tensor, float], Tensor]] = {
     "attnres": folded_form,
-    "switchyard": block_attn_res_triton,
+    "switchyard": _block_attn_res_triton,
 }
 
 
@@ -175,6 +181,13 @@ class ModelConfig:
             raise ValueError(f"residual must be one of {RESIDUAL_MODES}, got {self.residual!r}")
         if self.sources not in SOURCE_MODES:
             raise ValueError(f"sources must be one of {SOURCE_MODES}, got {self.sources!r}")
+        for name in ("vocab_size", "d_model", "n_layers", "n_heads", "d_ff", "n_blocks", "max_seq_len"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be positive, got {getattr(self, name)}")
+        if self.norm_eps <= 0 or not math.isfinite(self.norm_eps):
+            raise ValueError(f"norm_eps must be finite and positive, got {self.norm_eps}")
+        if self.rope_theta <= 0 or not math.isfinite(self.rope_theta):
+            raise ValueError(f"rope_theta must be finite and positive, got {self.rope_theta}")
         if self.d_model % self.n_heads:
             raise ValueError(f"d_model {self.d_model} not divisible by n_heads {self.n_heads}")
         if self.n_sublayers % self.n_blocks:
@@ -214,6 +227,10 @@ def source_count_schedule(n_sublayers: int, n_blocks: int) -> list[int]:
     For the default 24-layer, 8-block model this is
     ``[1,2,2,2,2,2, 2,3,3,3,3,3, ..., 8,9,9,9,9,9, 9]``.
     """
+    if n_sublayers <= 0 or n_blocks <= 0:
+        raise ValueError("n_sublayers and n_blocks must be positive")
+    if n_sublayers % n_blocks:
+        raise ValueError("n_blocks must divide n_sublayers")
     block_size = n_sublayers // n_blocks
     counts = [(i // block_size) + (1 if i % block_size == 0 else 2) for i in range(n_sublayers)]
     return counts + [n_blocks + 1]
@@ -227,6 +244,8 @@ def slab_copies(n_sublayers: int, n_blocks: int, sources: str) -> int:
     stacking cost of ``N`` slabs per site means the model pays for its plumbing
     exactly as much as for its arithmetic.
     """
+    if sources not in SOURCE_MODES:
+        raise ValueError(f"sources must be one of {SOURCE_MODES}, got {sources!r}")
     if sources == "stack":
         return sum(source_count_schedule(n_sublayers, n_blocks))
     # Arena: the embedding once, then the running partial after each sublayer.
