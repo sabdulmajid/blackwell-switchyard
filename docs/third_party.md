@@ -13,39 +13,39 @@ logit scale to 1.0 and output RMSNorm disabled so all compute the same function.
 
 | shape | ceiling | **switchyard** | Liger-Kernel | fla | catswe |
 |---|---|---|---|---|---|
-| N=2 T=4096 D=2048 | 0.043 / 1170 | 0.041 / 1229 | 0.045 / 1117 | 0.043 / 1170 | 0.041 / 1229 |
-| N=4 T=4096 D=2048 | 0.066 / 1280 | 0.068 / 1241 | 0.070 / 1205 | 0.066 / 1280 | 0.063 / 1321 |
-| N=8 T=4096 D=2048 | 0.109 / 1391 | 0.106 / 1418 | 0.119 / 1271 | 0.108 / 1404 | 0.109 / 1391 |
-| N=9 T=4096 D=2048 | 0.121 / 1388 | 0.123 / 1365 | 0.133 / 1260 | 0.119 / 1412 | 0.121 / 1388 |
-| N=16 T=4096 D=2048 | 0.197 / 1451 | 0.197 / 1451 | 0.303 / 941 | 0.209 / 1365 | 0.199 / 1436 |
-| N=32 T=4096 D=2048 | 0.373 / 1485 | 0.391 / 1415 | 0.680 / 814 | 0.471 / 1175 | 0.418 / 1325 |
-| N=9 T=4096 D=1024 | 0.070 / 1205 | 0.070 / 1205 | 0.104 / 803 | 0.066 / 1280 | 0.072 / 1170 |
-| N=9 T=4096 D=4096 | 0.223 / 1503 | 0.236 / 1425 | 0.276 / 1214 | 0.225 / 1489 | 0.225 / 1489 |
-| N=9 T=4096 D=8192 | 0.442 / 1517 | 0.532 / 1260 | 0.508 / 1321 | 0.435 / 1542 | 0.506 / 1327 |
-| N=9 T=8192 D=2048 | 0.223 / 1503 | 0.227 / 1476 | 0.250 / 1343 | 0.223 / 1503 | 0.225 / 1489 |
+| N=2 T=4096 D=2048 | 0.039 / 1293 | 0.035 / 1446 | 0.043 / 1170 | 0.041 / 1229 | 0.039 / 1293 |
+| N=4 T=4096 D=2048 | 0.063 / 1321 | 0.063 / 1321 | 0.070 / 1205 | 0.066 / 1280 | 0.066 / 1280 |
+| N=8 T=4096 D=2048 | 0.109 / 1391 | 0.106 / 1418 | 0.119 / 1271 | 0.111 / 1365 | 0.111 / 1365 |
+| N=9 T=4096 D=2048 | 0.121 / 1388 | 0.123 / 1365 | 0.133 / 1260 | 0.120 / 1400 | 0.121 / 1388 |
+| N=16 T=4096 D=2048 | 0.201 / 1421 | 0.199 / 1436 | 0.315 / 904 | 0.200 / 1428 | 0.201 / 1421 |
+| N=32 T=4096 D=2048 | 0.373 / 1485 | 0.385 / 1438 | 0.678 / 817 | 0.460 / 1204 | 0.426 / 1300 |
+| N=9 T=4096 D=1024 | 0.066 / 1280 | 0.066 / 1280 | 0.080 / 1050 | 0.066 / 1280 | 0.068 / 1241 |
+| N=9 T=4096 D=4096 | 0.225 / 1489 | 0.238 / 1412 | 0.289 / 1162 | 0.225 / 1489 | 0.229 / 1463 |
+| N=9 T=4096 D=8192 | 0.442 / 1517 | 0.524 / 1280 | 0.522 / 1285 | 0.438 / 1531 | 0.528 / 1270 |
+| N=9 T=8192 D=2048 | 0.225 / 1489 | 0.229 / 1463 | 0.260 / 1290 | 0.227 / 1476 | 0.229 / 1463 |
 
 The forward is a near four-way tie at the memory ceiling. switchyard, fla and
 catswe are all within a few percent of the speed-of-light kernel almost
-everywhere; there is simply nothing left to win. Liger is the outlier, and the
-gap widens with `N` -- 814 GB/s against 1415 at `N=32`.
+everywhere. Liger falls further behind as `N` grows.
+At `N=32`, Liger reaches 817 GB/s and switchyard reaches 1438 GB/s.
 
-fla is faster than us at `D=8192` (1542 vs 1260 GB/s) and `D=1024`. Both are
-shapes where our tiled path runs, and it is the weaker of our two.
+fla is faster at `D=8192`: 1531 GB/s against switchyard's 1280 GB/s.
+This shape uses the weaker tiled switchyard path.
 
 ## Forward + backward: latency in ms
 
 | shape | **switchyard** | Liger-Kernel | fla | catswe | best |
 |---|---|---|---|---|---|
-| N=2 T=4096 D=2048 | **0.095** | 0.180 | 0.525 | 0.629 | switchyard |
-| N=4 T=4096 D=2048 | **0.206** | 0.320 | 0.715 | 0.683 | switchyard |
-| N=8 T=4096 D=2048 | **0.308** | 0.354 | 0.864 | 0.978 | switchyard |
-| N=9 T=4096 D=2048 | **0.360** | 0.373 | 0.956 | 1.046 | switchyard |
-| N=16 T=4096 D=2048 | **0.598** | 0.679 | 1.380 | 1.628 | switchyard |
-| N=32 T=4096 D=2048 | 1.554 | **1.512** | 2.298 | 3.845 | Liger-Kernel |
-| N=9 T=4096 D=1024 | **0.180** | 0.237 | 0.802 | 0.654 | switchyard |
-| N=9 T=4096 D=4096 | 0.918 | **0.753** | 1.032 | 1.885 | Liger-Kernel |
-| N=9 T=4096 D=8192 | 1.932 | **1.422** | 1.553 | 4.942 | Liger-Kernel |
-| N=9 T=8192 D=2048 | **0.680** | 0.719 | 1.060 | 1.878 | switchyard |
+| N=2 T=4096 D=2048 | **0.094** | 0.172 | 0.629 | 0.624 | switchyard |
+| N=4 T=4096 D=2048 | **0.167** | 0.235 | 0.606 | 0.592 | switchyard |
+| N=8 T=4096 D=2048 | **0.307** | 0.336 | 0.555 | 0.982 | switchyard |
+| N=9 T=4096 D=2048 | **0.360** | 0.377 | 0.554 | 1.064 | switchyard |
+| N=16 T=4096 D=2048 | **0.592** | 0.690 | 1.385 | 1.631 | switchyard |
+| N=32 T=4096 D=2048 | 1.565 | **1.502** | 2.259 | 3.825 | Liger-Kernel |
+| N=9 T=4096 D=1024 | **0.222** | 0.314 | 1.120 | 0.687 | switchyard |
+| N=9 T=4096 D=4096 | 0.920 | **0.774** | 0.856 | 1.880 | Liger-Kernel |
+| N=9 T=4096 D=8192 | 1.961 | **1.435** | 1.548 | 4.976 | Liger-Kernel |
+| N=9 T=8192 D=2048 | **0.684** | 0.723 | 1.070 | 1.902 | switchyard |
 
 Wins: switchyard 7, Liger-Kernel 3, fla 0, catswe 0.
 
@@ -54,23 +54,23 @@ switchyard takes most shapes, but **Liger's backward is faster than ours at
 backward runs instead of the register-resident one. That is a real deficiency
 and it points at the next piece of work, not at a rounding error.
 
-## Batched pseudo-queries: where catswe's design wins
+## Batched pseudo-queries
 
-The paper's two-phase schedule (Sec. 4.2) amortizes one pass over the block
-representations across all `S` pseudo-queries in a block. catswe implements
-that; our operator has no such API, so the honest comparison is `S` separate
-calls.
+The switchyard resident path reads the source tile once for all queries.
+It returns the output only. catswe also computes merge statistics and supports
+its backward design. These contracts are related, but they are not identical.
 
 | approach | ms |
 |---|---|
+| framework eager batched | 0.891 |
+| framework compiled batched | 0.358 |
 | switchyard x8 calls | 0.930 |
+| switchyard batched | 0.207 |
 | catswe phase1 S=8 | 0.215 |
 
-**catswe is 4.3x faster on this axis.** Our per-call kernel is at the
-memory ceiling, but it reads the sources once *per query*; theirs reads them
-once per *block*. At `S=8` that is an 8x traffic difference and no amount of
-kernel tuning closes it -- it is an API and scheduling difference, and the
-clearest single piece of future work this comparison surfaced.
+The output-only switchyard path is 1.04x faster than catswe here.
+It is 1.73x faster than max-autotuned Inductor.
+See `docs/batched_queries.md` for the query-count and shape sweeps.
 
 ## Accuracy
 
@@ -95,12 +95,12 @@ slice-backwards plus an accumulation.
 
 | fla backward at N=9 D=2048 | ms |
 |---|---|
-| `N` views of one leaf (wrong) | 4.146 |
-| `N` separate leaves (its actual API) | 0.956 |
+| `N` views of one leaf (wrong) | 3.857 |
+| `N` separate leaves (its actual API) | 0.554 |
 
-A **4.3x** penalty created entirely by the harness. Reported as
-published, it would have made fla look 11x slower than us at `N=9` and 29x at
-`N=32`, when the true figures are 2.7x and 1.5x. Both numbers are kept in the
+A **7.0x** penalty created entirely by the harness. Reported as
+published, it would make fla look 10.7x slower than switchyard at `N=9` and 29.2x at `N=32`.
+With fla's native input form, the ratios are 1.5x and 1.4x. Both input forms are kept in the
 JSON because the gap is itself informative: it is the cost of the pointer-table
 API when the sources really do live in one buffer.
 

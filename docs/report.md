@@ -90,13 +90,13 @@ entirely our way. Summarised:
 
 * **The forward is a four-way tie at the memory ceiling.** switchyard, fla and
   catswe are all within a few percent of speed of light. Liger is the outlier
-  and falls further behind as `N` grows (814 GB/s against 1415 at `N=32`).
+  and falls further behind as `N` grows (817 GB/s against 1438 at `N=32`).
 * **We take 7 of 10 shapes on forward+backward, and Liger takes 3** -- every one
   of them at `D >= 4096` or `N=32`, which is exactly where our two-kernel tiled
   backward runs instead of the register-resident one. That is a real deficiency.
-* **catswe is 4.3x faster on batched pseudo-queries.** Their two-phase schedule
-  reads the sources once per block; ours reads them once per call. No amount of
-  kernel tuning closes an 8x traffic difference -- it needs the API.
+* **The output-only batched switchyard path takes 0.207 ms for eight queries.**
+  It takes one kernel and has rounding-floor accuracy. Max-autotuned Inductor
+  takes 0.358 ms. catswe takes 0.215 ms and computes additional merge state.
 
 Claims this project must not make are listed in the README.
 
@@ -402,12 +402,10 @@ Where the kernel does *not* reach the ceiling:
   sources arrive as separate tensors, and the stacking cost is a real cost. fla's
   pointer-table API avoids it entirely and is the better design on that axis;
   ours would need either a preallocated buffer written by slice, or a copy.
-- **No batched-query API.** The paper's own two-phase schedule (Sec. 4.2)
-  amortizes one pass over the sources across a block's `S` pseudo-queries.
-  catswe implements it and is 4.3x faster than `S` calls of our kernel. This is
-  the largest single piece of performance left in the operator and it is not a
-  kernel problem — our kernel is already at the ceiling for what it is asked to
-  do. It is asked to do the wrong thing `S` times.
+- **The batched-query API is output-only.** The resident path amortizes one
+  source read across as many as 16 pseudo-queries. It does not return merge
+  statistics and does not implement backward. Shapes outside the resident tile
+  budget use an accurate fallback, but that fallback is not a performance path.
 - **Our tiled backward is the weak path.** Liger beats it at `D >= 4096` and
   `N=32`. The resident backward is comfortably ahead everywhere it applies.
 
@@ -432,13 +430,14 @@ saturated regime and made every implementation fail correctness.
 
 **Give a competitor its own API.** The first head-to-head handed fla `N` views of
 one leaf tensor because that is the shape our operator takes. Autograd then
-routed every gradient through `N` slice-backwards, and fla appeared 11x slower
-than us at `N=9` and 29x at `N=32`. Given its actual sequence-of-tensors API the
-true figures are 2.7x and 1.5x. The flattering number was one commit away from
-being published, and nothing in the harness would have caught it — only asking
-"why would it be *that* bad?" did.
+routed every gradient through `N` slice-backwards. This input form makes fla
+10.7x slower than switchyard at `N=9` and 29.2x slower at `N=32`. With fla's
+native sequence API, the ratios are 1.5x and 1.4x. The flattering number was
+one commit away from publication. Only the question "why is it that slow?"
+found the benchmark error.
 
 **Being at the ceiling is not the same as being fastest.** Our forward sustains
-94-101% of speed of light and is still 4.3x slower than catswe on batched
-queries, because the ceiling is computed for the work we chose to do. A roofline
-answers "is this kernel efficient", never "is this the right kernel".
+85-106% of the measured traffic-only proxy across the current sweep. fla is
+still faster at `D=8192`. A roofline answers "is this kernel efficient", never
+"is this the right kernel". The batched path confirms the second question:
+source reuse matters more than repeated efficient per-query calls.

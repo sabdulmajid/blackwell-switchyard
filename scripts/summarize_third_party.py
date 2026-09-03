@@ -51,12 +51,20 @@ def main() -> None:
                 cells.append("--")
         w(f"| N={k[0]} T={k[2]} D={k[3]} | " + " | ".join(cells) + " |")
 
+    n32 = rows[(32, 1, 4096, 2048)]
     w("\nThe forward is a near four-way tie at the memory ceiling. switchyard, fla and")
     w("catswe are all within a few percent of the speed-of-light kernel almost")
-    w("everywhere; there is simply nothing left to win. Liger is the outlier, and the")
-    w("gap widens with `N` -- 814 GB/s against 1415 at `N=32`.\n")
-    w("fla is faster than us at `D=8192` (1542 vs 1260 GB/s) and `D=1024`. Both are")
-    w("shapes where our tiled path runs, and it is the weaker of our two.\n")
+    w("everywhere. Liger falls further behind as `N` grows.")
+    w(
+        f"At `N=32`, Liger reaches {n32['liger']['forward_achieved_gbps']:.0f} GB/s "
+        f"and switchyard reaches {n32['switchyard']['forward_achieved_gbps']:.0f} GB/s.\n"
+    )
+    d8192 = rows[(9, 1, 4096, 8192)]
+    w(
+        f"fla is faster at `D=8192`: {d8192['fla']['forward_achieved_gbps']:.0f} GB/s "
+        f"against switchyard's {d8192['switchyard']['forward_achieved_gbps']:.0f} GB/s."
+    )
+    w("This shape uses the weaker tiled switchyard path.\n")
 
     w("## Forward + backward: latency in ms\n")
     cols = [i for i in IMPLS if i != "speed_of_light"]
@@ -126,6 +134,11 @@ def main() -> None:
     native = fl.get("fwd_bwd", {}).get("median_ms")
     stacked = fl.get("fwd_bwd_stacked_leaf", {}).get("median_ms")
     if native and stacked:
+        ours_n9 = ref["switchyard"]["fwd_bwd"]["median_ms"]
+        n32_ref = rows[(32, 1, 4096, 2048)]
+        ours_n32 = n32_ref["switchyard"]["fwd_bwd"]["median_ms"]
+        fla_n32 = n32_ref["fla"]["fwd_bwd"]["median_ms"]
+        fla_n32_stacked = n32_ref["fla"]["fwd_bwd_stacked_leaf"]["median_ms"]
         w("fla takes a *sequence* of sources rather than one stacked tensor, which is how")
         w("a real model holds them: each block representation is produced by a different")
         w("layer. The first version of this benchmark handed it `N` views of a single leaf")
@@ -136,8 +149,14 @@ def main() -> None:
         w(f"| `N` views of one leaf (wrong) | {stacked:.3f} |")
         w(f"| `N` separate leaves (its actual API) | {native:.3f} |")
         w(f"\nA **{stacked / native:.1f}x** penalty created entirely by the harness. Reported as")
-        w("published, it would have made fla look 11x slower than us at `N=9` and 29x at")
-        w("`N=32`, when the true figures are 2.7x and 1.5x. Both numbers are kept in the")
+        w(
+            f"published, it would make fla look {stacked / ours_n9:.1f}x slower than "
+            f"switchyard at `N=9` and {fla_n32_stacked / ours_n32:.1f}x at `N=32`."
+        )
+        w(
+            f"With fla's native input form, the ratios are {native / ours_n9:.1f}x and "
+            f"{fla_n32 / ours_n32:.1f}x. Both input forms are kept in the"
+        )
         w("JSON because the gap is itself informative: it is the cost of the pointer-table")
         w("API when the sources really do live in one buffer.\n")
 
