@@ -29,9 +29,10 @@ has rounding-floor accuracy. See [`docs/batched_queries.md`](docs/batched_querie
 
 ## Current best implementation
 
-`src/switchyard/triton_op.py` contains two single-query forward strategies and two backward
+`src/switchyard/triton_op.py` contains the accepted single-query forward and backward
 strategies. It also contains one output-only batched forward strategy. Dispatch uses a
-measured tile budget.
+measured tile budget. Private training plans now isolate the next backward architectures from
+production dispatch.
 
 ---
 
@@ -69,11 +70,15 @@ measured tile budget.
 
 Ordered by how much the measurements say they are worth.
 
-1. **Measure the private tiled-backward candidate.** The `codex/tiled-backward-prep` branch
-   contains a source-serial candidate, a direct-backward benchmark, raw sample capture,
-   three-seed gradient checks, a 12-shape matrix, and an automatic keep-or-drop evaluator.
-   The candidate is not reachable from production dispatch. It compiled offline for the
-   three target `sm_120` tile configurations. GPU correctness and latency are still pending.
+1. **Validate the backward architecture candidates on an idle GPU.** The
+   `codex/backward-architecture` branch replaces the backward-only experiment switch with
+   complete immutable training plans. It contains grouped Triton paths, saved FP32 forward
+   coefficients, hierarchical `dw` reduction, a one-block CUDA traffic control, and a
+   persistent two-block feature-sharded CUDA cluster. The cluster targets the one-read source
+   traffic lower bound. The offline `sm_120` gate reports 40 registers per cluster thread and
+   no stack or local-memory spill. The benchmark uses paired trial medians and records GPU
+   exclusivity at the start and end of each run. Production dispatch is unchanged. GPU
+   correctness, occupancy, and latency are still pending.
 2. **Complete the batched training contract.** The current batched API does not return
    merge statistics and does not implement backward. The resident forward is useful, but
    it is not the complete paper schedule.
@@ -136,3 +141,4 @@ Decisions that changed direction, with the evidence that forced them. Append-onl
 | 2026-09-02 | Keep the batched-query resident forward, but limit its contract to output-only inference. | At `N=9 B=1 T=4096 D=2048 S=8`, it takes 0.199 ms in one kernel with no workspace and 1.00× floor error. It beats max-autotuned Inductor by 1.77×. At `D=4096`, the fallback loses to catswe, so the resident dispatch boundary remains explicit. |
 | 2026-09-02 | Include max-autotuned Inductor in every best-baseline calculation. | The representative baseline is 0.209 ms forward and 1.354 ms forward+backward. The old public claims used 0.430 ms and 1.918 ms, which overstated speedups. |
 | 2026-09-02 | Measure allocator peaks relative to live allocations. | The old method charged the 384 MiB L2 flush buffer and live oracle storage to operator workspace. The corrected representative workspaces are 0.312 MiB for max-autotuned Inductor and 0 MiB for switchyard forward. |
+| 2026-09-03 | Stop tuning the split backward and prepare a one-read architecture. | The split path moves `(3N+2)X` large-tensor bytes while the exact lower bound is `(2N+1)X`. The 288–576 MiB source stacks do not fit in 128 MiB of L2. Liger is already within about 2.5–4 percent of the two-read bandwidth model, so tile changes cannot create a material lead. The new feature-sharded cluster retains source values in distributed shared memory and compiles for `sm_120` without spills. |

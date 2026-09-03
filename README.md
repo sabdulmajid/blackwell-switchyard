@@ -186,13 +186,16 @@ with torch.no_grad():
 |---|---|
 | [`reference.py`](src/switchyard/reference.py) | Defines the operation and the float64 oracle. |
 | [`baselines.py`](src/switchyard/baselines.py) | Defines framework baseline formulations. |
-| [`triton_op.py`](src/switchyard/triton_op.py) | Defines two forward and two backward strategies. |
+| [`triton_op.py`](src/switchyard/triton_op.py) | Defines the accepted Triton operator and private experiment paths. |
+| [`training_plan.py`](src/switchyard/training_plan.py) | Defines complete forward and backward experiment contracts. |
+| [`shared_backward.cu`](src/switchyard/csrc/shared_backward.cu) | Defines private one-read CUDA backward candidates. |
 | [`model.py`](src/switchyard/model.py) | Defines the Transformer integration and source arena. |
 | [`harness.py`](bench/harness.py) | Defines common timing, memory, accuracy, and kernel-count methods. |
 
 The dispatch limit is 32768 resident values.
 This limit comes from measurements on the target GPU.
-The kernels use one pipeline stage.
+Most kernels use one pipeline stage.
+The measured tiled forward uses three stages when `D` is 8192 or larger.
 The `dw` gradient uses fp32 accumulation.
 
 ## Correctness
@@ -248,6 +251,7 @@ source scripts/env.sh
 
 python -m pytest tests/ -q
 CUDA_VISIBLE_DEVICES="" python -m pytest tests/ -q
+CUDA_VISIBLE_DEVICES="" python scripts/compile_candidates.py
 
 python bench/bench_operator.py --set representative --dtype bfloat16
 python bench/bench_third_party.py --batched-only --dtype bfloat16
@@ -263,7 +267,8 @@ python scripts/summarize_model.py
 ```
 
 The benchmark drivers record the repository revision, command, random seeds, software
-versions, and GPU model. Third-party runs also record pinned upstream revisions.
+versions, GPU identity, and GPU process state. They check the process state before and after
+each accepted run. Third-party runs also record pinned upstream revisions.
 Some historical machine, model, and DDP result files predate the expanded provenance fields.
 Regenerate those files from a clean revision before a release.
 
@@ -274,11 +279,19 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) before you submit a correctness or perfor
 The single-query forward is close to its measured traffic limit.
 The output-only batched resident path is complete for its documented shape range.
 
-The tiled backward path is the next optimization target.
-Liger is faster for important large-width and large-source cases.
-The current model points to extra source reads and weak cache reuse.
+The accepted tiled backward is slower than Liger at three important large shapes.
+Its two-kernel schedule reloads source data after a grid boundary.
+The source data does not fit in L2 at these shapes.
+
+The private experiment branch now contains complete training plans.
+It includes a grouped Triton path and a persistent feature-sharded CUDA cluster path.
+The CUDA path keeps source values on chip and targets the one-read backward traffic limit.
+It compiles for `sm_120` without local-memory spills.
+These paths are not in production dispatch.
+They do not have GPU correctness or performance results yet.
 
 See [`PROJECT_STATE.md`](PROJECT_STATE.md) for the current work list.
+See [`docs/backward_experiment.md`](docs/backward_experiment.md) for the experiment design.
 See [issue 1](https://github.com/sabdulmajid/blackwell-switchyard/issues/1) for public tracking.
 
 ## Attribution
