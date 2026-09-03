@@ -14,8 +14,26 @@ def test_source_serial_exposes_traffic_for_atomic_tradeoff():
 
     assert serial.estimated_dram_bytes < tiled.estimated_dram_bytes
     assert serial.statistics_bytes == 0
-    assert tiled.statistics_bytes == 3 * shape[0] * shape[1] * shape[2] * 4
+    one_statistics_stack = 3 * shape[0] * shape[1] * shape[2] * 4
+    assert tiled.statistics_bytes == one_statistics_stack * (1 + shape[3] // 1024)
     assert serial.dw_atomic_updates == 32 * tiled.dw_atomic_updates
+
+
+def test_grouped_hierarchical_and_cluster_models_expose_architectural_savings():
+    shape = (9, 1, 4096, 8192)
+    serial = backward_traffic_estimate(
+        "source_serial_saved",
+        *shape,
+        source_tokens_per_cta=16,
+        source_uses_partials=True,
+    )
+    cluster = backward_traffic_estimate("cuda_cluster", *shape, persistent_clusters=94)
+
+    assert serial.dw_atomic_updates == 0
+    assert serial.workspace_bytes == (shape[2] // 16) * shape[3] * 4
+    assert cluster.logical_large_tensor_bytes == cluster.minimum_large_tensor_bytes
+    assert cluster.dw_atomic_updates == 94 * shape[3]
+    assert cluster.saved_state_bytes == 3 * shape[0] * shape[2] * 4
 
 
 def test_minimum_and_estimates_scale_linearly_with_tokens():
@@ -26,7 +44,9 @@ def test_minimum_and_estimates_scale_linearly_with_tokens():
     assert large.statistics_bytes == 4 * small.statistics_bytes
 
 
-@pytest.mark.parametrize("strategy", ["resident", "tiled", "source_serial"])
+@pytest.mark.parametrize(
+    "strategy", ["resident", "tiled", "source_serial", "cuda_shared", "cuda_cluster"]
+)
 def test_estimate_never_beats_the_information_minimum(strategy):
     estimate = backward_traffic_estimate(strategy, 32, 2, 17, 777, itemsize=4)
     assert estimate.logical_large_tensor_bytes >= estimate.minimum_large_tensor_bytes
