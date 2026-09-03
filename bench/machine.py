@@ -29,6 +29,10 @@ import triton
 import triton.language as tl
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "bench"))
+
+from harness import repository_provenance  # noqa: E402
+
 CUDA_HOME = os.environ.get("CUDA_HOME", "/usr/local/cuda")
 
 
@@ -398,6 +402,7 @@ def main() -> None:
     devices = [args.device] if args.device is not None else list(range(torch.cuda.device_count()))
 
     report: dict = {
+        "provenance": repository_provenance(REPO),
         "toolchain": toolchain_probe(),
         "theoretical_dram_bandwidth": theoretical_dram_bandwidth(),
         "devices": {},

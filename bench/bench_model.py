@@ -80,7 +80,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "bench"))
 
-from harness import environment, measure_latency  # noqa: E402
+from harness import environment, measure_latency, repository_provenance  # noqa: E402
 from switchyard.model import (  # noqa: E402
     ModelConfig,
     Transformer,
@@ -367,6 +367,7 @@ def main() -> None:
 
     report = {
         "environment": environment(),
+        "provenance": repository_provenance(REPO),
         "dtype": args.dtype,
         "scale": args.scale,
         "config": SCALES[args.scale],

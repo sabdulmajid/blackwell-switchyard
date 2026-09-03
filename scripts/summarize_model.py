@@ -80,8 +80,8 @@ def main() -> None:
         w(f"{fw['step']['median_ms']:.0f} ms down to {ours['step']['median_ms']:.0f} ms, and")
         w(f"**{ours['tokens_per_second'] / fw['tokens_per_second']:.2f}x** the tokens per second.\n")
         w("Quoting the Amdahl arithmetic rather than the kernel speedup is deliberate.")
-        w("The operator is 3.5-5x faster in isolation, but it is one part of a step, so")
-        w("the end-to-end figure is smaller and it is the honest one.\n")
+        w("The operator is only one part of a training step. The end-to-end figure includes")
+        w("the rest of the model and is the relevant result here.\n")
 
     if stack and ours:
         saved = (stack["peak_memory_bytes"] - ours["peak_memory_bytes"]) / 2**30

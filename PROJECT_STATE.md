@@ -3,7 +3,7 @@
 Living status document for `blackwell-switchyard`. The authoritative per-change detail lives
 in the branch descriptions on issue #1; this file is the index.
 
-**Last updated:** 2026-09-02
+**Last updated:** 2026-09-03
 
 ---
 
@@ -69,8 +69,11 @@ measured tile budget.
 
 Ordered by how much the measurements say they are worth.
 
-1. **Improve the tiled backward.** Liger beats it at `D ≥ 4096` and `N=32`. The resident
-   backward is comfortably ahead everywhere it applies, so the gap is specific and local.
+1. **Measure the private tiled-backward candidate.** The `codex/tiled-backward-prep` branch
+   contains a source-serial candidate, a direct-backward benchmark, raw sample capture,
+   three-seed gradient checks, a 12-shape matrix, and an automatic keep-or-drop evaluator.
+   The candidate is not reachable from production dispatch. It compiled offline for the
+   three target `sm_120` tile configurations. GPU correctness and latency are still pending.
 2. **Complete the batched training contract.** The current batched API does not return
    merge statistics and does not implement backward. The resident forward is useful, but
    it is not the complete paper schedule.
@@ -82,7 +85,8 @@ Ordered by how much the measurements say they are worth.
   `pull_requests:write`. GitHub has no draft pull requests for this repository. The owner
   authorized a direct fast-forward merge of the reviewed linear branch stack on 2026-09-02.
 - **Pushing CI.** The token lacks the `workflow` scope, so `.github/workflows/` cannot be
-  pushed. The workflow is written and verified locally and its contents are on issue #1.
+  pushed. A trackable copy is in `ci/github-actions-ci.yml`. Move it to
+  `.github/workflows/ci.yml` with a token that has workflow permission.
 
 ## OPEN QUESTIONS FOR THE OWNER
 

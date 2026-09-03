@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, cite this repository and the Attention Residuals paper."
+title: "blackwell-switchyard"
+type: software
+authors:
+  - family-names: "Abdul-Majid"
+    given-names: "Ayman"
+repository-code: "https://github.com/sabdulmajid/blackwell-switchyard"
+license: "Apache-2.0"
+version: "0.0.1"

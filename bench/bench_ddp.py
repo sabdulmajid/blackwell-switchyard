@@ -141,7 +141,13 @@ def main() -> None:
         sys.exit(f"needs two GPUs, found {avail}")
 
     scratch = Path(str(args.out) + ".tmp")
-    combined = {"single": None, "dual": None}
+    from harness import repository_provenance
+
+    combined = {
+        "provenance": repository_provenance(REPO),
+        "single": None,
+        "dual": None,
+    }
 
     for world in (1, 2):
         print(f"\n=== world_size={world} ===", flush=True)

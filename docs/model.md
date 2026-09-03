@@ -48,8 +48,8 @@ implementation and **11%** with the fused one -- a
 **1.46x** the tokens per second.
 
 Quoting the Amdahl arithmetic rather than the kernel speedup is deliberate.
-The operator is 3.5-5x faster in isolation, but it is one part of a step, so
-the end-to-end figure is smaller and it is the honest one.
+The operator is only one part of a training step. The end-to-end figure includes
+the rest of the model and is the relevant result here.
 
 The arena saves **6.75 GiB** of peak memory against stacking
 (38.61 to 31.86 GiB). The paper's pseudocode stacks at

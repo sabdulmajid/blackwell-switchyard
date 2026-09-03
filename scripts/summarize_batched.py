@@ -97,10 +97,17 @@ def main() -> None:
             f"{switchyard['forward_memory']['workspace_bytes'] / 2**20:.3f} |"
         )
 
+    wide_shape = (9, 1, 4096, 4096)
+    wide_switchyard = get(wide_shape, 8, "switchyard batched")
+    wide_catswe = get(wide_shape, 8, "catswe phase1 S=8")
     write("\nThe `D=4096` case exceeds the resident tile budget.")
     write("The fallback uses eight per-query kernels and one stack kernel.")
-    write("It takes 2.241 ms and uses 256 MiB of temporary workspace.")
-    write("Catswe takes 0.457 ms in this case.")
+    write(
+        f"It takes {wide_switchyard['forward']['median_ms']:.3f} ms and uses "
+        f"{wide_switchyard['forward_memory']['workspace_bytes'] / 2**20:.0f} MiB of "
+        "temporary workspace."
+    )
+    write(f"Catswe takes {wide_catswe['forward']['median_ms']:.3f} ms in this case.")
     write("Use this batched API only in its documented resident dispatch range.\n")
 
     write("## Reproduction\n")

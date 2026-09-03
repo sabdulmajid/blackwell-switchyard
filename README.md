@@ -12,6 +12,33 @@ The project measures three implementations:
 Correctness has priority over speed.
 Each timed implementation must pass a float64 oracle check.
 
+## Installation and compatibility
+
+Install a PyTorch and Triton build that matches your NVIDIA driver and CUDA toolkit first.
+The package does not select a GPU-specific PyTorch wheel for you.
+Then install this repository:
+
+```bash
+python -m pip install -e .
+```
+
+The published measurements use the following configuration:
+
+| Component | Measured configuration |
+|---|---|
+| GPU | NVIDIA RTX PRO 6000 Blackwell Max-Q, compute capability 12.0 |
+| CUDA toolkit | 12.8 |
+| PyTorch | 2.9.0 with CUDA 12.8 |
+| Triton | 3.5.0 |
+| Python | 3.12 |
+
+Other NVIDIA GPUs can run the Triton code if their PyTorch and Triton builds support them.
+The stored dispatch choices and performance claims apply only to the measured Blackwell GPU.
+Run the correctness tests and benchmarks again before you use another system in production.
+
+The reference implementation needs PyTorch but does not need Triton.
+The optimized operators need both PyTorch and Triton.
+
 ## Current operator result
 
 The main test shape is `N=9 B=1 T=4096 D=2048` with bf16 data.
@@ -174,9 +201,6 @@ The test suite compares results with a float64 oracle.
 It reports relative L2 error and the data-type rounding floor.
 It does not compare only with another low-precision implementation.
 
-The suite has 129 tests with a GPU.
-The CPU-only run has 23 passing tests and two skipped tests.
-
 The tests cover these items:
 
 - Forward and backward results
@@ -189,6 +213,9 @@ The tests cover these items:
 - Online softmax merging
 - Transformer source schedules
 - One-GPU and two-GPU integration
+
+The CPU-only suite checks the reference, configuration, package, and experiment gates.
+The complete suite also runs the Triton correctness and integration tests on a GPU.
 
 ## Hardware and tools
 
@@ -235,8 +262,12 @@ python bench/bench_ddp.py
 python scripts/summarize_model.py
 ```
 
-The benchmark JSON files contain the repository revision and third-party revisions.
-They also contain the command, random seeds, software versions, and GPU model.
+The benchmark drivers record the repository revision, command, random seeds, software
+versions, and GPU model. Third-party runs also record pinned upstream revisions.
+Some historical machine, model, and DDP result files predate the expanded provenance fields.
+Regenerate those files from a clean revision before a release.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) before you submit a correctness or performance change.
 
 ## Project status
 
