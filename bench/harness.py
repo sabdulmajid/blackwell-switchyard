@@ -73,7 +73,10 @@ def repository_provenance(
         "repository_commit": git(repo, "rev-parse", "HEAD"),
         "repository_tree": git(repo, "rev-parse", "HEAD^{tree}"),
         "repository_branch": git(repo, "branch", "--show-current"),
-        "tracked_worktree_dirty": bool(git(repo, "status", "--porcelain", "--untracked-files=no")),
+        "worktree_dirty": bool(status),
+        "tracked_worktree_dirty": bool(
+            git(repo, "status", "--porcelain", "--untracked-files=no")
+        ),
         "dirty_paths": [line[3:] for line in status.splitlines()],
         "diff_sha256": hashlib.sha256(diff).hexdigest(),
         "third_party_commits": revisions,
@@ -178,19 +181,24 @@ class MemoryReport:
 def measure_memory(
     fn: Callable[[], object], *, device: torch.device, resident_bytes: int,
     output_bytes: int | None = None,
+    after_warmup: Callable[[], object] | None = None,
 ) -> MemoryReport:
     """Peak allocator high-water mark for one call, and the workspace above the data.
 
-    ``resident_bytes`` is what the caller already holds (inputs plus the output
-    it expects back). Reporting the difference separately keeps us honest: the
+    ``resident_bytes`` is what the caller must hold (inputs plus final results).
+    Reporting the difference separately keeps us honest: the
     sources a Block AttnRes model must keep alive are a property of the
     architecture, not of our kernel, and eliminating a temporary does not make
-    them disappear. ``output_bytes`` is needed when ``fn`` consumes its forward
-    output internally (for example, a forward+backward step) and therefore
-    returns no tensor from which the output size can be inferred.
+    them disappear. ``output_bytes`` is needed when ``fn`` returns no tensors.
+    It must include mandatory result tensors and transient public outputs that
+    are already represented by ``resident_bytes`` or by the operator contract.
+    The optional warmup hook releases persistent harness results before the
+    allocation baseline.
     """
     fn()  # let any lazy workspace or autotune cache allocate first
     torch.cuda.synchronize(device)
+    if after_warmup is not None:
+        after_warmup()
     gc.collect()
     torch.cuda.empty_cache()
     baseline = torch.cuda.memory_allocated(device)
@@ -207,7 +215,7 @@ def measure_memory(
     def tensor_bytes(obj: object) -> int:
         if isinstance(obj, torch.Tensor):
             return obj.numel() * obj.element_size()
-        if isinstance(obj, (list, tuple)):
+        if isinstance(obj, list | tuple):
             return sum(tensor_bytes(x) for x in obj)
         if isinstance(obj, dict):
             return sum(tensor_bytes(x) for x in obj.values())
