@@ -1,0 +1,267 @@
+{
+  "target": {
+    "backend": "cuda",
+    "arch": 120,
+    "warp_size": 32
+  },
+  "gpu_visible": false,
+  "provenance": {
+    "repository_commit": "e2c3dc5c84d4aa7d33bf9cc962aeed87a659dd8d",
+    "worktree_clean": true,
+    "torch": "2.9.0+cu128",
+    "triton": "3.5.0",
+    "nvcc": "Build cuda_12.8.r12.8/compiler.35583870_0",
+    "cuda_source_sha256": "c00e1eda78393aae847d1b15cf43e8306ee2161c73a1c2531e9edb02a9d2cf50"
+  },
+  "plans": [
+    {
+      "name": "serial_recompute_atomic_t4",
+      "forward": {
+        "family": "standard",
+        "saved_state": "none"
+      },
+      "backward": {
+        "family": "source_serial",
+        "tokens_per_cta": 4,
+        "dw_reduction": "grouped_atomics"
+      },
+      "production": false,
+      "rationale": "L2-local source passes and fourfold lower dw contention"
+    },
+    {
+      "name": "serial_saved_partials_t16",
+      "forward": {
+        "family": "standard",
+        "saved_state": "backward_coefficients"
+      },
+      "backward": {
+        "family": "source_serial",
+        "tokens_per_cta": 16,
+        "dw_reduction": "partials"
+      },
+      "production": false,
+      "rationale": "compact forward state and deterministic hierarchical dw reduction"
+    },
+    {
+      "name": "cuda_shared",
+      "forward": {
+        "family": "standard",
+        "saved_state": "none"
+      },
+      "backward": {
+        "family": "cuda_shared",
+        "tokens_per_cta": 1,
+        "dw_reduction": "grouped_atomics"
+      },
+      "production": false,
+      "rationale": "one global source read through one block's shared memory"
+    },
+    {
+      "name": "cuda_cluster",
+      "forward": {
+        "family": "standard",
+        "saved_state": "backward_coefficients"
+      },
+      "backward": {
+        "family": "cuda_cluster",
+        "tokens_per_cta": 1,
+        "dw_reduction": "persistent_atomics"
+      },
+      "production": false,
+      "rationale": "persistent feature-sharded cluster at the one-read traffic lower bound"
+    }
+  ],
+  "compilations": [
+    {
+      "name": "serial_recompute_atomic_t4_n9_d4096",
+      "kind": "triton",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 4096,
+        "TOKENS": 4,
+        "USE_SAVED": false,
+        "WRITE_PARTIAL": false
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 241,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "serial_saved_partials_t16_n9_d8192",
+      "kind": "triton",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 8192,
+        "TOKENS": 16,
+        "USE_SAVED": true,
+        "WRITE_PARTIAL": true
+      },
+      "num_warps": 16,
+      "num_stages": 1,
+      "shared_bytes": 64,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 128,
+          "stack_bytes": 72,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "serial_saved_partials_t16_n32_d2048",
+      "kind": "triton",
+      "constants": {
+        "BLOCK_N": 32,
+        "BLOCK_D": 2048,
+        "TOKENS": 16,
+        "USE_SAVED": true,
+        "WRITE_PARTIAL": true
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 255,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "saved_training_forward_n9_d8192",
+      "kind": "triton",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 3,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled_saved",
+          "registers": 241,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "accepted_tiled_forward_n9_d4096",
+      "kind": "triton",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled",
+          "registers": 237,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "saved_resident_forward_n8_d1024",
+      "kind": "triton",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 1024
+      },
+      "num_warps": 4,
+      "num_stages": 1,
+      "shared_bytes": 2048,
+      "resources": [
+        {
+          "kernel": "_fwd_resident_saved",
+          "registers": 126,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "dw_partial_reduction",
+      "kind": "triton",
+      "constants": {
+        "BLOCK_P": 8,
+        "BLOCK_D": 128
+      },
+      "num_warps": 4,
+      "num_stages": 1,
+      "shared_bytes": 0,
+      "resources": [
+        {
+          "kernel": "_reduce_dw_partials",
+          "registers": 35,
+          "stack_bytes": 0,
+          "static_shared_bytes": 0,
+          "local_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "one_read_cuda",
+      "kind": "cuda",
+      "required_template_instances": {
+        "shared_backward_kernel": 2,
+        "feature_cluster_backward_kernel": 2
+      },
+      "register_limits": {
+        "shared_backward_kernel": 64,
+        "feature_cluster_backward_kernel": 64
+      },
+      "resources": [
+        {
+          "kernel": "shared_backward_kernel",
+          "registers": 48,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        },
+        {
+          "kernel": "feature_cluster_backward_kernel",
+          "registers": 40,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        },
+        {
+          "kernel": "shared_backward_kernel",
+          "registers": 48,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        },
+        {
+          "kernel": "feature_cluster_backward_kernel",
+          "registers": 40,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        }
+      ]
+    }
+  ]
+}
