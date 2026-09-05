@@ -151,6 +151,31 @@ kernel launch counts, saved-state bytes, workspace, raw samples, and trial order
 record the GPU process state before and after each run. It must check output, `dv`, and `dw`
 against the float64 oracle before timing.
 
+## Guarded unattended campaign
+
+[`run_when_gpu_idle.py`](../scripts/run_when_gpu_idle.py) can wait for the shared host without
+using a GPU. The configured campaign does not trust an estimated finish time. It requires all
+GPUs to have no compute process for 30 continuous minutes. It then makes only one GPU visible
+to the campaign.
+
+The runner checks the selected GPU every 30 seconds while GPU work is active. If an unrelated
+process appears, the runner stops its own process group. It then waits for a new 30-minute idle
+interval. It makes at most three attempts. State and logs stay outside the repository, so they
+cannot make benchmark provenance dirty.
+
+The campaign is fail-fast and uses this order:
+
+1. Run all adversarial candidate tests.
+2. Run quick bf16 and fp16 gate measurements for all candidate families.
+3. Apply the smoke correctness, numerical-error, kernel-count, and provenance gate.
+4. Run the full 12-shape bf16 and fp16 matrix for `cuda_cluster`, current switchyard, and
+   Liger.
+5. Apply the deterministic promotion evaluator.
+6. Commit and push the raw reports and decision with the configured project identity.
+
+The campaign never changes production dispatch and never merges `main`. A measured result
+still needs an engineering review before a separate dispatch commit.
+
 ## Promotion rules
 
 Do not loosen a correctness tolerance to admit a candidate. The numerical error must remain

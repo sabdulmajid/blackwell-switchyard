@@ -498,6 +498,7 @@ def main() -> None:
         ),
         "dtype": args.dtype,
         "shape_set": args.shape_set,
+        "selected_implementations": selected,
         "tolerances": TOLERANCES[dtype],
         "correctness_seeds": correctness_seeds,
         "methodology": {
