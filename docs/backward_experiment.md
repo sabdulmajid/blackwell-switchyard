@@ -254,6 +254,13 @@ target-only activity scope avoids a known stale utilization signal on the other 
 global process query and selected-GPU activity query close the launch race. The runner then
 makes only the selected GPU visible to the campaign.
 
+The runner gets utilization and memory data from `nvidia-smi`. It gets PCIe throughput from
+NVML because this driver does not expose PCIe throughput as a query field. Driver monitoring can
+cause small PCIe transfers on an idle card. The guard allows at most 64 MiB/s in each direction.
+This is less than 0.25% of the measured peer bandwidth on this host. The manifest stores the
+largest observed value and the allowed limit. The global process check remains the primary
+collision guard.
+
 The benchmark samples the selected GPU every 0.05 seconds while it runs. It exits immediately
 if a sample sees an unrelated process. The outer runner samples the global GPU process table
 every 0.25 seconds. It stops

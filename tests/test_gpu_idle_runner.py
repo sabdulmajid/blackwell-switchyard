@@ -37,12 +37,15 @@ def _recovery_context(attempt: int = 3) -> dict:
         "idle_probe_count": 31,
         "max_idle_gpu_utilization_percent": 0,
         "max_idle_memory_mib": 8,
+        "max_idle_pcie_rx_kib_per_second": 2048,
+        "max_idle_pcie_tx_kib_per_second": 4096,
         "max_idle_probe_gap_seconds": 60.1,
         "max_global_compute_process_count": 0,
         "max_non_target_gpu_utilization_percent": 100,
         "max_non_target_memory_mib": 2,
-        "max_non_target_pcie_rx_kib_per_second": 0,
-        "max_non_target_pcie_tx_kib_per_second": 0,
+        "max_non_target_pcie_rx_kib_per_second": 1024,
+        "max_non_target_pcie_tx_kib_per_second": 2048,
+        "maximum_allowed_pcie_kib_per_second": 65536,
         "gpu_count": 2,
     }
 
@@ -55,7 +58,10 @@ def test_nvidia_smi_parsers_keep_physical_identity():
     assert MODULE._parse_compute_apps("GPU-b, 42\n") == [
         {"gpu_uuid": "GPU-b", "pid": 42}
     ]
-    activity = MODULE._parse_activity("0, 0, 2, 0, 0\n1, 0, 3, 0, 0\n")
+    activity = MODULE._merge_pcie_throughput(
+        MODULE._parse_activity("0, 0, 2\n1, 0, 3\n"),
+        {0: (0, 0), 1: (0, 0)},
+    )
     assert activity[1] == {
         "utilization_percent": 0,
         "memory_used_mib": 3,
@@ -69,7 +75,10 @@ def test_nvidia_smi_parsers_keep_physical_identity():
     assert not MODULE._is_idle_activity(activity, {0: "GPU-a", 1: "GPU-b"})
     assert not MODULE._is_idle_activity({0: activity[0]}, {0: "GPU-a", 1: "GPU-b"})
 
-    activity = MODULE._parse_activity("0, 100, 2, 0, 0\n1, 0, 3, 0, 0\n")
+    activity = MODULE._merge_pcie_throughput(
+        MODULE._parse_activity("0, 100, 2\n1, 0, 3\n"),
+        {0: (0, 0), 1: (0, 0)},
+    )
     assert MODULE._is_idle_activity(
         activity,
         {0: "GPU-a", 1: "GPU-b"},
@@ -84,7 +93,9 @@ def test_nvidia_smi_parsers_keep_physical_identity():
         target_index=1,
     )
     activity[1]["utilization_percent"] = 0
-    activity[0]["pcie_rx_kib_per_second"] = 1
+    activity[0]["pcie_rx_kib_per_second"] = (
+        MODULE.MAX_IDLE_PCIE_KIB_PER_SECOND + 1
+    )
     assert not MODULE._is_idle_activity(
         activity,
         {0: "GPU-a", 1: "GPU-b"},
@@ -136,14 +147,27 @@ def test_compute_process_parser_fails_closed(text):
     [
         "",
         "0, 0\n",
-        "0, busy, 2, 0, 0\n",
-        "0, 101, 2, 0, 0\n",
-        "0, 0, 2, 0, 0\n0, 0, 2, 0, 0\n",
+        "0, busy, 2\n",
+        "0, 101, 2\n",
+        "0, 0, 2\n0, 0, 2\n",
     ],
 )
 def test_activity_parser_fails_closed(text):
     with pytest.raises(ValueError):
         MODULE._parse_activity(text)
+
+
+@pytest.mark.parametrize(
+    "pcie",
+    [
+        {1: (0, 0)},
+        {0: (-1, 0)},
+        {0: (0, True)},
+    ],
+)
+def test_pcie_merge_fails_closed(pcie):
+    with pytest.raises(ValueError):
+        MODULE._merge_pcie_throughput(MODULE._parse_activity("0, 0, 2\n"), pcie)
 
 
 def test_state_recorder_resumes_attempt_count_without_process_data(tmp_path):
@@ -184,7 +208,12 @@ def test_state_recorder_rejects_malformed_history(tmp_path):
         lambda value: value.update(process_scope="target_gpu"),
         lambda value: value.update(max_idle_probe_gap_seconds=66),
         lambda value: value.update(max_global_compute_process_count=1),
-        lambda value: value.update(max_non_target_pcie_rx_kib_per_second=1),
+        lambda value: value.update(
+            max_non_target_pcie_rx_kib_per_second=(
+                MODULE.MAX_IDLE_PCIE_KIB_PER_SECOND + 1
+            )
+        ),
+        lambda value: value.update(maximum_allowed_pcie_kib_per_second=1),
     ],
 )
 def test_recovery_context_fails_closed(change):
@@ -203,6 +232,8 @@ def test_recovery_environment_contains_only_reconstructable_guard_values():
     assert environment["SWITCHYARD_RUN_ATTEMPT"] == "3"
     assert environment["SWITCHYARD_GUARD_IDLE_PROBE_COUNT"] == "31"
     assert environment["SWITCHYARD_GUARD_MAX_IDLE_MEMORY_MIB"] == "8"
+    assert environment["SWITCHYARD_GUARD_MAX_IDLE_PCIE_RX_KIB_PER_SECOND"] == "2048"
+    assert environment["SWITCHYARD_GUARD_MAXIMUM_ALLOWED_PCIE_KIB_PER_SECOND"] == "65536"
     assert environment["SWITCHYARD_GUARD_IDLE_ACTIVITY_SCOPE"] == "target_gpu"
     assert environment["SWITCHYARD_GUARD_PROCESS_SCOPE"] == "all_gpus"
     assert environment["SWITCHYARD_GUARD_MAX_IDLE_PROBE_GAP_SECONDS"] == "60.1"

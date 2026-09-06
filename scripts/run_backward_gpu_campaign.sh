@@ -20,12 +20,15 @@ cd "$repo_dir"
 : "${SWITCHYARD_GUARD_IDLE_PROBE_COUNT:?the idle runner must attest idle probes}"
 : "${SWITCHYARD_GUARD_MAX_IDLE_GPU_UTILIZATION_PERCENT:?the runner must attest idle utilization}"
 : "${SWITCHYARD_GUARD_MAX_IDLE_MEMORY_MIB:?the runner must attest idle memory}"
+: "${SWITCHYARD_GUARD_MAX_IDLE_PCIE_RX_KIB_PER_SECOND:?the runner must attest idle PCIe RX}"
+: "${SWITCHYARD_GUARD_MAX_IDLE_PCIE_TX_KIB_PER_SECOND:?the runner must attest idle PCIe TX}"
 : "${SWITCHYARD_GUARD_MAX_IDLE_PROBE_GAP_SECONDS:?the runner must attest idle probe coverage}"
 : "${SWITCHYARD_GUARD_MAX_GLOBAL_COMPUTE_PROCESS_COUNT:?the runner must attest process count}"
 : "${SWITCHYARD_GUARD_MAX_NON_TARGET_GPU_UTILIZATION_PERCENT:?the runner must attest non-target utilization}"
 : "${SWITCHYARD_GUARD_MAX_NON_TARGET_MEMORY_MIB:?the runner must attest non-target memory}"
 : "${SWITCHYARD_GUARD_MAX_NON_TARGET_PCIE_RX_KIB_PER_SECOND:?the runner must attest non-target PCIe RX}"
 : "${SWITCHYARD_GUARD_MAX_NON_TARGET_PCIE_TX_KIB_PER_SECOND:?the runner must attest non-target PCIe TX}"
+: "${SWITCHYARD_GUARD_MAXIMUM_ALLOWED_PCIE_KIB_PER_SECOND:?the runner must attest the PCIe limit}"
 : "${SWITCHYARD_RUNNER_STATE:?the idle runner must provide its external state path}"
 : "${SWITCHYARD_GUARD_GPU_COUNT:?the idle runner must attest GPU inventory size}"
 : "${THIRD_PARTY_DIR:?set THIRD_PARTY_DIR to the pinned dependency directory}"
@@ -250,6 +253,12 @@ attempt = {
         os.environ["SWITCHYARD_GUARD_MAX_IDLE_GPU_UTILIZATION_PERCENT"]
     ),
     "max_idle_memory_mib": int(os.environ["SWITCHYARD_GUARD_MAX_IDLE_MEMORY_MIB"]),
+    "max_idle_pcie_rx_kib_per_second": int(
+        os.environ["SWITCHYARD_GUARD_MAX_IDLE_PCIE_RX_KIB_PER_SECOND"]
+    ),
+    "max_idle_pcie_tx_kib_per_second": int(
+        os.environ["SWITCHYARD_GUARD_MAX_IDLE_PCIE_TX_KIB_PER_SECOND"]
+    ),
     "max_idle_probe_gap_seconds": float(
         os.environ["SWITCHYARD_GUARD_MAX_IDLE_PROBE_GAP_SECONDS"]
     ),
@@ -268,6 +277,9 @@ attempt = {
     "max_non_target_pcie_tx_kib_per_second": int(
         os.environ["SWITCHYARD_GUARD_MAX_NON_TARGET_PCIE_TX_KIB_PER_SECOND"]
     ),
+    "maximum_allowed_pcie_kib_per_second": int(
+        os.environ["SWITCHYARD_GUARD_MAXIMUM_ALLOWED_PCIE_KIB_PER_SECOND"]
+    ),
     "wait_poll_seconds": int(os.environ["SWITCHYARD_GUARD_WAIT_POLL_SECONDS"]),
     "watchdog_seconds": float(os.environ["SWITCHYARD_GUARD_WATCHDOG_SECONDS"]),
     "finalize_seconds": int(os.environ["SWITCHYARD_GUARD_FINALIZE_SECONDS"]),
@@ -280,7 +292,7 @@ if os.path.exists(path):
         document = json.load(handle)
     if (
         set(document) != {"schema_version", "device_id", "target_gpu_uuid", "attempts"}
-        or document["schema_version"] != 2
+        or document["schema_version"] != 3
         or document["device_id"] != attempt["device_id"]
         or document["target_gpu_uuid"] != attempt["target_gpu_uuid"]
         or not isinstance(document["attempts"], list)
@@ -288,7 +300,7 @@ if os.path.exists(path):
         raise SystemExit("existing guard document differs from this runner")
 else:
     document = {
-        "schema_version": 2,
+        "schema_version": 3,
         "device_id": attempt["device_id"],
         "target_gpu_uuid": attempt["target_gpu_uuid"],
         "attempts": [],
@@ -351,8 +363,19 @@ if (
     or attestation["max_global_compute_process_count"] != 0
     or not 0 <= attestation["max_non_target_gpu_utilization_percent"] <= 100
     or attestation["max_non_target_memory_mib"] < 0
-    or attestation["max_non_target_pcie_rx_kib_per_second"] != 0
-    or attestation["max_non_target_pcie_tx_kib_per_second"] != 0
+    or not 0
+    <= attestation["max_idle_pcie_rx_kib_per_second"]
+    <= attestation["maximum_allowed_pcie_kib_per_second"]
+    or not 0
+    <= attestation["max_idle_pcie_tx_kib_per_second"]
+    <= attestation["maximum_allowed_pcie_kib_per_second"]
+    or not 0
+    <= attestation["max_non_target_pcie_rx_kib_per_second"]
+    <= attestation["maximum_allowed_pcie_kib_per_second"]
+    or not 0
+    <= attestation["max_non_target_pcie_tx_kib_per_second"]
+    <= attestation["maximum_allowed_pcie_kib_per_second"]
+    or attestation["maximum_allowed_pcie_kib_per_second"] != 65536
     or attestation["device_id"] != os.environ["SWITCHYARD_PUBLIC_DEVICE_ID"]
     or attestation["target_gpu_uuid"] != os.environ["SWITCHYARD_TARGET_GPU_UUID"]
     or launch < not_before
@@ -695,7 +718,7 @@ if len(guards) != 1:
     raise SystemExit("current attempt has no unique launch guard")
 
 payload = {
-    "schema_version": 2,
+    "schema_version": 3,
     "repository_commit": os.environ["SWITCHYARD_EXPECTED_HEAD"],
     "repository_tree": os.environ["SWITCHYARD_EXPECTED_TREE"],
     "benchmark_branch": os.environ["SWITCHYARD_CAMPAIGN_BRANCH"],

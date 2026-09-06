@@ -28,6 +28,7 @@ from pathlib import Path
 
 CPU_RECOVERY_EXIT = 74
 MAX_IDLE_MEMORY_MIB = 64
+MAX_IDLE_PCIE_KIB_PER_SECOND = 64 * 1024
 MAX_IDLE_PROBE_DELAY_SECONDS = 5.0
 MAX_WATCHDOG_PROBE_GAP_SECONDS = 1.0
 IDLE_ACTIVITY_SCOPES = frozenset({"all_gpus", "target_gpu"})
@@ -49,12 +50,15 @@ RECOVERY_CONTEXT_FIELDS = {
     "idle_probe_count",
     "max_idle_gpu_utilization_percent",
     "max_idle_memory_mib",
+    "max_idle_pcie_rx_kib_per_second",
+    "max_idle_pcie_tx_kib_per_second",
     "max_idle_probe_gap_seconds",
     "max_global_compute_process_count",
     "max_non_target_gpu_utilization_percent",
     "max_non_target_memory_mib",
     "max_non_target_pcie_rx_kib_per_second",
     "max_non_target_pcie_tx_kib_per_second",
+    "maximum_allowed_pcie_kib_per_second",
     "gpu_count",
 }
 
@@ -95,22 +99,39 @@ def _parse_compute_apps(text: str) -> list[dict[str, str | int]]:
 def _parse_activity(text: str) -> dict[int, dict[str, int]]:
     result: dict[int, dict[str, int]] = {}
     for row in csv.reader(line for line in text.splitlines() if line.strip()):
-        if len(row) != 5 or any(not field.strip().isdigit() for field in row):
+        if len(row) != 3 or any(not field.strip().isdigit() for field in row):
             raise ValueError(f"malformed GPU activity row: {row!r}")
-        index, utilization, memory_used, pcie_rx, pcie_tx = (
-            int(field.strip()) for field in row
-        )
+        index, utilization, memory_used = (int(field.strip()) for field in row)
         if index in result or not 0 <= utilization <= 100:
             raise ValueError(f"invalid GPU activity row: {row!r}")
         result[index] = {
             "utilization_percent": utilization,
             "memory_used_mib": memory_used,
-            "pcie_rx_kib_per_second": pcie_rx,
-            "pcie_tx_kib_per_second": pcie_tx,
         }
     if not result:
         raise ValueError("nvidia-smi returned an empty GPU activity table")
     return result
+
+
+def _merge_pcie_throughput(
+    activity: dict[int, dict[str, int]], pcie: dict[int, tuple[int, int]]
+) -> dict[int, dict[str, int]]:
+    if set(activity) != set(pcie):
+        raise ValueError("NVML and nvidia-smi returned different GPU indices")
+    merged = {index: values.copy() for index, values in activity.items()}
+    for index, (rx_kib, tx_kib) in pcie.items():
+        if (
+            isinstance(rx_kib, bool)
+            or isinstance(tx_kib, bool)
+            or not isinstance(rx_kib, int)
+            or not isinstance(tx_kib, int)
+            or rx_kib < 0
+            or tx_kib < 0
+        ):
+            raise ValueError(f"invalid NVML PCIe throughput for GPU {index}")
+        merged[index]["pcie_rx_kib_per_second"] = rx_kib
+        merged[index]["pcie_tx_kib_per_second"] = tx_kib
+    return merged
 
 
 def _parent_pid(pid: int) -> int | None:
@@ -173,12 +194,37 @@ def _compute_apps() -> list[dict[str, str | int]]:
 
 
 def _activity() -> dict[int, dict[str, int]]:
-    return _parse_activity(
+    activity = _parse_activity(
         _smi(
-            "--query-gpu=index,utilization.gpu,memory.used,pcie.rx_util,pcie.tx_util",
+            "--query-gpu=index,utilization.gpu,memory.used",
             "--format=csv,noheader,nounits",
         )
     )
+    try:
+        import pynvml
+
+        pynvml.nvmlInit()
+        try:
+            pcie = {}
+            for index in range(pynvml.nvmlDeviceGetCount()):
+                handle = pynvml.nvmlDeviceGetHandleByIndex(index)
+                pcie[index] = (
+                    int(
+                        pynvml.nvmlDeviceGetPcieThroughput(
+                            handle, pynvml.NVML_PCIE_UTIL_RX_BYTES
+                        )
+                    ),
+                    int(
+                        pynvml.nvmlDeviceGetPcieThroughput(
+                            handle, pynvml.NVML_PCIE_UTIL_TX_BYTES
+                        )
+                    ),
+                )
+        finally:
+            pynvml.nvmlShutdown()
+    except Exception as exc:
+        raise OSError(f"NVML PCIe telemetry failed: {type(exc).__name__}: {exc}") from exc
+    return _merge_pcie_throughput(activity, pcie)
 
 
 def _is_idle_activity(
@@ -202,20 +248,20 @@ def _is_idle_activity(
         for index, values in activity.items()
         if index in guarded_indices
     ) and all(
-        values["pcie_rx_kib_per_second"] == 0
-        and values["pcie_tx_kib_per_second"] == 0
+        values["pcie_rx_kib_per_second"] <= MAX_IDLE_PCIE_KIB_PER_SECOND
+        and values["pcie_tx_kib_per_second"] <= MAX_IDLE_PCIE_KIB_PER_SECOND
         for values in activity.values()
     )
 
 
-def _guarded_memory_values(
+def _guarded_activity_values(
     activity: dict[int, dict[str, int]],
     *,
     activity_scope: str,
     target_index: int,
-) -> list[int]:
+) -> list[dict[str, int]]:
     indices = activity if activity_scope == "all_gpus" else {target_index}
-    return [activity[index]["memory_used_mib"] for index in indices]
+    return [activity[index] for index in indices]
 
 
 class StateRecorder:
@@ -347,6 +393,16 @@ def _validate_recovery_context(value: object) -> dict:
         or isinstance(value["max_idle_memory_mib"], bool)
         or not isinstance(value["max_idle_memory_mib"], int)
         or not 0 <= value["max_idle_memory_mib"] <= MAX_IDLE_MEMORY_MIB
+        or isinstance(value["max_idle_pcie_rx_kib_per_second"], bool)
+        or not isinstance(value["max_idle_pcie_rx_kib_per_second"], int)
+        or not 0
+        <= value["max_idle_pcie_rx_kib_per_second"]
+        <= MAX_IDLE_PCIE_KIB_PER_SECOND
+        or isinstance(value["max_idle_pcie_tx_kib_per_second"], bool)
+        or not isinstance(value["max_idle_pcie_tx_kib_per_second"], int)
+        or not 0
+        <= value["max_idle_pcie_tx_kib_per_second"]
+        <= MAX_IDLE_PCIE_KIB_PER_SECOND
         or isinstance(value["max_idle_probe_gap_seconds"], bool)
         or not isinstance(value["max_idle_probe_gap_seconds"], int | float)
         or not 0
@@ -359,8 +415,18 @@ def _validate_recovery_context(value: object) -> dict:
         or isinstance(value["max_non_target_memory_mib"], bool)
         or not isinstance(value["max_non_target_memory_mib"], int)
         or value["max_non_target_memory_mib"] < 0
-        or value["max_non_target_pcie_rx_kib_per_second"] != 0
-        or value["max_non_target_pcie_tx_kib_per_second"] != 0
+        or isinstance(value["max_non_target_pcie_rx_kib_per_second"], bool)
+        or not isinstance(value["max_non_target_pcie_rx_kib_per_second"], int)
+        or not 0
+        <= value["max_non_target_pcie_rx_kib_per_second"]
+        <= MAX_IDLE_PCIE_KIB_PER_SECOND
+        or isinstance(value["max_non_target_pcie_tx_kib_per_second"], bool)
+        or not isinstance(value["max_non_target_pcie_tx_kib_per_second"], int)
+        or not 0
+        <= value["max_non_target_pcie_tx_kib_per_second"]
+        <= MAX_IDLE_PCIE_KIB_PER_SECOND
+        or value["maximum_allowed_pcie_kib_per_second"]
+        != MAX_IDLE_PCIE_KIB_PER_SECOND
         or not _positive_int(value["gpu_count"])
     ):
         raise ValueError("runner state has invalid recovery context values")
@@ -398,6 +464,12 @@ def _recovery_environment(
             "SWITCHYARD_GUARD_MAX_IDLE_MEMORY_MIB": str(
                 context["max_idle_memory_mib"]
             ),
+            "SWITCHYARD_GUARD_MAX_IDLE_PCIE_RX_KIB_PER_SECOND": str(
+                context["max_idle_pcie_rx_kib_per_second"]
+            ),
+            "SWITCHYARD_GUARD_MAX_IDLE_PCIE_TX_KIB_PER_SECOND": str(
+                context["max_idle_pcie_tx_kib_per_second"]
+            ),
             "SWITCHYARD_GUARD_MAX_IDLE_PROBE_GAP_SECONDS": str(
                 context["max_idle_probe_gap_seconds"]
             ),
@@ -415,6 +487,9 @@ def _recovery_environment(
             ),
             "SWITCHYARD_GUARD_MAX_NON_TARGET_PCIE_TX_KIB_PER_SECOND": str(
                 context["max_non_target_pcie_tx_kib_per_second"]
+            ),
+            "SWITCHYARD_GUARD_MAXIMUM_ALLOWED_PCIE_KIB_PER_SECOND": str(
+                context["maximum_allowed_pcie_kib_per_second"]
             ),
             "SWITCHYARD_GUARD_GPU_COUNT": str(context["gpu_count"]),
         }
@@ -668,10 +743,14 @@ def main() -> int:
     idle_since_wall: float | None = None
     idle_probe_count = 0
     max_idle_memory_mib = 0
+    max_idle_pcie_rx_kib_per_second = 0
+    max_idle_pcie_tx_kib_per_second = 0
     max_idle_probe_gap_seconds = 0.0
     last_idle_probe_at: float | None = None
     max_non_target_gpu_utilization_percent = 0
     max_non_target_memory_mib = 0
+    max_non_target_pcie_rx_kib_per_second = 0
+    max_non_target_pcie_tx_kib_per_second = 0
     while time.time() < deadline and attempt < args.max_attempts:
         try:
             apps = _compute_apps()
@@ -681,10 +760,14 @@ def main() -> int:
             idle_since_wall = None
             idle_probe_count = 0
             max_idle_memory_mib = 0
+            max_idle_pcie_rx_kib_per_second = 0
+            max_idle_pcie_tx_kib_per_second = 0
             max_idle_probe_gap_seconds = 0.0
             last_idle_probe_at = None
             max_non_target_gpu_utilization_percent = 0
             max_non_target_memory_mib = 0
+            max_non_target_pcie_rx_kib_per_second = 0
+            max_non_target_pcie_tx_kib_per_second = 0
             recorder.write("wait_probe_failed", error=f"{type(exc).__name__}: {exc}"[:300])
             time.sleep(args.wait_poll_seconds)
             continue
@@ -699,10 +782,14 @@ def main() -> int:
             idle_since_wall = None
             idle_probe_count = 0
             max_idle_memory_mib = 0
+            max_idle_pcie_rx_kib_per_second = 0
+            max_idle_pcie_tx_kib_per_second = 0
             max_idle_probe_gap_seconds = 0.0
             last_idle_probe_at = None
             max_non_target_gpu_utilization_percent = 0
             max_non_target_memory_mib = 0
+            max_non_target_pcie_rx_kib_per_second = 0
+            max_non_target_pcie_tx_kib_per_second = 0
             time.sleep(args.wait_poll_seconds)
             continue
         if idle_since is None:
@@ -717,9 +804,13 @@ def main() -> int:
                 idle_since_wall = time.time()
                 idle_probe_count = 0
                 max_idle_memory_mib = 0
+                max_idle_pcie_rx_kib_per_second = 0
+                max_idle_pcie_tx_kib_per_second = 0
                 max_idle_probe_gap_seconds = 0.0
                 max_non_target_gpu_utilization_percent = 0
                 max_non_target_memory_mib = 0
+                max_non_target_pcie_rx_kib_per_second = 0
+                max_non_target_pcie_tx_kib_per_second = 0
                 recorder.write("idle_grace_restarted_after_probe_gap")
             else:
                 max_idle_probe_gap_seconds = max(
@@ -727,13 +818,22 @@ def main() -> int:
                 )
         last_idle_probe_at = probe_at
         idle_probe_count += 1
+        guarded_activity = _guarded_activity_values(
+            activity,
+            activity_scope=args.idle_activity_scope,
+            target_index=args.gpu_index,
+        )
         max_idle_memory_mib = max(
             max_idle_memory_mib,
-            *_guarded_memory_values(
-                activity,
-                activity_scope=args.idle_activity_scope,
-                target_index=args.gpu_index,
-            ),
+            *(values["memory_used_mib"] for values in guarded_activity),
+        )
+        max_idle_pcie_rx_kib_per_second = max(
+            max_idle_pcie_rx_kib_per_second,
+            *(values["pcie_rx_kib_per_second"] for values in guarded_activity),
+        )
+        max_idle_pcie_tx_kib_per_second = max(
+            max_idle_pcie_tx_kib_per_second,
+            *(values["pcie_tx_kib_per_second"] for values in guarded_activity),
         )
         non_target = [
             values for index, values in activity.items() if index != args.gpu_index
@@ -746,6 +846,14 @@ def main() -> int:
             max_non_target_memory_mib = max(
                 max_non_target_memory_mib,
                 *(values["memory_used_mib"] for values in non_target),
+            )
+            max_non_target_pcie_rx_kib_per_second = max(
+                max_non_target_pcie_rx_kib_per_second,
+                *(values["pcie_rx_kib_per_second"] for values in non_target),
+            )
+            max_non_target_pcie_tx_kib_per_second = max(
+                max_non_target_pcie_tx_kib_per_second,
+                *(values["pcie_tx_kib_per_second"] for values in non_target),
             )
         elapsed = time.monotonic() - idle_since
         if elapsed < args.idle_seconds:
@@ -762,10 +870,14 @@ def main() -> int:
             idle_since_wall = None
             idle_probe_count = 0
             max_idle_memory_mib = 0
+            max_idle_pcie_rx_kib_per_second = 0
+            max_idle_pcie_tx_kib_per_second = 0
             max_idle_probe_gap_seconds = 0.0
             last_idle_probe_at = None
             max_non_target_gpu_utilization_percent = 0
             max_non_target_memory_mib = 0
+            max_non_target_pcie_rx_kib_per_second = 0
+            max_non_target_pcie_tx_kib_per_second = 0
             recorder.write("final_probe_failed", error=f"{type(exc).__name__}: {exc}"[:300])
             time.sleep(args.wait_poll_seconds)
             continue
@@ -779,10 +891,14 @@ def main() -> int:
             idle_since_wall = None
             idle_probe_count = 0
             max_idle_memory_mib = 0
+            max_idle_pcie_rx_kib_per_second = 0
+            max_idle_pcie_tx_kib_per_second = 0
             max_idle_probe_gap_seconds = 0.0
             last_idle_probe_at = None
             max_non_target_gpu_utilization_percent = 0
             max_non_target_memory_mib = 0
+            max_non_target_pcie_rx_kib_per_second = 0
+            max_non_target_pcie_tx_kib_per_second = 0
             continue
 
         final_probe_at = time.monotonic()
@@ -795,10 +911,14 @@ def main() -> int:
             idle_since_wall = None
             idle_probe_count = 0
             max_idle_memory_mib = 0
+            max_idle_pcie_rx_kib_per_second = 0
+            max_idle_pcie_tx_kib_per_second = 0
             max_idle_probe_gap_seconds = 0.0
             last_idle_probe_at = None
             max_non_target_gpu_utilization_percent = 0
             max_non_target_memory_mib = 0
+            max_non_target_pcie_rx_kib_per_second = 0
+            max_non_target_pcie_tx_kib_per_second = 0
             recorder.write("final_probe_gap_exceeded")
             continue
         max_idle_probe_gap_seconds = max(
@@ -807,13 +927,22 @@ def main() -> int:
         last_idle_probe_at = final_probe_at
         attempt += 1
         idle_probe_count += 1
+        final_guarded_activity = _guarded_activity_values(
+            final_activity,
+            activity_scope=args.idle_activity_scope,
+            target_index=args.gpu_index,
+        )
         max_idle_memory_mib = max(
             max_idle_memory_mib,
-            *_guarded_memory_values(
-                final_activity,
-                activity_scope=args.idle_activity_scope,
-                target_index=args.gpu_index,
-            ),
+            *(values["memory_used_mib"] for values in final_guarded_activity),
+        )
+        max_idle_pcie_rx_kib_per_second = max(
+            max_idle_pcie_rx_kib_per_second,
+            *(values["pcie_rx_kib_per_second"] for values in final_guarded_activity),
+        )
+        max_idle_pcie_tx_kib_per_second = max(
+            max_idle_pcie_tx_kib_per_second,
+            *(values["pcie_tx_kib_per_second"] for values in final_guarded_activity),
         )
         final_non_target = [
             values for index, values in final_activity.items() if index != args.gpu_index
@@ -826,6 +955,14 @@ def main() -> int:
             max_non_target_memory_mib = max(
                 max_non_target_memory_mib,
                 *(values["memory_used_mib"] for values in final_non_target),
+            )
+            max_non_target_pcie_rx_kib_per_second = max(
+                max_non_target_pcie_rx_kib_per_second,
+                *(values["pcie_rx_kib_per_second"] for values in final_non_target),
+            )
+            max_non_target_pcie_tx_kib_per_second = max(
+                max_non_target_pcie_tx_kib_per_second,
+                *(values["pcie_tx_kib_per_second"] for values in final_non_target),
             )
         launch_time = time.time()
         if idle_since_wall is None:
@@ -850,14 +987,27 @@ def main() -> int:
             "idle_probe_count": idle_probe_count,
             "max_idle_gpu_utilization_percent": 0,
             "max_idle_memory_mib": max_idle_memory_mib,
+            "max_idle_pcie_rx_kib_per_second": (
+                max_idle_pcie_rx_kib_per_second
+            ),
+            "max_idle_pcie_tx_kib_per_second": (
+                max_idle_pcie_tx_kib_per_second
+            ),
             "max_idle_probe_gap_seconds": max_idle_probe_gap_seconds,
             "max_global_compute_process_count": 0,
             "max_non_target_gpu_utilization_percent": (
                 max_non_target_gpu_utilization_percent
             ),
             "max_non_target_memory_mib": max_non_target_memory_mib,
-            "max_non_target_pcie_rx_kib_per_second": 0,
-            "max_non_target_pcie_tx_kib_per_second": 0,
+            "max_non_target_pcie_rx_kib_per_second": (
+                max_non_target_pcie_rx_kib_per_second
+            ),
+            "max_non_target_pcie_tx_kib_per_second": (
+                max_non_target_pcie_tx_kib_per_second
+            ),
+            "maximum_allowed_pcie_kib_per_second": (
+                MAX_IDLE_PCIE_KIB_PER_SECOND
+            ),
             "gpu_count": len(inventory),
         }
         environment = _recovery_environment(
@@ -982,10 +1132,14 @@ def main() -> int:
             idle_since_wall = None
             idle_probe_count = 0
             max_idle_memory_mib = 0
+            max_idle_pcie_rx_kib_per_second = 0
+            max_idle_pcie_tx_kib_per_second = 0
             max_idle_probe_gap_seconds = 0.0
             last_idle_probe_at = None
             max_non_target_gpu_utilization_percent = 0
             max_non_target_memory_mib = 0
+            max_non_target_pcie_rx_kib_per_second = 0
+            max_non_target_pcie_tx_kib_per_second = 0
             continue
         if deadline_reached:
             recorder.write("expired", attempts=attempt)
@@ -1009,10 +1163,14 @@ def main() -> int:
                 idle_since_wall = None
                 idle_probe_count = 0
                 max_idle_memory_mib = 0
+                max_idle_pcie_rx_kib_per_second = 0
+                max_idle_pcie_tx_kib_per_second = 0
                 max_idle_probe_gap_seconds = 0.0
                 last_idle_probe_at = None
                 max_non_target_gpu_utilization_percent = 0
                 max_non_target_memory_mib = 0
+                max_non_target_pcie_rx_kib_per_second = 0
+                max_non_target_pcie_tx_kib_per_second = 0
                 continue
             return recovery_code
         if return_code == 0:
@@ -1044,10 +1202,14 @@ def main() -> int:
                 idle_since_wall = None
                 idle_probe_count = 0
                 max_idle_memory_mib = 0
+                max_idle_pcie_rx_kib_per_second = 0
+                max_idle_pcie_tx_kib_per_second = 0
                 max_idle_probe_gap_seconds = 0.0
                 last_idle_probe_at = None
                 max_non_target_gpu_utilization_percent = 0
                 max_non_target_memory_mib = 0
+                max_non_target_pcie_rx_kib_per_second = 0
+                max_non_target_pcie_tx_kib_per_second = 0
                 continue
             return recovery_code
         if return_code == 75:
@@ -1056,10 +1218,14 @@ def main() -> int:
             idle_since_wall = None
             idle_probe_count = 0
             max_idle_memory_mib = 0
+            max_idle_pcie_rx_kib_per_second = 0
+            max_idle_pcie_tx_kib_per_second = 0
             max_idle_probe_gap_seconds = 0.0
             last_idle_probe_at = None
             max_non_target_gpu_utilization_percent = 0
             max_non_target_memory_mib = 0
+            max_non_target_pcie_rx_kib_per_second = 0
+            max_non_target_pcie_tx_kib_per_second = 0
             continue
         recorder.write("failed", attempt=attempt, return_code=return_code)
         return return_code or 1

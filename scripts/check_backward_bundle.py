@@ -213,6 +213,7 @@ MIN_IDLE_SECONDS = 1800
 MIN_WAIT_POLL_SECONDS = 30
 MAX_WAIT_POLL_SECONDS = 300
 MAX_WATCHDOG_SECONDS = 0.25
+MAX_IDLE_PCIE_KIB_PER_SECOND = 64 * 1024
 MIN_FINALIZE_SECONDS = 1800
 MAX_CAMPAIGN_ATTEMPTS = 3
 PRIVATE_METADATA_PATTERN = re.compile(
@@ -589,7 +590,7 @@ def validate_bundle(
 
     manifest = payloads["manifest"]
     exact_manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "repository_commit": expected_commit,
         "repository_tree": expected_tree,
         "benchmark_branch": expected_branch,
@@ -622,12 +623,15 @@ def validate_bundle(
         "idle_probe_count",
         "max_idle_gpu_utilization_percent",
         "max_idle_memory_mib",
+        "max_idle_pcie_rx_kib_per_second",
+        "max_idle_pcie_tx_kib_per_second",
         "max_idle_probe_gap_seconds",
         "max_global_compute_process_count",
         "max_non_target_gpu_utilization_percent",
         "max_non_target_memory_mib",
         "max_non_target_pcie_rx_kib_per_second",
         "max_non_target_pcie_tx_kib_per_second",
+        "maximum_allowed_pcie_kib_per_second",
         "watchdog_probe_count",
         "max_watchdog_probe_gap_seconds",
         "maximum_allowed_watchdog_probe_gap_seconds",
@@ -737,11 +741,25 @@ def validate_bundle(
         ):
             problems.append(f"manifest guard {index} max_non_target_memory_mib is invalid")
         for field in (
+            "max_idle_pcie_rx_kib_per_second",
+            "max_idle_pcie_tx_kib_per_second",
             "max_non_target_pcie_rx_kib_per_second",
             "max_non_target_pcie_tx_kib_per_second",
         ):
-            if guard[field] != 0:
-                problems.append(f"manifest guard {index} {field} must be zero")
+            value = guard[field]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not 0 <= value <= MAX_IDLE_PCIE_KIB_PER_SECOND
+            ):
+                problems.append(f"manifest guard {index} {field} is invalid")
+        if (
+            guard["maximum_allowed_pcie_kib_per_second"]
+            != MAX_IDLE_PCIE_KIB_PER_SECOND
+        ):
+            problems.append(
+                f"manifest guard {index} maximum_allowed_pcie_kib_per_second is invalid"
+            )
         watchdog_gap = guard["max_watchdog_probe_gap_seconds"]
         if (
             type(watchdog_gap) is not float
