@@ -127,159 +127,10 @@ EXPECTED_CUDA_GLOBAL_LOAD_ROLES = {
         for dtype in ("bfloat16", "float16")
     },
 }
-EXPECTED_COMPILATIONS = {
-    "serial_recompute_atomic_t4_n9_d4096",
-    "serial_saved_partials_t16_n9_d4096",
-    "serial_saved_partials_t16_n32_d4096",
-    "serial_saved_partials_t16_n32_d2048",
-    "saved_training_forward_n9_d8192",
-    "accepted_tiled_forward_n9_d4096",
-    "saved_resident_forward_n8_d1024",
-    "dw_partial_reduction",
-    "one_read_cuda",
-}
 EXPECTED_COMPILE_PROVENANCE = {
     "torch": "2.9.0+cu128",
     "triton": "3.5.0",
     "nvcc": "Build cuda_12.8.r12.8/compiler.35583870_0",
-}
-EXPECTED_TRITON_COMPILATIONS = {
-    "serial_recompute_atomic_t4_n9_d4096": {
-        "constants": {
-            "BLOCK_N": 16,
-            "BLOCK_D": 4096,
-            "TOKENS": 4,
-            "USE_SAVED": False,
-            "WRITE_PARTIAL": False,
-        },
-        "num_warps": 8,
-        "num_stages": 1,
-        "shared_bytes": 32,
-        "resource": {
-            "kernel": "_bwd_source_serial_grouped",
-            "registers": 241,
-            "stack_bytes": 0,
-            "static_shared_bytes": 1024,
-            "local_bytes": 0,
-            "global_load_instructions": 544,
-        },
-    },
-    "serial_saved_partials_t16_n9_d4096": {
-        "constants": {
-            "BLOCK_N": 16,
-            "BLOCK_D": 4096,
-            "TOKENS": 16,
-            "USE_SAVED": True,
-            "WRITE_PARTIAL": True,
-        },
-        "num_warps": 8,
-        "num_stages": 1,
-        "shared_bytes": 32,
-        "resource": {
-            "kernel": "_bwd_source_serial_grouped",
-            "registers": 204,
-            "stack_bytes": 0,
-            "static_shared_bytes": 1024,
-            "local_bytes": 0,
-            "global_load_instructions": 547,
-        },
-    },
-    "serial_saved_partials_t16_n32_d4096": {
-        "constants": {
-            "BLOCK_N": 32,
-            "BLOCK_D": 4096,
-            "TOKENS": 16,
-            "USE_SAVED": True,
-            "WRITE_PARTIAL": True,
-        },
-        "num_warps": 8,
-        "num_stages": 1,
-        "shared_bytes": 32,
-        "resource": {
-            "kernel": "_bwd_source_serial_grouped",
-            "registers": 255,
-            "stack_bytes": 0,
-            "static_shared_bytes": 1024,
-            "local_bytes": 0,
-            "global_load_instructions": 1059,
-        },
-    },
-    "serial_saved_partials_t16_n32_d2048": {
-        "constants": {
-            "BLOCK_N": 32,
-            "BLOCK_D": 2048,
-            "TOKENS": 16,
-            "USE_SAVED": True,
-            "WRITE_PARTIAL": True,
-        },
-        "num_warps": 8,
-        "num_stages": 1,
-        "shared_bytes": 32,
-        "resource": {
-            "kernel": "_bwd_source_serial_grouped",
-            "registers": 255,
-            "stack_bytes": 0,
-            "static_shared_bytes": 1024,
-            "local_bytes": 0,
-            "global_load_instructions": 531,
-        },
-    },
-    "saved_training_forward_n9_d8192": {
-        "constants": {"BLOCK_N": 16, "BLOCK_D": 2048},
-        "num_warps": 8,
-        "num_stages": 3,
-        "shared_bytes": 4096,
-        "resource": {
-            "kernel": "_fwd_tiled_saved",
-            "registers": 241,
-            "stack_bytes": 0,
-            "static_shared_bytes": 1024,
-            "local_bytes": 0,
-            "global_load_instructions": 264,
-        },
-    },
-    "accepted_tiled_forward_n9_d4096": {
-        "constants": {"BLOCK_N": 16, "BLOCK_D": 2048},
-        "num_warps": 8,
-        "num_stages": 1,
-        "shared_bytes": 4096,
-        "resource": {
-            "kernel": "_fwd_tiled",
-            "registers": 237,
-            "stack_bytes": 0,
-            "static_shared_bytes": 1024,
-            "local_bytes": 0,
-            "global_load_instructions": 264,
-        },
-    },
-    "saved_resident_forward_n8_d1024": {
-        "constants": {"BLOCK_N": 8, "BLOCK_D": 1024},
-        "num_warps": 4,
-        "num_stages": 1,
-        "shared_bytes": 2048,
-        "resource": {
-            "kernel": "_fwd_resident_saved",
-            "registers": 126,
-            "stack_bytes": 0,
-            "static_shared_bytes": 1024,
-            "local_bytes": 0,
-            "global_load_instructions": 72,
-        },
-    },
-    "dw_partial_reduction": {
-        "constants": {"BLOCK_P": 8, "BLOCK_D": 128},
-        "num_warps": 4,
-        "num_stages": 1,
-        "shared_bytes": 0,
-        "resource": {
-            "kernel": "_reduce_dw_partials",
-            "registers": 35,
-            "stack_bytes": 0,
-            "static_shared_bytes": 0,
-            "local_bytes": 0,
-            "global_load_instructions": 8,
-        },
-    },
 }
 EXPECTED_CUDA_RESOURCE_ROWS = (
     Counter(
@@ -390,6 +241,10 @@ def _canonical(value: dict) -> dict:
     return json.loads(json.dumps(value, default=str))
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON number: {value}")
+
+
 def _inputs(raw_reports: list[bytes]) -> list[dict[str, str]]:
     return [{"sha256": hashlib.sha256(raw).hexdigest()} for raw in raw_reports]
 
@@ -410,7 +265,10 @@ def _exact_fields(value: object, expected: set[str], label: str) -> list[str]:
 
 
 def _compile_problems(
-    report: dict, expected_commit: str, expected_source_sha256: str | None = None
+    report: object,
+    expected_commit: str,
+    expected_source_sha256: str | None = None,
+    expected_contract: dict | None = None,
 ) -> list[str]:
     problems: list[str] = []
     top_fields = {"target", "gpu_visible", "provenance", "plans", "compilations"}
@@ -442,40 +300,109 @@ def _compile_problems(
             if provenance.get(field) != expected:
                 problems.append(f"offline compile report uses the wrong {field} version")
         source_hash = provenance.get("cuda_source_sha256")
-        if not isinstance(source_hash, str) or re.fullmatch(r"[0-9a-f]{64}", source_hash) is None:
+        if (
+            not isinstance(source_hash, str)
+            or re.fullmatch(r"[0-9a-f]{64}", source_hash) is None
+        ):
             problems.append("offline compile report has an invalid CUDA source hash")
         if expected_source_sha256 is not None and source_hash != expected_source_sha256:
             problems.append("offline compile report uses different CUDA source bytes")
 
-    expected_plans = [get_training_plan(name).as_dict() for name in CANDIDATES]
+    expected_plans = [get_training_plan(name).as_dict() for name in ("auto", *CANDIDATES)]
     if report.get("plans") != expected_plans:
         problems.append("offline compile report does not contain the exact campaign plans")
 
     compilations = report.get("compilations")
-    if not isinstance(compilations, list) or not all(
+    if not isinstance(compilations, list) or not compilations or not all(
         isinstance(item, dict) for item in compilations
     ):
         problems.append("offline compile report has a malformed compilation list")
         return problems
-    expected_names = [*EXPECTED_TRITON_COMPILATIONS, "one_read_cuda"]
-    if [item.get("name") for item in compilations] != expected_names:
-        problems.append("offline compile report does not contain the exact compilation set")
-        return problems
+    names = [item.get("name") for item in compilations]
+    if (
+        not all(isinstance(name, str) for name in names)
+        or len(names) != len(set(names))
+        or names[-1] != "one_read_cuda"
+    ):
+        problems.append("offline compile report has an invalid compilation inventory")
 
-    for compilation in compilations[:-1]:
-        name = compilation["name"]
-        contract = EXPECTED_TRITON_COMPILATIONS[name]
-        expected = {
-            "name": name,
-            "kind": "triton",
-            "constants": contract["constants"],
-            "num_warps": contract["num_warps"],
-            "num_stages": contract["num_stages"],
-            "shared_bytes": contract["shared_bytes"],
-            "resources": [contract["resource"]],
+    resource_fields = {
+        "kernel",
+        "registers",
+        "stack_bytes",
+        "static_shared_bytes",
+        "local_bytes",
+        "global_load_instructions",
+    }
+    current_kernel_names = {
+        "_bwd_apply",
+        "_bwd_resident",
+        "_bwd_stats",
+        "_fwd_resident",
+        "_fwd_tiled",
+    }
+    for index, compilation in enumerate(compilations[:-1]):
+        label = f"offline Triton compilation[{index}]"
+        fields = {
+            "name",
+            "kind",
+            "input_dtype",
+            "spill_policy",
+            "constants",
+            "num_warps",
+            "num_stages",
+            "shared_bytes",
+            "resources",
         }
-        if compilation != expected:
-            problems.append(f"offline Triton compilation contract differs: {name}")
+        problems.extend(_exact_fields(compilation, fields, label))
+        if compilation.get("kind") != "triton":
+            problems.append(f"{label} has the wrong kind")
+        if compilation.get("input_dtype") not in {"bfloat16", "float16", "float32"}:
+            problems.append(f"{label} has an invalid input dtype")
+        policy = compilation.get("spill_policy")
+        if policy not in {"forbid", "record"}:
+            problems.append(f"{label} has an invalid spill policy")
+        if not isinstance(compilation.get("constants"), dict):
+            problems.append(f"{label} has malformed constants")
+        for field in ("num_warps", "num_stages"):
+            if (
+                type(compilation.get(field)) is not int
+                or compilation[field] <= 0
+            ):
+                problems.append(f"{label} has an invalid {field}")
+        if (
+            type(compilation.get("shared_bytes")) is not int
+            or compilation["shared_bytes"] < 0
+        ):
+            problems.append(f"{label} has invalid shared memory")
+
+        resources = compilation.get("resources")
+        if (
+            not isinstance(resources, list)
+            or len(resources) != 1
+            or not isinstance(resources[0], dict)
+        ):
+            problems.append(f"{label} must have one resource record")
+            continue
+        resource = resources[0]
+        problems.extend(_exact_fields(resource, resource_fields, f"{label} resources[0]"))
+        scalar_fields = resource_fields - {"kernel"}
+        if (
+            not isinstance(resource.get("kernel"), str)
+            or any(type(resource.get(field)) is not int for field in scalar_fields)
+            or any(
+                resource[field] < 0
+                for field in scalar_fields
+                if type(resource.get(field)) is int
+            )
+        ):
+            problems.append(f"{label} resource values are invalid")
+            continue
+        spills = bool(resource["stack_bytes"] or resource["local_bytes"])
+        if policy == "forbid" and spills:
+            problems.append(f"{label} violates its spill-free contract")
+        if policy == "record" and resource["kernel"] not in current_kernel_names:
+            problems.append(f"{label} relaxes spills for a non-baseline kernel")
 
     cuda = compilations[-1]
     cuda_fields = {
@@ -494,28 +421,44 @@ def _compile_problems(
         cuda.get("required_template_instances") != EXPECTED_CUDA_INSTANCES
         or cuda.get("register_limits") != EXPECTED_CUDA_LIMITS
         or cuda.get("required_global_load_instruction_counts") != EXPECTED_CUDA_GLOBAL_LOADS
-        or cuda.get("required_global_load_role_counts") != EXPECTED_CUDA_GLOBAL_LOAD_ROLES
+        or cuda.get("required_global_load_role_counts")
+        != EXPECTED_CUDA_GLOBAL_LOAD_ROLES
     ):
         problems.append("offline CUDA resource contracts differ from the source gate")
 
     resources = cuda.get("resources")
-    if not isinstance(resources, list) or not all(isinstance(item, dict) for item in resources):
+    if not isinstance(resources, list) or not all(
+        isinstance(item, dict) for item in resources
+    ):
         problems.append("offline CUDA resource records are malformed")
         return problems
     observed_rows = Counter()
     for index, item in enumerate(resources):
-        fields = {
-            "kernel",
-            "registers",
-            "stack_bytes",
-            "static_shared_bytes",
-            "local_bytes",
-            "global_load_instructions",
-        }
+        fields = set(resource_fields)
         roles = item.get("global_load_instruction_roles")
         if roles is not None:
             fields.add("global_load_instruction_roles")
         problems.extend(_exact_fields(item, fields, f"CUDA resources[{index}]"))
+        scalar_fields = resource_fields - {"kernel"}
+        if (
+            not isinstance(item.get("kernel"), str)
+            or any(type(item.get(field)) is not int for field in scalar_fields)
+            or any(
+                item[field] < 0
+                for field in scalar_fields
+                if type(item.get(field)) is int
+            )
+            or (roles is not None and not isinstance(roles, dict))
+            or (
+                isinstance(roles, dict)
+                and any(
+                    not isinstance(key, str) or type(count) is not int or count <= 0
+                    for key, count in roles.items()
+                )
+            )
+        ):
+            problems.append(f"CUDA resources[{index}] has invalid value types")
+            continue
         observed_rows[
             (
                 item.get("kernel"),
@@ -529,9 +472,18 @@ def _compile_problems(
             problems.append(f"offline CUDA resource record spills: {item.get('kernel')}")
     if observed_rows != EXPECTED_CUDA_RESOURCE_ROWS:
         problems.append("offline CUDA resource rows differ from the exact compiler contract")
+
+    if expected_contract is not None:
+        expected = _canonical(expected_contract)
+        observed = _canonical(report)
+        if not isinstance(expected.get("provenance"), dict):
+            problems.append("tracked compiler contract has malformed provenance")
+        else:
+            expected["provenance"]["repository_commit"] = "<campaign-commit>"
+            observed["provenance"]["repository_commit"] = "<campaign-commit>"
+            if observed != expected:
+                problems.append("offline compile report differs from the tracked compiler contract")
     return problems
-
-
 def validate_bundle(
     prefix: Path,
     *,
@@ -544,6 +496,7 @@ def validate_bundle(
     expected_origin: str,
     expected_device_id: str,
     expected_source_sha256: str | None = None,
+    expected_compile_contract: dict | None = None,
 ) -> list[str]:
     problems: list[str] = []
     match = re.fullmatch(r"backward_campaign_([0-9]{8}T[0-9]{6}Z)", prefix.name)
@@ -560,7 +513,7 @@ def validate_bundle(
     for suffix, path in paths.items():
         try:
             raw[suffix] = read_bytes(path)
-            payload = json.loads(raw[suffix])
+            payload = json.loads(raw[suffix], parse_constant=_reject_json_constant)
             if not isinstance(payload, dict):
                 raise ValueError("top-level JSON value is not an object")
             payloads[suffix] = payload
@@ -573,7 +526,12 @@ def validate_bundle(
             problems.append(f"{suffix} contains private host or task metadata")
 
     problems.extend(
-        _compile_problems(payloads["offline_compile"], expected_commit, expected_source_sha256)
+        _compile_problems(
+            payloads["offline_compile"],
+            expected_commit,
+            expected_source_sha256,
+            expected_compile_contract,
+        )
     )
 
     phase_specs = {
@@ -682,20 +640,25 @@ def validate_bundle(
                     raise ValueError("missing UTC offset")
         except (TypeError, ValueError):
             problems.append(f"manifest guard {index} timestamps must include UTC offsets")
-        numeric_guard_fields = {
+        integer_guard_fields = {
             "idle_seconds",
             "idle_probe_count",
             "wait_poll_seconds",
-            "watchdog_seconds",
             "finalize_seconds",
             "gpu_count",
         }
         numeric_guard_valid = True
-        for field in numeric_guard_fields:
+        for field in integer_guard_fields:
             value = guard[field]
-            if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
-                problems.append(f"manifest guard {index} {field} must be positive")
+            if type(value) is not int or value <= 0:
+                problems.append(f"manifest guard {index} {field} must be a positive integer")
                 numeric_guard_valid = False
+        watchdog = guard["watchdog_seconds"]
+        if type(watchdog) is not float or not math.isfinite(watchdog) or watchdog <= 0:
+            problems.append(
+                f"manifest guard {index} watchdog_seconds must be a positive finite float"
+            )
+            numeric_guard_valid = False
         attempt = guard.get("attempt")
         if (
             isinstance(attempt, bool)
@@ -708,9 +671,7 @@ def validate_bundle(
             by_attempt[attempt] = (guard, moments)
         if guard["device_id"] != expected_device_id:
             problems.append(f"manifest guard {index} has the wrong device ID")
-        if isinstance(guard["idle_seconds"], int | float) and (
-            guard["idle_seconds"] < MIN_IDLE_SECONDS
-        ):
+        if type(guard["idle_seconds"]) is int and guard["idle_seconds"] < MIN_IDLE_SECONDS:
             problems.append(
                 f"manifest guard {index} idle_seconds must be at least {MIN_IDLE_SECONDS}"
             )
@@ -729,25 +690,26 @@ def validate_bundle(
         elif idle_memory > 64:
             problems.append(f"manifest guard {index} max_idle_memory_mib exceeds 64 MiB")
         wait_poll = guard["wait_poll_seconds"]
-        if isinstance(wait_poll, int | float) and not (
+        if type(wait_poll) is int and not (
             MIN_WAIT_POLL_SECONDS <= wait_poll <= MAX_WAIT_POLL_SECONDS
         ):
             problems.append(
                 f"manifest guard {index} wait_poll_seconds must be between "
                 f"{MIN_WAIT_POLL_SECONDS} and {MAX_WAIT_POLL_SECONDS}"
             )
-        watchdog = guard["watchdog_seconds"]
-        if isinstance(watchdog, int | float) and watchdog > MAX_WATCHDOG_SECONDS:
+        if type(watchdog) is float and math.isfinite(watchdog) and watchdog > MAX_WATCHDOG_SECONDS:
             problems.append(
                 f"manifest guard {index} watchdog_seconds must be no more than "
                 f"{MAX_WATCHDOG_SECONDS}"
             )
-        if isinstance(guard["finalize_seconds"], int | float) and (
+        if type(guard["finalize_seconds"]) is int and (
             guard["finalize_seconds"] < MIN_FINALIZE_SECONDS
         ):
             problems.append(
                 f"manifest guard {index} finalize_seconds must be at least {MIN_FINALIZE_SECONDS}"
             )
+        if type(guard["gpu_count"]) is int and guard["gpu_count"] != 2:
+            problems.append(f"manifest guard {index} gpu_count must equal 2")
         if len(moments) == 3 and numeric_guard_valid:
             observed_idle = (moments["launch_at"] - moments["idle_started_at"]).total_seconds()
             if moments["launch_at"] < moments["not_before"]:
@@ -843,6 +805,21 @@ def main() -> int:
             check=True,
             capture_output=True,
         ).stdout
+        compile_contract = json.loads(
+            subprocess.run(
+                [
+                    "git",
+                    "show",
+                    f"{args.expected_commit}:results/backward_candidates_compile_sm120.json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout,
+            parse_constant=_reject_json_constant,
+        )
+        if not isinstance(compile_contract, dict):
+            raise ValueError("tracked compiler contract is not an object")
         problems = validate_bundle(
             args.prefix,
             read_bytes=_git_reader(args.git_ref),
@@ -854,6 +831,7 @@ def main() -> int:
             expected_origin=args.expected_origin,
             expected_device_id=args.expected_device_id,
             expected_source_sha256=hashlib.sha256(source).hexdigest(),
+            expected_compile_contract=compile_contract,
         )
     except (KeyError, TypeError, ValueError, subprocess.SubprocessError) as exc:
         problems = [f"cannot read Git evidence: {type(exc).__name__}"]

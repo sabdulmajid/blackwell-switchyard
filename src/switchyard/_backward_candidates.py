@@ -1,4 +1,4 @@
-"""Private Triton backward architectures and their complete launch path."""
+"""Experimental Triton backward architectures and their complete launch path."""
 
 from __future__ import annotations
 
@@ -7,6 +7,22 @@ import triton
 import triton.language as tl
 
 from .training_plan import TrainingPlan
+
+
+def saved_forward_launch_config(
+    *, resident: bool, block_n: int, block_d: int, warps: int, stages: int
+) -> tuple[bool, int, int, int]:
+    """Return the spill-free launch used by saved-state training forward.
+
+    The accepted forward can use a 32-by-2048 logical tile, but adding three
+    FP32 saved coefficients pushes that specialization into local memory on
+    sm_120. A 32-by-1024 tile spread over 16 warps retains the coefficients in
+    registers for bf16, fp16, and fp32. Smaller source tiles keep the accepted
+    launch because their generated code is already spill-free.
+    """
+    if not resident and block_n >= 32 and block_d > 1024:
+        return False, 1024, 16, 1
+    return resident, block_d, warps, stages
 
 
 @triton.jit
@@ -148,6 +164,13 @@ def launch_saved_training_forward(
     stages: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Launch an isolated training forward and return its FP32 coefficients."""
+    resident, block_d, warps, stages = saved_forward_launch_config(
+        resident=resident,
+        block_n=block_n,
+        block_d=block_d,
+        warps=warps,
+        stages=stages,
+    )
     n, b, t, _ = values.shape
     n_tokens = b * t
     saved_alpha = torch.empty(n, n_tokens, device=values.device, dtype=torch.float32)

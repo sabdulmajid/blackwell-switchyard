@@ -10,9 +10,7 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "check_backward_bundle.py"
 COMPILE_REPORT = (
-    Path(__file__).resolve().parents[1]
-    / "results"
-    / "backward_candidates_compile_sm120.json"
+    Path(__file__).resolve().parents[1] / "results" / "backward_candidates_compile_sm120.json"
 )
 SPEC = importlib.util.spec_from_file_location("check_backward_bundle", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
@@ -30,7 +28,8 @@ def _compile_report(*, stack_bytes=0):
 
 def _compile_arguments(report):
     provenance = report["provenance"]
-    return provenance["repository_commit"], provenance["cuda_source_sha256"]
+    contract = json.loads(COMPILE_REPORT.read_text())
+    return provenance["repository_commit"], provenance["cuda_source_sha256"], contract
 
 
 def test_bundle_has_one_exact_file_for_every_phase_and_candidate():
@@ -61,6 +60,7 @@ def test_compile_gate_binds_plan_and_triton_compiler_contracts():
         lambda report: report["plans"][0].update(rationale="different"),
         lambda report: report["compilations"][0]["constants"].update(BLOCK_D=2048),
         lambda report: report["compilations"][0]["resources"][0].update(registers=1),
+        lambda report: report["compilations"][0].update(spill_policy="record"),
         lambda report: report["target"].update(backend="not-cuda"),
         lambda report: report["provenance"].update(triton="different"),
     ]
@@ -73,6 +73,10 @@ def test_compile_gate_binds_plan_and_triton_compiler_contracts():
 def test_compile_gate_rejects_malformed_lists_without_crashing():
     report = _compile_report()
     report["compilations"][0] = "not-an-object"
+    assert MODULE._compile_problems(report, *_compile_arguments(report))
+
+    report = _compile_report()
+    report["compilations"][-1]["resources"][0]["registers"] = []
     assert MODULE._compile_problems(report, *_compile_arguments(report))
 
 
@@ -93,8 +97,7 @@ def _valid_bundle(monkeypatch):
     campaign_id = "20260906T034000Z"
     prefix = Path("results") / f"backward_campaign_{campaign_id}"
     paths = {
-        suffix: prefix.with_name(f"{prefix.name}_{suffix}.json")
-        for suffix in MODULE._suffixes()
+        suffix: prefix.with_name(f"{prefix.name}_{suffix}.json") for suffix in MODULE._suffixes()
     }
     payloads = {
         "offline_compile": {},
@@ -120,9 +123,7 @@ def _valid_bundle(monkeypatch):
     smoke_raw = [raw["smoke_bfloat16"], raw["smoke_float16"]]
     payloads["smoke_decision"] = {
         "status": "PASS",
-        "input_reports": [
-            {"sha256": hashlib.sha256(item).hexdigest()} for item in smoke_raw
-        ],
+        "input_reports": [{"sha256": hashlib.sha256(item).hexdigest()} for item in smoke_raw],
     }
     for candidate in MODULE.CANDIDATES:
         report_suffixes = ["full_bfloat16", "full_float16"]
@@ -132,8 +133,7 @@ def _valid_bundle(monkeypatch):
             "status": "DROP",
             "candidate": candidate,
             "input_reports": [
-                {"sha256": hashlib.sha256(raw[suffix]).hexdigest()}
-                for suffix in report_suffixes
+                {"sha256": hashlib.sha256(raw[suffix]).hexdigest()} for suffix in report_suffixes
             ],
         }
     payloads["manifest"] = {
@@ -200,6 +200,7 @@ def test_bundle_rejects_weakened_collision_guards(monkeypatch):
         "finalize_seconds": MODULE.MIN_FINALIZE_SECONDS - 1,
         "max_idle_gpu_utilization_percent": 1,
         "max_idle_memory_mib": 65,
+        "gpu_count": 1,
     }
     for field, value in unsafe_values.items():
         prefix, by_path, arguments = _valid_bundle(monkeypatch)
@@ -209,6 +210,22 @@ def test_bundle_rejects_weakened_collision_guards(monkeypatch):
         by_path[manifest_path] = json.dumps(manifest).encode()
         problems = MODULE.validate_bundle(prefix, **arguments)
         assert any("guard" in problem and field in problem for problem in problems), field
+
+
+def test_bundle_rejects_nonstandard_nonfinite_json_numbers(monkeypatch):
+    for field in (
+        "watchdog_seconds",
+        "finalize_seconds",
+        "gpu_count",
+        "idle_probe_count",
+    ):
+        prefix, by_path, arguments = _valid_bundle(monkeypatch)
+        manifest_path = prefix.with_name(f"{prefix.name}_manifest.json")
+        manifest = json.loads(by_path[manifest_path])
+        manifest["guard_attestations"][0][field] = float("nan")
+        by_path[manifest_path] = json.dumps(manifest).encode()
+        problems = MODULE.validate_bundle(prefix, **arguments)
+        assert any("cannot read" in problem for problem in problems), field
 
 
 def test_bundle_binds_guard_times_and_target_gpu(monkeypatch):

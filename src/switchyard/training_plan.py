@@ -264,6 +264,11 @@ def plan_supports(
             return False, "source-serial plans avoid compiler spills only through width 4096"
         if not plan.saves_forward_stats and n > 16:
             return False, "recompute source-serial plans avoid compiler spills only through 16 sources"
+        if dtype == "float32" and n > 16 and d > 2048:
+            return (
+                False,
+                "saved FP32 source-serial plans avoid compiler spills only through width 2048 above 16 sources",
+            )
         return True, "supported"
     if dtype == "float32":
         return False, "shared-memory CUDA plans preserve fp16 or bf16 values"

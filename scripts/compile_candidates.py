@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile every backward candidate for sm_120 without opening a GPU.
+"""Compile the guarded backward campaign matrix for sm_120 without a GPU.
 
 This is the first experiment gate. It catches unsupported Triton IR, CUDA
 compile failures, register explosions, and local-memory spills before scarce
@@ -18,9 +18,10 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from collections import Counter
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 if os.environ.get("CUDA_VISIBLE_DEVICES", "") not in {"", "-1"}:
@@ -28,6 +29,9 @@ if os.environ.get("CUDA_VISIBLE_DEVICES", "") not in {"", "-1"}:
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "bench"))
+sys.path.insert(0, str(REPO / "src"))
 
 import torch  # noqa: E402
 import triton  # noqa: E402
@@ -35,15 +39,26 @@ from triton.backends.compiler import GPUTarget  # noqa: E402
 from triton.compiler import ASTSource  # noqa: E402
 from triton.compiler import compile as triton_compile  # noqa: E402
 
+from bench_backward import CORRECTNESS_ONLY_SHAPES, SHAPE_SETS  # noqa: E402
 from switchyard._backward_candidates import (  # noqa: E402
     _bwd_source_serial_grouped,
     _fwd_resident_saved,
     _fwd_tiled_saved,
     _reduce_dw_partials,
+    _source_serial_launch,
+    saved_forward_launch_config,
 )
 from switchyard.cuda_op import _load_extension  # noqa: E402
-from switchyard.training_plan import get_training_plan  # noqa: E402
-from switchyard.triton_op import _fwd_tiled  # noqa: E402
+from switchyard.training_plan import get_training_plan, plan_supports  # noqa: E402
+from switchyard.triton_op import (  # noqa: E402
+    _bwd_apply,
+    _bwd_launch,
+    _bwd_resident,
+    _bwd_stats,
+    _fwd_resident,
+    _fwd_tiled,
+    _launch_config,
+)
 
 TARGET = GPUTarget("cuda", 120, 32)
 CUOBJDUMP = Path(os.environ.get("CUDA_HOME", "/usr/local/cuda-12.8")) / "bin/cuobjdump"
@@ -128,51 +143,369 @@ CUDA_GLOBAL_LOAD_ROLE_COUNTS = {
     },
 }
 
-POINTER_SIGNATURE = {
-    "v_ptr": "*bf16",
-    "w_ptr": "*bf16",
-    "g_ptr": "*bf16",
-    "saved_alpha_ptr": "*fp32",
-    "saved_rstd_ptr": "*fp32",
-    "saved_norm_ptr": "*fp32",
-    "dv_ptr": "*bf16",
-    "dw_output_ptr": "*fp32",
-    "n_src": "i32",
+INPUT_POINTER_TYPES = {
+    "bfloat16": "*bf16",
+    "float16": "*fp16",
+    "float32": "*fp32",
+}
+
+# These phases mirror the guarded campaign. Liger is a comparator rather than
+# a project TrainingPlan, so its separately pinned source is not part of this
+# repository-managed Triton matrix.
+CAMPAIGN_CANDIDATE_PLAN_NAMES = (
+    "serial_recompute_atomic_t4",
+    "serial_saved_partials_t16",
+    "cuda_shared",
+    "cuda_cluster",
+    "cuda_cluster4",
+    "cuda_register",
+    "cuda_register_cluster",
+    "cuda_register_cluster_full",
+)
+CAMPAIGN_PLAN_NAMES = ("auto", *CAMPAIGN_CANDIDATE_PLAN_NAMES)
+CAMPAIGN_PORTABLE_PLAN_NAMES = (
+    "auto",
+    "serial_recompute_atomic_t4",
+    "serial_saved_partials_t16",
+)
+CAMPAIGN_PHASES = (
+    ("gate", "bfloat16", CAMPAIGN_PLAN_NAMES),
+    ("gate", "float16", CAMPAIGN_PLAN_NAMES),
+    ("full", "bfloat16", CAMPAIGN_PLAN_NAMES),
+    ("full", "float16", CAMPAIGN_PLAN_NAMES),
+    ("full", "float32", CAMPAIGN_PORTABLE_PLAN_NAMES),
+)
+
+
+@dataclass(frozen=True)
+class TritonCompilationSpec:
+    """One unique specialization that the guarded campaign can launch."""
+
+    name: str
+    kernel_name: str
+    function: object
+    input_dtype: str
+    signature: dict[str, str]
+    constants: dict[str, int | bool]
+    num_warps: int
+    num_stages: int
+    require_spill_free: bool
+
+
+def _input_signature(dtype: str) -> dict[str, str]:
+    pointer = INPUT_POINTER_TYPES[dtype]
+    return {
+        "v_ptr": pointer,
+        "w_ptr": pointer,
+        "g_ptr": pointer,
+        "saved_alpha_ptr": "*fp32",
+        "saved_rstd_ptr": "*fp32",
+        "saved_norm_ptr": "*fp32",
+        "dv_ptr": pointer,
+        "dw_output_ptr": "*fp32",
+        "n_src": "i32",
+        "D": "i32",
+        "eps": "fp32",
+        "n_tokens": "i32",
+        "stride_vn": "i64",
+        "stride_vt": "i64",
+        "stride_vd": "i64",
+        "stride_gt": "i64",
+        "stride_gd": "i64",
+        "stride_sn": "i64",
+        "stride_partial": "i64",
+    }
+
+
+def _forward_signature(dtype: str, *, saved: bool) -> dict[str, str]:
+    pointer = INPUT_POINTER_TYPES[dtype]
+    common = {
+        "n_src": "i32",
+        "D": "i32",
+        "eps": "fp32",
+        "stride_vn": "i64",
+        "stride_vt": "i64",
+        "stride_vd": "i64",
+        "stride_ot": "i64",
+        "stride_od": "i64",
+    }
+    if not saved:
+        return {
+            "v_ptr": pointer,
+            "w_ptr": pointer,
+            "out_ptr": pointer,
+            **common,
+        }
+    return {
+        "v_ptr": pointer,
+        "w_ptr": pointer,
+        "out_ptr": pointer,
+        "saved_alpha_ptr": "*fp32",
+        "saved_rstd_ptr": "*fp32",
+        "saved_norm_ptr": "*fp32",
+        **common,
+        "stride_sn": "i64",
+    }
+
+
+REDUCTION_SIGNATURE = {
+    "partial_ptr": "*fp32",
+    "dw_ptr": "*fp32",
+    "n_partials": "i32",
     "D": "i32",
-    "eps": "fp32",
-    "n_tokens": "i32",
-    "stride_vn": "i64",
-    "stride_vt": "i64",
-    "stride_vd": "i64",
-    "stride_gt": "i64",
-    "stride_gd": "i64",
-    "stride_sn": "i64",
     "stride_partial": "i64",
 }
 
-FORWARD_SIGNATURE = {
-    "v_ptr": "*bf16",
-    "w_ptr": "*bf16",
-    "out_ptr": "*bf16",
-    "saved_alpha_ptr": "*fp32",
-    "saved_rstd_ptr": "*fp32",
-    "saved_norm_ptr": "*fp32",
-    "n_src": "i32",
-    "D": "i32",
-    "eps": "fp32",
-    "stride_vn": "i64",
-    "stride_vt": "i64",
-    "stride_vd": "i64",
-    "stride_ot": "i64",
-    "stride_od": "i64",
-    "stride_sn": "i64",
-}
 
-ACCEPTED_FORWARD_SIGNATURE = {
-    key: value
-    for key, value in FORWARD_SIGNATURE.items()
-    if key not in {"saved_alpha_ptr", "saved_rstd_ptr", "saved_norm_ptr", "stride_sn"}
-}
+def _current_resident_signature(dtype: str) -> dict[str, str]:
+    pointer = INPUT_POINTER_TYPES[dtype]
+    return {
+        "v_ptr": pointer,
+        "w_ptr": pointer,
+        "g_ptr": pointer,
+        "dv_ptr": pointer,
+        "dw_ptr": "*fp32",
+        "n_src": "i32",
+        "D": "i32",
+        "eps": "fp32",
+        "stride_vn": "i64",
+        "stride_vt": "i64",
+        "stride_vd": "i64",
+        "stride_gt": "i64",
+        "stride_gd": "i64",
+        "n_tokens": "i32",
+    }
+
+
+def _current_stats_signature(dtype: str) -> dict[str, str]:
+    pointer = INPUT_POINTER_TYPES[dtype]
+    return {
+        "v_ptr": pointer,
+        "w_ptr": pointer,
+        "g_ptr": pointer,
+        "alpha_ptr": "*fp32",
+        "da_ptr": "*fp32",
+        "dssq_ptr": "*fp32",
+        "n_src": "i32",
+        "D": "i32",
+        "eps": "fp32",
+        "stride_vn": "i64",
+        "stride_vt": "i64",
+        "stride_vd": "i64",
+        "stride_gt": "i64",
+        "stride_gd": "i64",
+        "stride_sn": "i64",
+    }
+
+
+def _current_apply_signature(dtype: str) -> dict[str, str]:
+    pointer = INPUT_POINTER_TYPES[dtype]
+    return {
+        "v_ptr": pointer,
+        "w_ptr": pointer,
+        "g_ptr": pointer,
+        "alpha_ptr": "*fp32",
+        "da_ptr": "*fp32",
+        "dssq_ptr": "*fp32",
+        "dv_ptr": pointer,
+        "dw_ptr": "*fp32",
+        "n_src": "i32",
+        "D": "i32",
+        "n_tokens": "i32",
+        "stride_vn": "i64",
+        "stride_vt": "i64",
+        "stride_vd": "i64",
+        "stride_gt": "i64",
+        "stride_gd": "i64",
+        "stride_sn": "i64",
+    }
+
+
+def _spec_name(
+    kernel_name: str,
+    dtype: str,
+    constants: dict[str, int | bool],
+    warps: int,
+    stages: int,
+) -> str:
+    aliases = {
+        "BLOCK_N": "bn",
+        "BLOCK_D": "bd",
+        "BLOCK_P": "bp",
+        "TOKENS": "t",
+        "USE_SAVED": "saved",
+        "WRITE_PARTIAL": "partial",
+    }
+    parts = [kernel_name.removeprefix("_"), dtype]
+    for key, value in constants.items():
+        rendered = int(value) if isinstance(value, bool) else value
+        parts.append(f"{aliases[key]}{rendered}")
+    parts.extend((f"w{warps}", f"s{stages}"))
+    return "_".join(parts)
+
+
+def _make_spec(
+    kernel_name: str,
+    function: object,
+    dtype: str,
+    signature: dict[str, str],
+    constants: dict[str, int | bool],
+    *,
+    warps: int,
+    stages: int = 1,
+    require_spill_free: bool = True,
+) -> TritonCompilationSpec:
+    return TritonCompilationSpec(
+        name=_spec_name(kernel_name, dtype, constants, warps, stages),
+        kernel_name=kernel_name,
+        function=function,
+        input_dtype=dtype,
+        signature=signature,
+        constants=constants,
+        num_warps=warps,
+        num_stages=stages,
+        require_spill_free=require_spill_free,
+    )
+
+
+def _forward_spec(plan, shape, dtype: str) -> TritonCompilationSpec | None:
+    if plan.forward.family == "cuda_register_cluster":
+        return None
+    block_n = triton.next_power_of_2(shape.n)
+    resident, block_d, warps, stages = _launch_config(block_n, shape.d)
+    saved = plan.saves_forward_stats
+    if saved:
+        resident, block_d, warps, stages = saved_forward_launch_config(
+            resident=resident,
+            block_n=block_n,
+            block_d=block_d,
+            warps=warps,
+            stages=stages,
+        )
+    if saved:
+        function = _fwd_resident_saved if resident else _fwd_tiled_saved
+    else:
+        function = _fwd_resident if resident else _fwd_tiled
+    return _make_spec(
+        function.fn.__name__,
+        function,
+        dtype,
+        _forward_signature(dtype, saved=saved),
+        {"BLOCK_N": block_n, "BLOCK_D": block_d},
+        warps=warps,
+        stages=stages,
+        require_spill_free=plan.name != "auto",
+    )
+
+
+def _backward_specs(plan, shape, dtype: str) -> list[TritonCompilationSpec]:
+    block_n = triton.next_power_of_2(shape.n)
+    if plan.backward.family == "auto":
+        resident, tokens, warps, stages = _bwd_launch(block_n, shape.d)
+        if resident:
+            return [
+                _make_spec(
+                    "_bwd_resident",
+                    _bwd_resident,
+                    dtype,
+                    _current_resident_signature(dtype),
+                    {
+                        "BLOCK_N": block_n,
+                        "BLOCK_D": triton.next_power_of_2(shape.d),
+                        "TOKENS": tokens,
+                    },
+                    warps=warps,
+                    stages=stages,
+                    require_spill_free=False,
+                )
+            ]
+        block_d = min(1024, triton.next_power_of_2(shape.d))
+        return [
+            _make_spec(
+                "_bwd_stats",
+                _bwd_stats,
+                dtype,
+                _current_stats_signature(dtype),
+                {"BLOCK_N": block_n, "BLOCK_D": block_d},
+                warps=8,
+                require_spill_free=False,
+            ),
+            _make_spec(
+                "_bwd_apply",
+                _bwd_apply,
+                dtype,
+                _current_apply_signature(dtype),
+                {"BLOCK_N": block_n, "BLOCK_D": block_d, "TOKENS": 32},
+                warps=8,
+                require_spill_free=False,
+            ),
+        ]
+    if plan.backward.family != "source_serial":
+        return []
+
+    block_d, warps = _source_serial_launch(shape.d)
+    write_partial = plan.backward.dw_reduction == "partials"
+    specs = [
+        _make_spec(
+            "_bwd_source_serial_grouped",
+            _bwd_source_serial_grouped,
+            dtype,
+            _input_signature(dtype),
+            {
+                "BLOCK_N": block_n,
+                "BLOCK_D": block_d,
+                "TOKENS": plan.backward.tokens_per_cta,
+                "USE_SAVED": plan.saves_forward_stats,
+                "WRITE_PARTIAL": write_partial,
+            },
+            warps=warps,
+        )
+    ]
+    if write_partial:
+        specs.append(
+            _make_spec(
+                "_reduce_dw_partials",
+                _reduce_dw_partials,
+                "float32",
+                REDUCTION_SIGNATURE,
+                {"BLOCK_P": 8, "BLOCK_D": 128},
+                warps=4,
+            )
+        )
+    return specs
+
+
+def triton_compilation_specs() -> list[TritonCompilationSpec]:
+    """Derive the unique Triton matrix from every guarded campaign phase."""
+    unique: dict[tuple, TritonCompilationSpec] = {}
+    for shape_set, dtype, plan_names in CAMPAIGN_PHASES:
+        shapes = (*SHAPE_SETS[shape_set], *CORRECTNESS_ONLY_SHAPES)
+        for shape in shapes:
+            for plan_name in plan_names:
+                plan = get_training_plan(plan_name)
+                supported, _ = plan_supports(
+                    plan, shape.n, shape.b, shape.t, shape.d, dtype
+                )
+                if not supported:
+                    continue
+                specs = _backward_specs(plan, shape, dtype)
+                forward = _forward_spec(plan, shape, dtype)
+                if forward is not None:
+                    specs.append(forward)
+                for spec in specs:
+                    key = (
+                        spec.kernel_name,
+                        spec.input_dtype,
+                        tuple(sorted(spec.constants.items())),
+                        spec.num_warps,
+                        spec.num_stages,
+                    )
+                    previous = unique.get(key)
+                    if previous is None or (
+                        spec.require_spill_free and not previous.require_spill_free
+                    ):
+                        unique[key] = spec
+    return sorted(unique.values(), key=lambda spec: spec.name)
 
 
 def _normalize_kernel_name(name: str) -> str:
@@ -386,104 +719,37 @@ def _resource_usage(binary: Path) -> list[dict[str, int | str]]:
     return records
 
 
-def _compile_triton(
-    name: str,
-    function,
-    signature: dict[str, str],
-    constants: dict,
-    *,
-    warps: int,
-    stages: int = 1,
-) -> dict:
+def _compile_triton(spec: TritonCompilationSpec) -> dict:
     compiled = triton_compile(
-        ASTSource(function, signature, constants),
+        ASTSource(spec.function, spec.signature, spec.constants),
         target=TARGET,
-        options={"num_warps": warps, "num_stages": stages},
+        options={"num_warps": spec.num_warps, "num_stages": spec.num_stages},
     )
     with tempfile.NamedTemporaryFile(suffix=".cubin") as binary:
         binary.write(compiled.asm["cubin"])
         binary.flush()
         resources = _resource_usage(Path(binary.name))
-    if any(item["local_bytes"] or item["stack_bytes"] for item in resources):
-        raise RuntimeError(f"{name} has compiler-reported local storage: {resources}")
+    if spec.require_spill_free and any(
+        item["local_bytes"] or item["stack_bytes"] for item in resources
+    ):
+        raise RuntimeError(
+            f"{spec.name} has compiler-reported local storage: {resources}"
+        )
     return {
-        "name": name,
+        "name": spec.name,
         "kind": "triton",
-        "constants": constants,
-        "num_warps": warps,
-        "num_stages": stages,
+        "input_dtype": spec.input_dtype,
+        "spill_policy": "forbid" if spec.require_spill_free else "record",
+        "constants": spec.constants,
+        "num_warps": spec.num_warps,
+        "num_stages": spec.num_stages,
         "shared_bytes": compiled.metadata.shared,
         "resources": resources,
     }
 
 
 def compile_all() -> dict:
-    records = []
-    for name, n, d, tokens, saved, partial, warps in (
-        ("serial_recompute_atomic_t4_n9_d4096", 16, 4096, 4, False, False, 8),
-        ("serial_saved_partials_t16_n9_d4096", 16, 4096, 16, True, True, 8),
-        ("serial_saved_partials_t16_n32_d4096", 32, 4096, 16, True, True, 8),
-        ("serial_saved_partials_t16_n32_d2048", 32, 2048, 16, True, True, 8),
-    ):
-        records.append(
-            _compile_triton(
-                name,
-                _bwd_source_serial_grouped,
-                POINTER_SIGNATURE,
-                {
-                    "BLOCK_N": n,
-                    "BLOCK_D": d,
-                    "TOKENS": tokens,
-                    "USE_SAVED": saved,
-                    "WRITE_PARTIAL": partial,
-                },
-                warps=warps,
-            )
-        )
-
-    records.append(
-        _compile_triton(
-            "saved_training_forward_n9_d8192",
-            _fwd_tiled_saved,
-            FORWARD_SIGNATURE,
-            {"BLOCK_N": 16, "BLOCK_D": 2048},
-            warps=8,
-            stages=3,
-        )
-    )
-    records.append(
-        _compile_triton(
-            "accepted_tiled_forward_n9_d4096",
-            _fwd_tiled,
-            ACCEPTED_FORWARD_SIGNATURE,
-            {"BLOCK_N": 16, "BLOCK_D": 2048},
-            warps=8,
-        )
-    )
-    records.append(
-        _compile_triton(
-            "saved_resident_forward_n8_d1024",
-            _fwd_resident_saved,
-            FORWARD_SIGNATURE,
-            {"BLOCK_N": 8, "BLOCK_D": 1024},
-            warps=4,
-        )
-    )
-    records.append(
-        _compile_triton(
-            "dw_partial_reduction",
-            _reduce_dw_partials,
-            {
-                "partial_ptr": "*fp32",
-                "dw_ptr": "*fp32",
-                "n_partials": "i32",
-                "D": "i32",
-                "stride_partial": "i64",
-            },
-            {"BLOCK_P": 8, "BLOCK_D": 128},
-            warps=4,
-        )
-    )
+    records = [_compile_triton(spec) for spec in triton_compilation_specs()]
 
     cuda_source = REPO / "src/switchyard/csrc/shared_backward.cu"
     with tempfile.TemporaryDirectory(prefix="switchyard-cuda-build-") as build_dir:
@@ -569,16 +835,7 @@ def compile_all() -> dict:
         },
         "plans": [
             get_training_plan(name).as_dict()
-            for name in (
-                "serial_recompute_atomic_t4",
-                "serial_saved_partials_t16",
-                "cuda_shared",
-                "cuda_cluster",
-                "cuda_cluster4",
-                "cuda_register",
-                "cuda_register_cluster",
-                "cuda_register_cluster_full",
-            )
+            for name in CAMPAIGN_PLAN_NAMES
         ],
         "compilations": records,
     }

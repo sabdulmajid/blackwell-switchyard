@@ -73,6 +73,12 @@ def test_source_serial_plan_rejects_spilling_width():
     assert not supported
     assert "16 sources" in reason
 
+    saved = get_training_plan("serial_saved_partials_t16")
+    assert plan_supports(saved, 32, 1, 4096, 2048, "float32")[0]
+    supported, reason = plan_supports(saved, 32, 1, 4096, 4096, "float32")
+    assert not supported
+    assert "FP32" in reason and "width 2048" in reason
+
 
 def test_register_candidate_is_fixed_shape_and_saves_coefficients():
     candidate = get_training_plan("cuda_register")
