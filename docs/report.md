@@ -94,9 +94,9 @@ entirely our way. Summarised:
 * **We take 7 of 10 shapes on forward+backward, and Liger takes 3** -- every one
   of them at `D >= 4096` or `N=32`, which is exactly where our two-kernel tiled
   backward runs instead of the register-resident one. That is a real deficiency.
-* **The output-only batched switchyard path takes 0.207 ms for eight queries.**
+* **The output-only batched switchyard path takes 0.199 ms for eight queries.**
   It takes one kernel and has rounding-floor accuracy. Max-autotuned Inductor
-  takes 0.358 ms. catswe takes 0.215 ms and computes additional merge state.
+  takes 0.352 ms. catswe takes 0.209 ms and computes additional merge state.
 
 Claims this project must not make are listed in the README.
 

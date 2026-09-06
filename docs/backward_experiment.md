@@ -255,11 +255,13 @@ global process query and selected-GPU activity query close the launch race. The 
 makes only the selected GPU visible to the campaign.
 
 The runner gets utilization and memory data from `nvidia-smi`. It gets PCIe throughput from
-NVML because this driver does not expose PCIe throughput as a query field. The runner converts
-NVML's KB/s value to KiB/s and rounds upward. Driver monitoring can cause small PCIe transfers on
-an idle card. The guard allows at most 65,536 KiB/s, or 64 MiB/s, in each direction. The manifest
-stores the largest observed value and the allowed limit. The global process check remains the
-primary collision guard.
+NVML because this driver does not expose PCIe throughput as a query field. NVML labels this value
+as KB/s, but it does not define whether KB is decimal or binary. The runner treats the reported
+number as KiB/s. This rule is exact for binary units and conservative for decimal units. Driver
+monitoring can cause small PCIe transfers on an idle card. The guard allows a reported value of at
+most 65,536 in each direction. Thus, it never allows more than 64 MiB/s. The manifest stores the
+largest observed value and the allowed limit. The global process check remains the primary
+collision guard.
 
 The benchmark samples the selected GPU every 0.05 seconds while it runs. It exits immediately
 if a sample sees an unrelated process. The outer runner samples the global GPU process table

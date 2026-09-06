@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -35,6 +36,31 @@ from torch.nn.parallel import DistributedDataParallel
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "bench"))
+
+
+def _gradient_check(
+    maximum_deviation: float,
+    reference_maximum: float,
+    *,
+    rank_count: int,
+    absolute_tolerance: float,
+    relative_tolerance: float,
+) -> dict:
+    tolerance = absolute_tolerance + relative_tolerance * reference_maximum
+    passed = (
+        math.isfinite(maximum_deviation)
+        and math.isfinite(reference_maximum)
+        and maximum_deviation <= tolerance
+    )
+    return {
+        "max_abs_deviation_from_manual_average": maximum_deviation,
+        "reference_max_abs": reference_maximum,
+        "absolute_tolerance": absolute_tolerance,
+        "relative_tolerance": relative_tolerance,
+        "effective_tolerance": tolerance,
+        "validated_rank_count": rank_count,
+        "passed": passed,
+    }
 
 
 def _worker(rank: int, world: int, args, out_path: str) -> None:
@@ -106,13 +132,25 @@ def _worker(rank: int, world: int, args, out_path: str) -> None:
             ])
             maximum_deviation = (reduced - expected).abs().max()
             dist.all_reduce(maximum_deviation, op=dist.ReduceOp.MAX)
+            reference_maximum = expected.abs().max().item()
             grad_check = {
-                "max_abs_deviation_from_manual_average": maximum_deviation.item(),
+                **_gradient_check(
+                    maximum_deviation.item(),
+                    reference_maximum,
+                    rank_count=world,
+                    absolute_tolerance=args.grad_atol,
+                    relative_tolerance=args.grad_rtol,
+                ),
                 "local_grad_norm": local_grad_norm,
                 "reduced_grad_norm": reduced.norm().item(),
-                "validated_rank_count": world,
             }
             opt.zero_grad(set_to_none=True)
+            if not grad_check["passed"]:
+                raise RuntimeError(
+                    "DDP gradient reduction differs from the explicit average: "
+                    f"{grad_check['max_abs_deviation_from_manual_average']:.3e} > "
+                    f"{grad_check['effective_tolerance']:.3e}"
+                )
 
         tokens = args.batch * args.seq * world
         results.append({
@@ -145,8 +183,13 @@ def main() -> None:
     ap.add_argument("--seq", type=int, default=2048)
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--port", default="29517")
+    ap.add_argument("--grad-atol", type=float, default=0.0)
+    ap.add_argument("--grad-rtol", type=float, default=0.0)
     ap.add_argument("--out", type=Path, default=REPO / "results" / "ddp.json")
     args = ap.parse_args()
+
+    if args.grad_atol < 0 or args.grad_rtol < 0:
+        ap.error("gradient tolerances must be nonnegative")
 
     avail = torch.cuda.device_count()
     if avail < 2:

@@ -124,9 +124,10 @@ Correctness has priority over speed.
 Each timed implementation must pass a float64 oracle check.
 
 The operator and batched-query numbers below have machine-readable raw results.
-The model and DDP numbers are validated historical results.
+The model numbers and the DDP scaling numbers are historical results.
 Their files predate the current provenance schema.
-Regenerate them from the selected backward revision before a release.
+The old DDP correctness check was insufficient.
+Regenerate all of these results from the selected backward revision before a release.
 
 ## Installation and compatibility
 
@@ -237,9 +238,12 @@ It adds 1.53 GiB of peak memory.
 The source arena avoids repeated `torch.stack` operations.
 It reduces peak memory by 6.75 GiB compared with the stacking variant.
 
-Two-GPU Distributed Data Parallel tests also pass.
-The gradients are bit-identical after the all-reduce operation.
-The measured scaling is 1.73x, or 87 percent efficiency.
+The historical two-GPU Distributed Data Parallel run measured 1.73x scaling,
+or 87 percent efficiency. Its correctness check compared gradients only after
+the all-reduce operation. That check cannot validate the local gradients.
+The revised benchmark compares a normal DDP backward operation with an explicit
+average of unsynchronized local gradients. It stops with an error if they differ.
+Run the revised benchmark again before a release.
 
 See [the model report](docs/model.md).
 
@@ -314,7 +318,8 @@ The tests cover these items:
 
 The CPU-only suite checks the reference, configuration, package, and experiment gates.
 The complete suite also runs the Triton correctness and integration tests on a GPU.
-A separate Distributed Data Parallel (DDP) benchmark validates the two-GPU integration.
+A separate Distributed Data Parallel (DDP) benchmark checks the two-GPU integration.
+It enforces agreement with an explicit average of the local gradients.
 
 ## Hardware and tools
 

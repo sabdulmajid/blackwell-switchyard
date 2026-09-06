@@ -551,6 +551,8 @@ def evaluate_reports(
     expected_tree: str | None = None,
 ) -> dict:
     """Return a deterministic promotion decision for one immutable plan."""
+    if candidate not in CAMPAIGN_CANDIDATES:
+        raise ValueError(f"{candidate!r} is not a promotion candidate")
     plan = get_training_plan(candidate)
     required_dtypes = _required_dtypes(candidate)
     problems: list[str] = []
@@ -1348,7 +1350,9 @@ def evaluate_reports(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("results", nargs="+", type=Path)
-    parser.add_argument("--candidate", default="cuda_cluster")
+    parser.add_argument(
+        "--candidate", default="cuda_cluster", choices=CAMPAIGN_CANDIDATES
+    )
     parser.add_argument("--threshold", type=float, default=0.07)
     parser.add_argument("--max-cv", type=float, default=0.05)
     parser.add_argument("--expected-commit", required=True)

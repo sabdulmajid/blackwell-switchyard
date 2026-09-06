@@ -67,6 +67,11 @@ RECOVERY_CONTEXT_FIELDS = {
 }
 
 
+def _public_probe_error(exc: BaseException) -> str:
+    """Return a probe error category without device or process details."""
+    return type(exc).__name__
+
+
 def _parse_inventory(text: str) -> dict[int, str]:
     rows = list(csv.reader(line for line in text.splitlines() if line.strip()))
     if not rows:
@@ -138,11 +143,16 @@ def _merge_pcie_throughput(
     return merged
 
 
-def _nvml_kb_to_kib_per_second(value: int) -> int:
-    """Convert NVML's decimal KB/s unit to binary KiB/s, rounding upward."""
+def _nvml_kb_as_conservative_kib_per_second(value: int) -> int:
+    """Treat NVML's ambiguously defined KB/s number as KiB/s.
+
+    NVML documents the label but does not state whether ``KB`` is decimal or
+    binary. Keeping the numeric value unchanged is conservative: it is exact
+    for binary KiB and slightly overstates traffic for decimal kB.
+    """
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError("NVML returned an invalid PCIe throughput value")
-    return (value * 1000 + 1023) // 1024
+    return value
 
 
 def _parent_pid(pid: int) -> int | None:
@@ -162,13 +172,23 @@ def _record_probe_gap(
     return probe_at, max(maximum_gap_seconds, probe_at - previous_probe_at)
 
 
-def _set_parent_death_signal() -> None:
+def _set_parent_death_signal(expected_parent_pid: int) -> None:
     """Ask Linux to stop the direct child if this supervisor disappears."""
+    if os.getppid() != expected_parent_pid:
+        os._exit(127)
+        return
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0:
         os._exit(127)
-    if os.getppid() == 1:
-        os.kill(os.getpid(), signal.SIGTERM)
+    if os.getppid() != expected_parent_pid:
+        os._exit(127)
+        return
+
+
+def _parent_death_preexec() -> Callable[[], None]:
+    """Bind the child death signal to this exact supervisor process."""
+    expected_parent_pid = os.getpid()
+    return lambda: _set_parent_death_signal(expected_parent_pid)
 
 
 def _is_descendant(
@@ -229,12 +249,12 @@ def _activity() -> dict[int, dict[str, int]]:
             for index in range(pynvml.nvmlDeviceGetCount()):
                 handle = pynvml.nvmlDeviceGetHandleByIndex(index)
                 pcie[index] = (
-                    _nvml_kb_to_kib_per_second(
+                    _nvml_kb_as_conservative_kib_per_second(
                         pynvml.nvmlDeviceGetPcieThroughput(
                             handle, pynvml.NVML_PCIE_UTIL_RX_BYTES
                         )
                     ),
-                    _nvml_kb_to_kib_per_second(
+                    _nvml_kb_as_conservative_kib_per_second(
                         pynvml.nvmlDeviceGetPcieThroughput(
                             handle, pynvml.NVML_PCIE_UTIL_TX_BYTES
                         )
@@ -634,7 +654,7 @@ def _run_cpu_recovery(
                 start_new_session=True,
                 text=True,
                 pass_fds=inherited_fds,
-                preexec_fn=_set_parent_death_signal,
+                preexec_fn=_parent_death_preexec(),
             )
             _set_active_process(process, recorder)
             try:
@@ -792,7 +812,11 @@ def main() -> int:
             not_before=datetime.fromtimestamp(args.not_before).astimezone().isoformat(),
         )
         time.sleep(max(0.0, args.not_before - time.time()))
-    inventory = _inventory()
+    try:
+        inventory = _inventory()
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        recorder.write("failed", reason=f"GPU inventory failed: {_public_probe_error(exc)}")
+        return 2
     if args.gpu_index not in inventory:
         recorder.write("failed", reason=f"GPU index {args.gpu_index} does not exist")
         return 2
@@ -852,7 +876,7 @@ def main() -> int:
             max_non_target_memory_mib = 0
             max_non_target_pcie_rx_kib_per_second = 0
             max_non_target_pcie_tx_kib_per_second = 0
-            recorder.write("wait_probe_failed", error=f"{type(exc).__name__}: {exc}"[:300])
+            recorder.write("wait_probe_failed", error=_public_probe_error(exc))
             time.sleep(args.wait_poll_seconds)
             continue
 
@@ -962,7 +986,7 @@ def main() -> int:
             max_non_target_memory_mib = 0
             max_non_target_pcie_rx_kib_per_second = 0
             max_non_target_pcie_tx_kib_per_second = 0
-            recorder.write("final_probe_failed", error=f"{type(exc).__name__}: {exc}"[:300])
+            recorder.write("final_probe_failed", error=_public_probe_error(exc))
             time.sleep(args.wait_poll_seconds)
             continue
         if final_apps or not _is_idle_activity(
@@ -1119,7 +1143,7 @@ def main() -> int:
                 start_new_session=True,
                 text=True,
                 pass_fds=(lock_handle.fileno(), gpu_lock_handle.fileno()),
-                preexec_fn=_set_parent_death_signal,
+                preexec_fn=_parent_death_preexec(),
             )
             _set_active_process(process, recorder)
             recorder.write(
@@ -1164,7 +1188,7 @@ def main() -> int:
                         _terminate_group(
                             process,
                             recorder,
-                            f"three watchdog failures: {type(exc).__name__}: {exc}"[:300],
+                            f"three watchdog failures: {_public_probe_error(exc)}",
                         )
                         foreign_apps = [{"watchdog": "unavailable"}]
                         break

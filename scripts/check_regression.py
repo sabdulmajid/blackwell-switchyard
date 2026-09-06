@@ -24,6 +24,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -42,8 +44,48 @@ TRACKED = [
 #: slower is information, not our regression.
 GATED = {"switchyard_triton"}
 
-
 BASELINE_FILE = BASELINE / "operator_baseline.json"
+RELEASE_ENV_FIELDS = ("device_name", "device_cc", "torch", "triton")
+EXPECTED_DEFAULT_SHAPES = {
+    (2, 1, 4096, 2048),
+    (4, 1, 4096, 2048),
+    (8, 1, 4096, 2048),
+    (9, 1, 4096, 2048),
+    (16, 1, 4096, 2048),
+    (32, 1, 4096, 2048),
+    (9, 1, 4096, 1024),
+    (9, 1, 4096, 4096),
+    (9, 1, 4096, 8192),
+    (9, 1, 512, 2048),
+    (9, 1, 2048, 2048),
+    (9, 1, 8192, 2048),
+    (9, 1, 16384, 2048),
+    (9, 1, 128, 1024),
+    (9, 1, 512, 1024),
+    (4, 1, 256, 512),
+}
+GIT_OBJECT_PATTERN = re.compile(r"[0-9a-f]{40}")
+SAFE_REPORT_NAME_PATTERN = re.compile(
+    r"operator_default_(?:bfloat16|float16|float32)\.json"
+)
+EMPTY_DIFF_SHA256 = hashlib.sha256(b"").hexdigest()
+PRIVATE_TEXT_PATTERN = re.compile(
+    r"(?:claude\.ai|session[_-]|co-authored-by|claude-session|/home/|/pub[0-9]+/)",
+    re.IGNORECASE,
+)
+
+
+def _repository_tree(commit: str) -> str:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(REPO), "rev-parse", f"{commit}^{{tree}}"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError("current report revision is not in this repository") from exc
 
 
 def _key(impl: str, s: dict, dtype: str | None) -> str:
@@ -58,33 +100,65 @@ def load_current(paths: list[Path]) -> tuple[dict[str, dict], dict]:
     for path in paths:
         if not path.is_file():
             raise ValueError(f"current report does not exist: {path}")
+        if SAFE_REPORT_NAME_PATTERN.fullmatch(path.name) is None:
+            raise ValueError(f"current report has a non-release filename: {path.name!r}")
         data = json.loads(path.read_text())
         provenance = data.get("provenance", {})
+        if not isinstance(provenance, dict):
+            raise ValueError(f"current report has no provenance object: {path}")
         commit = provenance.get("repository_commit")
         argv = provenance.get("argv", [])
         if (
             not isinstance(commit, str)
-            or len(commit) != 40
+            or GIT_OBJECT_PATTERN.fullmatch(commit) is None
+            or GIT_OBJECT_PATTERN.fullmatch(
+                str(provenance.get("repository_tree", ""))
+            )
+            is None
+            or not isinstance(provenance.get("repository_branch"), str)
+            or not provenance["repository_branch"]
+            or provenance.get("worktree_dirty") is not False
             or provenance.get("tracked_worktree_dirty") is not False
+            or provenance.get("dirty_paths") != []
+            or provenance.get("diff_sha256") != EMPTY_DIFF_SHA256
             or data.get("quick") is not False
             or not isinstance(argv, list)
+            or not argv
+            or argv[0] != "bench/bench_operator.py"
             or "--skip-kernel-profile" in argv
+            or "--impls" in argv
+            or any(
+                not isinstance(argument, str)
+                or not argument
+                or len(argument) > 300
+                or "\n" in argument
+                or Path(argument).is_absolute()
+                or PRIVATE_TEXT_PATTERN.search(argument) is not None
+                for argument in argv
+            )
         ):
             raise ValueError(
                 f"current report is not a clean, full-profile release run: {path}"
             )
+        if provenance["repository_tree"] != _repository_tree(commit):
+            raise ValueError(f"current report tree does not match its revision: {path}")
+        if data.get("shape_set") != "default":
+            raise ValueError(f"current report is not the default shape matrix: {path}")
         if repository_commit is None:
             repository_commit = commit
         elif repository_commit != commit:
             raise ValueError("current reports do not use one repository commit")
-        fields = {
-            name: data.get("environment", {}).get(name)
-            for name in ("device_name", "device_cc", "torch", "triton")
-        }
+        environment = data.get("environment")
+        if not isinstance(environment, dict):
+            raise ValueError(f"current report has no environment object: {path}")
+        fields = {name: environment.get(name) for name in RELEASE_ENV_FIELDS}
+        if not all(isinstance(value, str) and value for value in fields.values()):
+            raise ValueError(f"current report has incomplete release environment: {path}")
         if environment_fields is None:
             environment_fields = fields
         elif environment_fields != fields:
             raise ValueError("current reports do not use one software and GPU environment")
+        gated_shapes = set()
         for r in data["results"]:
             s = r.get("shape")
             if not s or r.get("skipped"):
@@ -92,7 +166,27 @@ def load_current(paths: list[Path]) -> tuple[dict[str, dict], dict]:
             key = _key(r["impl"], s, data.get("dtype"))
             if key in out:
                 raise ValueError(f"duplicate current measurement: {key}")
+            if r["impl"] in GATED:
+                gated_shapes.add((s["n"], s["b"], s["t"], s["d"]))
+                for metric_path, metric_name, _ in TRACKED:
+                    value = dig(r, metric_path)
+                    if (
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or value < 0
+                        or (metric_name != "workspace bytes" and value == 0)
+                    ):
+                        raise ValueError(
+                            f"current gated measurement has invalid {metric_name}: {key}"
+                        )
             out[key] = r
+        if gated_shapes != EXPECTED_DEFAULT_SHAPES:
+            missing_shapes = EXPECTED_DEFAULT_SHAPES - gated_shapes
+            extra_shapes = gated_shapes - EXPECTED_DEFAULT_SHAPES
+            raise ValueError(
+                "current report does not contain the exact gated default matrix: "
+                f"missing={sorted(missing_shapes)}, extra={sorted(extra_shapes)}"
+            )
         source_reports.append(
             {
                 "name": path.name,
@@ -150,6 +244,10 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    if not 0 <= args.threshold < 1:
+        print("threshold must be at least 0 and less than 1", file=sys.stderr)
+        return 2
+
     current_files = args.current
     try:
         cur, current_provenance = load_current(current_files)
@@ -159,12 +257,11 @@ def main() -> int:
 
     if args.accept:
         BASELINE.mkdir(parents=True, exist_ok=True)
-        env = json.loads(current_files[0].read_text()).get("environment", {})
         BASELINE_FILE.write_text(
             json.dumps(
                 {
                     "schema_version": 2,
-                    "environment": env,
+                    "environment": current_provenance["environment"],
                     "provenance": current_provenance,
                     "metrics": compact(cur),
                 },
@@ -189,29 +286,74 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    base = stored["metrics"]
+    base = stored.get("metrics")
+    if not isinstance(base, dict):
+        print("stored baseline has no metrics object", file=sys.stderr)
+        return 2
     base_env = stored.get("environment", {})
-    cur_env = json.loads(current_files[0].read_text()).get("environment", {})
-    for field in ("device_name", "torch", "triton"):
-        if base_env.get(field) != cur_env.get(field):
-            print(f"warning: baseline {field}={base_env.get(field)!r} but current "
-                  f"{field}={cur_env.get(field)!r}; comparison may be meaningless")
+    if (
+        not isinstance(base_env, dict)
+        or set(base_env) != set(RELEASE_ENV_FIELDS)
+        or not all(isinstance(value, str) and value for value in base_env.values())
+    ):
+        print("stored baseline has invalid release environment metadata", file=sys.stderr)
+        return 2
+    cur_env = current_provenance["environment"]
+    mismatches = [
+        field for field in RELEASE_ENV_FIELDS if base_env[field] != cur_env[field]
+    ]
+    if mismatches:
+        for field in mismatches:
+            print(
+                f"baseline {field}={base_env[field]!r} but current "
+                f"{field}={cur_env[field]!r}",
+                file=sys.stderr,
+            )
+        print("refusing to compare different release environments", file=sys.stderr)
+        return 2
 
     gated = None if args.all_impls else GATED
     compact_cur = compact(cur)
+    if gated is not None:
+        baseline_keys = {key for key in base if key.split("|")[0] in gated}
+        current_keys = {
+            key for key in compact_cur if key.split("|")[0] in gated
+        }
+        if baseline_keys != current_keys:
+            absent_from_current = sorted(baseline_keys - current_keys)
+            absent_from_baseline = sorted(current_keys - baseline_keys)
+            print("\nFAIL: gated baseline and current coverage differ")
+            if absent_from_current:
+                print(f"  missing from current: {len(absent_from_current)}")
+            if absent_from_baseline:
+                print(f"  missing from baseline: {len(absent_from_baseline)}")
+            return 1
 
     regressions, improvements, missing = [], [], []
     for key, b_entry in base.items():
         impl = key.split("|")[0]
         if gated is not None and impl not in gated:
             continue
+        if not isinstance(b_entry, dict):
+            print(f"stored baseline has invalid metrics: {key}", file=sys.stderr)
+            return 2
         c_entry = compact_cur.get(key)
         if c_entry is None:
             missing.append(key)
             continue
         for _, name, lower_better in TRACKED:
             b, c = b_entry.get(name), c_entry.get(name)
-            if b is None or c is None or b == 0:
+            if (
+                isinstance(b, bool)
+                or not isinstance(b, (int, float))
+                or b < 0
+            ):
+                print(f"stored baseline has invalid {name}: {key}", file=sys.stderr)
+                return 2
+            if c is None:
+                missing.append(f"{key}|{name}")
+                continue
+            if b == 0:
                 continue
             delta = (c - b) / b
             if not lower_better:
@@ -239,9 +381,16 @@ def main() -> int:
         if len(missing) > 10:
             print(f"  ... and {len(missing) - 10} more")
 
-    if regressions:
-        print(f"\nFAIL: {len(regressions)} measurement(s) regressed by more than "
-              f"{100 * args.threshold:.0f}%")
+    if regressions or missing:
+        reasons = []
+        if regressions:
+            reasons.append(
+                f"{len(regressions)} measurement(s) regressed by more than "
+                f"{100 * args.threshold:.0f}%"
+            )
+        if missing:
+            reasons.append(f"{len(missing)} required measurement(s) are missing")
+        print(f"\nFAIL: {'; '.join(reasons)}")
         return 1
     print(f"\nOK: no regression beyond {100 * args.threshold:.0f}% "
           f"({len(improvements)} improvement(s))")

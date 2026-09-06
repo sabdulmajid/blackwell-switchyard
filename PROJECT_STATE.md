@@ -58,7 +58,10 @@ production dispatch.
   format and records the pinned source revision.
 - **Transformer integration**, 1.3B, three residual modes, parameter-matched, with a
   training smoke test.
-- **Two-GPU DDP validation.** 87% scaling efficiency; gradients bit-identical across ranks.
+- **Two-GPU DDP benchmark.** The historical run measured 87% scaling efficiency. Its
+  correctness check was insufficient. The revised benchmark enforces agreement between a normal
+  DDP backward operation and an explicit average of unsynchronized local gradients. A new run is
+  required before release.
 - **Regression gating** against a stored baseline, and a CPU-only CI workflow (written and
   verified locally; see BLOCKED).
 - **Technical report** ([`docs/report.md`](docs/report.md)), including every measurement bug
@@ -120,9 +123,9 @@ Ordered by how much the measurements say they are worth.
   pushed. A trackable copy is in `ci/github-actions-ci.yml`. Move it to
   `.github/workflows/ci.yml` with a token that has workflow permission.
 - **Release performance baseline.** The stored baseline predates clean report provenance. The
-  regression gate now rejects mixed, dirty, quick, duplicate, and profile-skipped reports. Run
-  the full default operator sweep on the final revision, review it, and then replace the legacy
-  baseline.
+  regression gate now rejects mixed, dirty, quick, duplicate, profile-skipped, incomplete, and
+  environment-mismatched reports. It requires the exact default shape matrix. Run the full
+  default operator sweep on the final revision, review it, and then replace the legacy baseline.
 
 ## OPEN QUESTIONS FOR THE OWNER
 

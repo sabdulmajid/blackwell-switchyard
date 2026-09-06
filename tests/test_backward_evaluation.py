@@ -8,6 +8,8 @@ import statistics
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "evaluate_backward.py"
 SPEC = importlib.util.spec_from_file_location("evaluate_backward", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
@@ -473,6 +475,11 @@ def test_complete_repeatable_wins_are_ready_for_dispatch_review():
     decision = MODULE.evaluate_reports(_complete_reports(), candidate=CANDIDATE)
     assert decision["status"] == "READY_FOR_DISPATCH_REVIEW"
     assert all(row["classification"] == "WIN" for row in decision["comparisons"])
+
+
+def test_nonpromotion_control_cannot_enter_dispatch_review():
+    with pytest.raises(ValueError, match="not a promotion candidate"):
+        MODULE.evaluate_reports(_complete_reports(), candidate="cuda_shared")
 
 
 def test_complete_one_read_plan_reconstructs_and_selects_only_supported_cells():

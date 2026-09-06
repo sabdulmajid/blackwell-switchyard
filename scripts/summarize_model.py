@@ -73,8 +73,10 @@ def main() -> None:
     if fw and ours:
         fa = attribution[fw["variant"]]["step_share_pct"]
         oa = attribution[ours["variant"]]["step_share_pct"]
-        w(f"\nBlock AttnRes is **{fa:.1f}% of the framework step** and")
-        w(f"**{oa:.1f}% of the fused step**. This is a")
+        w(
+            f"\nBlock AttnRes is **{fa:.1f}% of the framework step** and "
+            f"**{oa:.1f}% of the fused step**. This is a"
+        )
         w(f"{fa / oa:.1f}x reduction in the mechanism's overhead. End to end that is")
         w(f"**{fw['step']['median_ms'] / ours['step']['median_ms']:.2f}x** training throughput,")
         w(f"{fw['step']['median_ms']:.0f} ms down to {ours['step']['median_ms']:.0f} ms, and")
@@ -96,11 +98,20 @@ def main() -> None:
             w(f"{st} slab copies per forward against {sc}, where a slab is one")
             w(f"`B x T x D` tensor ({stack['slab_bytes'] / 2**20:.0f} MiB here).")
         step_overhead = 100 * (ours["step"]["median_ms"] / base["step"]["median_ms"] - 1)
-        w("\nAgainst the standard-residual control, the fused model adds")
-        w(f"{(ours['peak_memory_bytes'] - base['peak_memory_bytes']) / 2**30:.2f} GiB of peak")
-        w(f"memory ({100 * (ours['peak_memory_bytes'] / base['peak_memory_bytes'] - 1):.0f}%)")
-        w(f"and {step_overhead:.1f}% of step time. The residual mechanism is")
-        w(f"{attribution[ours['variant']]['step_share_pct']:.1f}% of the fused step. These are")
+        memory_delta = (ours["peak_memory_bytes"] - base["peak_memory_bytes"]) / 2**30
+        memory_percent = 100 * (
+            ours["peak_memory_bytes"] / base["peak_memory_bytes"] - 1
+        )
+        mechanism_share = attribution[ours["variant"]]["step_share_pct"]
+        w(
+            "\nAgainst the standard-residual control, the fused model adds "
+            f"{memory_delta:.2f} GiB of peak"
+        )
+        w(
+            f"memory ({memory_percent:.0f}%) and {step_overhead:.1f}% of step time. "
+            f"The residual mechanism is {mechanism_share:.1f}% of the fused step. "
+            "These are"
+        )
         w("the numbers an architect deciding whether to adopt it would want.\n")
 
     if any(v.get("source_counts_match_eq6") for v in variants):
@@ -145,18 +156,31 @@ def main() -> None:
         for name, s in scaling.items():
             w(f"| {name} | {s['one_gpu_tokens_per_s']:.0f} | {s['two_gpu_tokens_per_s']:.0f} | "
               f"{s['speedup']:.2f}x | {100 * s['efficiency']:.0f}% |")
-        devs = [
-            r["grad_check"]["max_abs_deviation_from_rank0"]
+        checks = [
+            r["grad_check"]
             for r in ddp.get("dual", {}).get("results", [])
             if r.get("grad_check")
         ]
-        if devs:
-            w("\n**Gradients are identical across ranks after all-reduce** -- maximum")
-            w(f"deviation {max(devs):.1e}. That is the check that matters here: a custom")
-            w("autograd Function returning a wrong or rank-dependent gradient for one of its")
-            w("inputs can pass every single-GPU test and still corrupt a distributed run.")
-            w("The fused operator's backward, and the arena's in-place staging, both survive")
-            w("it.\n")
+        if checks and all(
+            "max_abs_deviation_from_manual_average" in check
+            and check.get("passed") is True
+            for check in checks
+        ):
+            maximum = max(
+                check["max_abs_deviation_from_manual_average"] for check in checks
+            )
+            tolerance = max(check["effective_tolerance"] for check in checks)
+            ranks = max(check["validated_rank_count"] for check in checks)
+            w("\nThe normal DDP backward matches an explicit average of the local")
+            w(f"gradients across {ranks} ranks. The maximum deviation is {maximum:.1e},")
+            w(f"and the enforced tolerance is {tolerance:.1e}. The float64-oracle")
+            w("operator tests remain the source of truth for local gradient mathematics.\n")
+        elif checks:
+            w("\nThe stored DDP result uses the old correctness check. Regenerate it")
+            w("before release. The revised benchmark compares a normal DDP backward with")
+            w("an explicit average of unsynchronized local gradients and fails on a")
+            w("mismatch. The float64-oracle operator tests remain the source of truth for")
+            w("local gradient mathematics.\n")
         w("Scaling holds up better than the interconnect would suggest -- 85-87% rather")
         w("than the collapse a 25.8 GB/s link and a ~2.6 GB bf16 gradient all-reduce might")
         w("imply -- because NCCL overlaps the reduction with the backward pass. The fused")
@@ -165,7 +189,7 @@ def main() -> None:
         w("backward to hide the all-reduce behind.\n")
 
     dest = REPO / "docs" / "model.md"
-    dest.write_text("\n".join(out) + "\n")
+    dest.write_text("\n".join(out).rstrip() + "\n")
     print(f"wrote {dest}")
 
 

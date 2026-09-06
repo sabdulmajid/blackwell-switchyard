@@ -180,12 +180,35 @@ def test_pcie_merge_fails_closed(pcie):
         MODULE._merge_pcie_throughput(MODULE._parse_activity("0, 0, 2\n"), pcie)
 
 
-def test_nvml_pcie_units_are_converted_conservatively():
-    assert MODULE._nvml_kb_to_kib_per_second(0) == 0
-    assert MODULE._nvml_kb_to_kib_per_second(1024) == 1000
-    assert MODULE._nvml_kb_to_kib_per_second(1) == 1
+def test_nvml_pcie_units_are_interpreted_conservatively():
+    assert MODULE._nvml_kb_as_conservative_kib_per_second(0) == 0
+    assert MODULE._nvml_kb_as_conservative_kib_per_second(1024) == 1024
+    assert MODULE._nvml_kb_as_conservative_kib_per_second(1) == 1
     with pytest.raises(ValueError):
-        MODULE._nvml_kb_to_kib_per_second(True)
+        MODULE._nvml_kb_as_conservative_kib_per_second(True)
+
+
+def test_parent_death_signal_requires_the_exact_supervisor(monkeypatch):
+    exits = []
+    monkeypatch.setattr(MODULE.os, "getppid", lambda: 41)
+    monkeypatch.setattr(MODULE.os, "_exit", lambda code: exits.append(code))
+    MODULE._set_parent_death_signal(42)
+    assert exits == [127]
+
+
+def test_parent_death_signal_closes_the_post_prctl_race(monkeypatch):
+    class Libc:
+        @staticmethod
+        def prctl(*_args):
+            return 0
+
+    parents = iter((42, 41))
+    exits = []
+    monkeypatch.setattr(MODULE.os, "getppid", lambda: next(parents))
+    monkeypatch.setattr(MODULE.os, "_exit", lambda code: exits.append(code))
+    monkeypatch.setattr(MODULE.ctypes, "CDLL", lambda *_args, **_kwargs: Libc())
+    MODULE._set_parent_death_signal(42)
+    assert exits == [127]
 
 
 def test_state_recorder_resumes_attempt_count_without_process_data(tmp_path):
@@ -210,6 +233,12 @@ def test_state_recorder_keeps_gpu_uuid_out_of_terminal_output(tmp_path, capsys):
     recorder.write("waiting", target_uuid="GPU-private", target_index=1)
     assert "GPU-private" not in capsys.readouterr().out
     assert recorder.events[-1]["target_uuid"] == "GPU-private"
+
+
+def test_public_probe_errors_never_include_physical_identity():
+    error = ValueError("malformed row contains GPU-01234567-secret")
+    assert MODULE._public_probe_error(error) == "ValueError"
+    assert "GPU-" not in MODULE._public_probe_error(error)
 
 
 def test_state_recorder_rejects_malformed_history(tmp_path):
@@ -372,7 +401,8 @@ def test_runner_source_exports_idle_attestation_without_process_ids():
     assert "pass_fds=(lock_handle.fileno(), gpu_lock_handle.fileno())" in source
     assert "observed_apps = _compute_apps()" in source
     assert "for item in observed_apps" in source
-    assert "preexec_fn=_set_parent_death_signal" in source
+    assert "preexec_fn=_parent_death_preexec()" in source
+    assert "os.getppid() != expected_parent_pid" in source
     assert "atexit.register(_cleanup_active_process)" in source
     assert 'if key != "target_uuid"' in source
     assert '"gpu_completion_requires_new_attempt"' in source
