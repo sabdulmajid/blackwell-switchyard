@@ -99,7 +99,7 @@ def _memory() -> dict:
 def _report(*, quick: bool = False, shape_set: str = "full") -> dict:
     trial_count = 2 if quick else 15
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "run_id": "20260905T200000Z",
         "campaign_attempt": 1,
         "experiment": "backward architecture selection",
@@ -119,8 +119,9 @@ def _report(*, quick: bool = False, shape_set: str = "full") -> dict:
             "device_id": EXPECTED_DEVICE_ID,
             "device_query": (
                 "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition, "
-                "580.65.06, 35, 20.50, 300.00, 300, 405"
+                f"{MODULE.EXPECTED_DRIVER_VERSION}, 35, 20.50, 300.00, 300, 405"
             ),
+            "timestamp_utc": "2026-09-05T19:59:59Z",
             "benchmark_process_context_count": 1,
             "foreign_compute_process_count_at_start": 0,
             "exclusive_access_required": True,
@@ -128,14 +129,17 @@ def _report(*, quick: bool = False, shape_set: str = "full") -> dict:
         },
         "gpu_postflight": {
             "device_id": EXPECTED_DEVICE_ID,
+            "timestamp_utc": "2026-09-05T20:00:25Z",
             "benchmark_process_context_count": 1,
             "foreign_compute_process_count_at_end": 0,
         },
         "gpu_process_monitor": {
             "device_id": EXPECTED_DEVICE_ID,
+            "started_at_utc": "2026-09-05T19:59:59.500Z",
+            "ended_at_utc": "2026-09-05T20:00:25.100Z",
             "samples": 500,
             "interval_seconds": 0.05,
-            "duration_seconds": 25.0,
+            "duration_seconds": 25.6,
             "collision_detected": False,
             "collision_events": [],
             "probe_errors": [],
@@ -174,7 +178,6 @@ def _report(*, quick: bool = False, shape_set: str = "full") -> dict:
         "correctness_only": [],
         "execution_order": [],
     }
-    plan = MODULE.get_training_plan("cuda_cluster").as_dict()
     for shape in MODULE.SHAPE_SETS[shape_set]:
         shape_dict = dict(zip(("n", "b", "t", "d"), shape, strict=True))
         runnable = [name for name in IMPLS if MODULE._plan_support(name, shape, "bfloat16")[0]]
@@ -186,7 +189,7 @@ def _report(*, quick: bool = False, shape_set: str = "full") -> dict:
                 "status": MODULE._expected_result_status(name),
             }
             if expected_plan is not None:
-                record["training_plan"] = plan
+                record["training_plan"] = expected_plan
             if not supported:
                 record["skipped"] = "unsupported plan: test"
             else:
@@ -206,6 +209,24 @@ def _report(*, quick: bool = False, shape_set: str = "full") -> dict:
                         "fwd_bwd_memory": _memory(),
                     }
                 )
+                if name == "cuda_cluster":
+                    n, _b, _t, d = shape
+                    feature_capacity = (d + 1) // 2
+                    scalar_offset = (n * feature_capacity * 2 + feature_capacity * 2 + 15) & ~15
+                    record["cluster_launch_info"] = {
+                        "active_clusters": 47,
+                        "dynamic_shared_bytes": scalar_offset + 4 * (feature_capacity + 13 * n),
+                        "static_shared_bytes": 1024,
+                        "max_shared_bytes": MODULE.EXPECTED_MAX_SHARED_BYTES,
+                        "multiprocessors": MODULE.EXPECTED_MULTIPROCESSORS,
+                        "threads_per_block": 256,
+                        "cluster_blocks": 2,
+                    }
+                expected_traffic = MODULE._expected_traffic_models(
+                    name, shape, "bfloat16", record, []
+                )
+                if expected_traffic is not None:
+                    record["traffic_model"], record["forward_traffic_model"] = expected_traffic
             report["results"].append(record)
         report["execution_order"].append(
             {
@@ -225,8 +246,9 @@ def _report(*, quick: bool = False, shape_set: str = "full") -> dict:
             supported, expected_plan = MODULE._plan_support(name, shape, "bfloat16")
             for seed in (0, 1, 2):
                 row = {"impl": name, "seed": seed}
-                if not supported:
+                if expected_plan is not None:
                     row["training_plan"] = expected_plan
+                if not supported:
                     row["skipped"] = "unsupported plan: test"
                 else:
                     row["correctness"] = _correctness()
@@ -514,3 +536,76 @@ def test_kernel_row_cuda_time_allows_small_profiler_rounding_error():
     record = next(item for item in report["results"] if not item.get("skipped"))
     record["forward_kernels"]["total_cuda_us"] = 1.0000005
     assert not _problems(report)
+
+
+def test_derived_accuracy_ratios_and_seed_zero_summary_are_bound():
+    report = _report()
+    record = next(item for item in report["results"] if not item.get("skipped"))
+    record["correctness"]["output"]["err_vs_dtype_floor"] = 2.0
+    assert any("correctness" in problem for problem in _problems(report))
+
+    report = _report()
+    record = next(item for item in report["results"] if not item.get("skipped"))
+    record["correctness"]["output"]["max_abs_err"] = 0.002
+    record["correctness"]["output"]["max_abs_err_over_rms"] = 0.002
+    assert any("seed zero" in problem for problem in _problems(report))
+
+
+def test_traffic_launch_and_result_field_contracts_are_exact():
+    report = _report()
+    current = next(item for item in report["results"] if item["impl"] == "current")
+    current["traffic_model"]["logical_large_tensor_bytes"] += 1
+    assert any("traffic model" in problem for problem in _problems(report))
+
+    report = _report()
+    cluster = next(
+        item
+        for item in report["results"]
+        if item["impl"] == "cuda_cluster" and not item.get("skipped")
+    )
+    cluster["cluster_launch_info"]["dynamic_shared_bytes"] += 16
+    assert any("launch_info" in problem for problem in _problems(report))
+
+    report = _report()
+    current = next(item for item in report["results"] if item["impl"] == "current")
+    current["training_plan"] = MODULE.get_training_plan("serial_recompute_atomic_t4").as_dict()
+    assert any("field set" in problem for problem in _problems(report))
+
+    report = _report()
+    current = next(item for item in report["results"] if item["impl"] == "current")
+    current["skipped"] = False
+    assert any("field set" in problem for problem in _problems(report))
+
+
+def test_monitor_timeline_must_cover_the_complete_report():
+    report = _report()
+    report["gpu_process_monitor"]["started_at_utc"] = "2026-09-05T20:00:00.000Z"
+    report["gpu_process_monitor"]["ended_at_utc"] = "2026-09-05T20:00:00.050Z"
+    report["gpu_process_monitor"]["duration_seconds"] = 0.05
+    report["gpu_process_monitor"]["samples"] = 2
+    assert any("monitor" in problem for problem in _problems(report))
+
+
+def test_driver_version_is_exact():
+    report = _report()
+    report["gpu_preflight"]["device_query"] = report["gpu_preflight"]["device_query"].replace(
+        MODULE.EXPECTED_DRIVER_VERSION, "999.99.99"
+    )
+    assert any("preflight" in problem for problem in _problems(report))
+
+
+def test_malformed_nested_json_returns_problems_instead_of_raising():
+    mutations = [
+        lambda report: report["execution_order"][0]["metrics"]["forward"][0].pop("trial"),
+        lambda report: report["results"][0]["forward"]["trials"].__setitem__(0, "not-an-object"),
+        lambda report: report["results"][0]["correctness_by_seed"].__setitem__(0, "not-an-object"),
+        lambda report: report["correctness_only"][0]["implementations"][0].update(
+            impl=["not-hashable"]
+        ),
+        lambda report: report["correctness_only"].__setitem__(0, "not-an-object"),
+        lambda report: report["results"].__setitem__(0, "not-an-object"),
+    ]
+    for mutate in mutations:
+        report = _report()
+        mutate(report)
+        assert _problems(report)

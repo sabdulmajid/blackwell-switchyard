@@ -23,7 +23,7 @@ def test_empty_smoke_reports_fail_closed():
 def test_incomplete_implementation_set_fails_closed():
     report = {
         "dtype": "bfloat16",
-        "schema_version": 2,
+        "schema_version": 3,
         "shape_set": "gate",
         "selected_implementations": ["current"],
         "correctness_seeds": [0, 1, 2],

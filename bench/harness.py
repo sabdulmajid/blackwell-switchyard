@@ -33,7 +33,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
@@ -71,10 +71,14 @@ class GPUProcessMonitor:
         self._probe_errors: list[str] = []
         self._foreign_active = False
         self._started_at: float | None = None
+        self._started_at_utc: str | None = None
 
     def start(self) -> None:
         import pynvml
 
+        self._started_at_utc = (
+            datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        )
         pynvml.nvmlInit()
         self._started_at = time.monotonic()
         self._pynvml = pynvml
@@ -121,14 +125,15 @@ class GPUProcessMonitor:
                 with self._lock:
                     self._probe_errors.append("monitor thread did not stop")
         self._poll_once()
+        ended_at_utc = (
+            datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        )
         with self._lock:
-            duration = (
-                time.monotonic() - self._started_at
-                if self._started_at is not None
-                else 0.0
-            )
+            duration = time.monotonic() - self._started_at if self._started_at is not None else 0.0
             report = {
                 "device_id": self.report_device_id,
+                "started_at_utc": self._started_at_utc,
+                "ended_at_utc": ended_at_utc,
                 "interval_seconds": self.interval_seconds,
                 "samples": self._samples,
                 "duration_seconds": duration,
@@ -141,9 +146,7 @@ class GPUProcessMonitor:
         return report
 
 
-def repository_provenance(
-    repo: Path, third_party: Mapping[str, Path] | None = None
-) -> dict:
+def repository_provenance(repo: Path, third_party: Mapping[str, Path] | None = None) -> dict:
     """Record exact source revisions and seeds alongside raw measurements."""
 
     def git(path: Path, *args: str) -> str:
@@ -186,9 +189,7 @@ def repository_provenance(
         "repository_tree": git(repo, "rev-parse", "HEAD^{tree}"),
         "repository_branch": git(repo, "branch", "--show-current"),
         "worktree_dirty": bool(status),
-        "tracked_worktree_dirty": bool(
-            git(repo, "status", "--porcelain", "--untracked-files=no")
-        ),
+        "tracked_worktree_dirty": bool(git(repo, "status", "--porcelain", "--untracked-files=no")),
         "dirty_paths": [line[3:] for line in status.splitlines()],
         "diff_sha256": hashlib.sha256(diff).hexdigest(),
         "third_party_commits": revisions,
@@ -291,7 +292,10 @@ class MemoryReport:
 
 
 def measure_memory(
-    fn: Callable[[], object], *, device: torch.device, resident_bytes: int,
+    fn: Callable[[], object],
+    *,
+    device: torch.device,
+    resident_bytes: int,
     output_bytes: int | None = None,
     after_warmup: Callable[[], object] | None = None,
 ) -> MemoryReport:
@@ -365,7 +369,9 @@ class KernelReport:
         }
 
 
-def count_kernels(fn: Callable[[], object], *, device: torch.device, iters: int = 1) -> KernelReport:
+def count_kernels(
+    fn: Callable[[], object], *, device: torch.device, iters: int = 1
+) -> KernelReport:
     """How many CUDA kernels one call launches, and what they are.
 
     This is the central piece of evidence for whether a fusion opportunity

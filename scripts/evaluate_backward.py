@@ -606,7 +606,7 @@ def evaluate_reports(
         report = by_dtype[dtype]
         prefix = dtype
         if (
-            report.get("schema_version") != 2
+            report.get("schema_version") != 3
             or not isinstance(report.get("run_id"), str)
             or re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", report["run_id"]) is None
         ):

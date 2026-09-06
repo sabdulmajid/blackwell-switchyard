@@ -15,7 +15,15 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-from switchyard.training_plan import get_training_plan, plan_supports  # noqa: E402
+from switchyard.performance import (  # noqa: E402
+    backward_traffic_estimate,
+    forward_traffic_estimate,
+)
+from switchyard.training_plan import (  # noqa: E402
+    RESIDENT_TILE_MAX,
+    get_training_plan,
+    plan_supports,
+)
 
 PINNED_LIGER_COMMIT = "777799588a89d74c489ed995e3bf006427738e85"
 PINNED_LIGER_SOURCE_SHA256 = "57da6fed98f794088b2a56223e6c7ef9fc920824f0c483cb0ef0b5a343dab0b1"
@@ -165,6 +173,9 @@ EXPECTED_ENVIRONMENT = {
     "device_cc": "12.0",
     "device_index": 0,
 }
+EXPECTED_DRIVER_VERSION = "580.159.03"
+EXPECTED_MULTIPROCESSORS = 188
+EXPECTED_MAX_SHARED_BYTES = 101376
 ACCEPTED_STATUS = "accepted production dispatch"
 EXPERIMENTAL_STATUS = "experimental candidate; not reachable from production dispatch"
 LIGER_STATUS = "pinned third-party comparator; RMSNorm gain fixed to one"
@@ -183,7 +194,9 @@ EXPERIMENTAL_IMPLEMENTATIONS = {
 PUBLIC_DEVICE_ID_PATTERN = re.compile(r"device-[0-9a-f]{16}")
 GIT_OBJECT_PATTERN = re.compile(r"[0-9a-f]{40}")
 RUN_ID_PATTERN = re.compile(r"[0-9]{8}T[0-9]{6}Z")
-UTC_TIMESTAMP_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+UTC_TIMESTAMP_PATTERN = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?Z"
+)
 PRIVATE_METADATA_PATTERN = re.compile(
     r"co[\s_-]*authored[\s_-]*by|claude(?:\.ai)?|anthropic|wizchem|chatgpt|"
     r"openai(?:\.com)?|session(?:[-_/ ]?(?:id|url))?[-_/:= ]+[A-Za-z0-9]|"
@@ -277,7 +290,7 @@ def _device_query_valid(value: object) -> bool:
     fields = [field.strip() for field in value.split(",")]
     if len(fields) != 7 or fields[0] != EXPECTED_ENVIRONMENT["device_name"]:
         return False
-    if re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}", fields[1]) is None:
+    if fields[1] != EXPECTED_DRIVER_VERSION:
         return False
     if re.fullmatch(r"[0-9]+", fields[2]) is None:
         return False
@@ -294,6 +307,19 @@ def _device_query_valid(value: object) -> bool:
         and sm_clock > 0
         and memory_clock > 0
     )
+
+
+def _parse_utc(value: object) -> datetime | None:
+    if not isinstance(value, str) or UTC_TIMESTAMP_PATTERN.fullmatch(value) is None:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON number: {value}")
 
 
 def _object(value: object) -> dict:
@@ -480,6 +506,18 @@ def _accuracy_complete(value: object, tolerances: dict[str, float]) -> bool:
             metric = report.get(field)
             if metric is not None and not _finite_number(metric):
                 return False
+        floor = report["dtype_floor_rel_l2"]
+        expected_floor_ratio = report["rel_l2"] / floor if floor > 0 else None
+        if expected_floor_ratio is None:
+            if report.get("err_vs_dtype_floor") is not None:
+                return False
+        elif not _same_number(report.get("err_vs_dtype_floor"), expected_floor_ratio):
+            return False
+        if not _same_number(
+            report.get("max_abs_err_over_rms"),
+            report["max_abs_err"] / report["output_rms"],
+        ):
+            return False
     return True
 
 
@@ -531,6 +569,268 @@ def _memory_profile_complete(value: object) -> bool:
         and value["workspace_bytes"]
         == max(0, value["incremental_peak_bytes"] - value["accounted_output_bytes"])
     )
+
+
+def _canonical_json(value: object) -> object:
+    return json.loads(json.dumps(value))
+
+
+def _expected_record_fields(
+    name: str, *, supported: bool, has_plan: bool, plan_family: str | None
+) -> set[str]:
+    fields = {"impl", "shape", "status"}
+    if has_plan:
+        fields.add("training_plan")
+    if not supported:
+        fields.add("skipped")
+        return fields
+    fields.update(
+        {
+            "correctness",
+            "correctness_by_seed",
+            "forward",
+            "backward",
+            "fwd_bwd",
+            "forward_kernels",
+            "backward_kernels",
+            "fwd_bwd_kernels",
+            "fwd_bwd_memory",
+        }
+    )
+    if name == "current" or has_plan:
+        fields.update({"traffic_model", "forward_traffic_model"})
+    if plan_family in {"cuda_cluster", "cuda_cluster4"}:
+        fields.add("cluster_launch_info")
+    elif plan_family == "cuda_register":
+        fields.add("register_launch_info")
+    elif plan_family == "cuda_register_cluster":
+        fields.add("register_cluster_launch_info")
+        if get_training_plan(name).forward.family == "cuda_register_cluster":
+            fields.add("register_cluster_forward_launch_info")
+    return fields
+
+
+def _positive_exact_int(value: object) -> bool:
+    return type(value) is int and value > 0
+
+
+def _launch_info_active_workers(
+    record: dict,
+    *,
+    plan_name: str,
+    shape: tuple[int, int, int, int],
+    dtype: str,
+    problems: list[str],
+) -> int | None:
+    n, _b, _t, d = shape
+    plan = get_training_plan(plan_name)
+    family = plan.backward.family
+    itemsize = {"bfloat16": 2, "float16": 2, "float32": 4}[dtype]
+    if family in {"cuda_cluster", "cuda_cluster4"}:
+        field = "cluster_launch_info"
+        blocks = 2 if family == "cuda_cluster" else 4
+        expected_fields = {
+            "active_clusters",
+            "dynamic_shared_bytes",
+            "static_shared_bytes",
+            "max_shared_bytes",
+            "multiprocessors",
+            "threads_per_block",
+            "cluster_blocks",
+        }
+        feature_capacity = (d + blocks - 1) // blocks
+        scalar_offset = (n * feature_capacity * itemsize + feature_capacity * itemsize + 15) & ~15
+        dynamic_shared = scalar_offset + 4 * (feature_capacity + 13 * n)
+        fixed = {
+            "dynamic_shared_bytes": dynamic_shared,
+            "static_shared_bytes": 1024,
+            "max_shared_bytes": EXPECTED_MAX_SHARED_BYTES,
+            "multiprocessors": EXPECTED_MULTIPROCESSORS,
+            "threads_per_block": 256,
+            "cluster_blocks": blocks,
+        }
+        active_field = "active_clusters"
+    elif family == "cuda_register":
+        field = "register_launch_info"
+        expected_fields = {
+            "active_blocks",
+            "dynamic_shared_bytes",
+            "static_shared_bytes",
+            "multiprocessors",
+            "threads_per_block",
+        }
+        fixed = {
+            "active_blocks": EXPECTED_MULTIPROCESSORS,
+            "dynamic_shared_bytes": 4 * (n * 21 + d),
+            "static_shared_bytes": 1024,
+            "multiprocessors": EXPECTED_MULTIPROCESSORS,
+            "threads_per_block": 512,
+        }
+        active_field = "active_blocks"
+    elif family == "cuda_register_cluster":
+        field = "register_cluster_launch_info"
+        blocks = 4 if (n, d) == (9, 8192) else 2
+        expected_fields = {
+            "active_clusters",
+            "dynamic_shared_bytes",
+            "static_shared_bytes",
+            "registers_per_thread",
+            "max_shared_bytes",
+            "multiprocessors",
+            "threads_per_block",
+            "cluster_blocks",
+        }
+        fixed = {
+            "dynamic_shared_bytes": 4 * (n * 21 + d // blocks) + itemsize * (d // blocks),
+            "static_shared_bytes": 1024,
+            "registers_per_thread": 128,
+            "max_shared_bytes": EXPECTED_MAX_SHARED_BYTES,
+            "multiprocessors": EXPECTED_MULTIPROCESSORS,
+            "threads_per_block": 512,
+            "cluster_blocks": blocks,
+        }
+        active_field = "active_clusters"
+    else:
+        return None
+
+    value = record.get(field)
+    if (
+        not isinstance(value, dict)
+        or set(value) != expected_fields
+        or any(not _positive_exact_int(item) for item in value.values())
+        or any(value.get(name) != expected for name, expected in fixed.items())
+    ):
+        problems.append(f"{plan_name} at {shape} has invalid {field}")
+        return None
+    active = value[active_field]
+    if active > EXPECTED_MULTIPROCESSORS:
+        problems.append(f"{plan_name} at {shape} has impossible {active_field}")
+        return None
+
+    if plan.forward.family == "cuda_register_cluster":
+        forward = record.get("register_cluster_forward_launch_info")
+        expected_fields = {
+            "active_clusters",
+            "dynamic_shared_bytes",
+            "static_shared_bytes",
+            "registers_per_thread",
+            "max_shared_bytes",
+            "multiprocessors",
+            "threads_per_block",
+            "cluster_blocks",
+        }
+        register_sources = 0 if (n, d) == (9, 8192) else 28
+        forward_fixed = {
+            "dynamic_shared_bytes": 4 * n * 33 + itemsize * (n - register_sources) * (d // blocks),
+            "static_shared_bytes": 1024,
+            "registers_per_thread": (
+                96 if (n, d) == (9, 8192) else 103 if dtype == "bfloat16" else 109
+            ),
+            "max_shared_bytes": EXPECTED_MAX_SHARED_BYTES,
+            "multiprocessors": EXPECTED_MULTIPROCESSORS,
+            "threads_per_block": 512,
+            "cluster_blocks": blocks,
+        }
+        if (
+            not isinstance(forward, dict)
+            or set(forward) != expected_fields
+            or any(not _positive_exact_int(item) for item in forward.values())
+            or any(forward.get(name) != expected for name, expected in forward_fixed.items())
+            or forward["active_clusters"] > EXPECTED_MULTIPROCESSORS
+        ):
+            problems.append(
+                f"{plan_name} at {shape} has invalid register-cluster forward launch info"
+            )
+    return active
+
+
+def _expected_traffic_models(
+    name: str,
+    shape: tuple[int, int, int, int],
+    dtype: str,
+    record: dict,
+    problems: list[str],
+) -> tuple[object, object] | None:
+    n, b, t, d = shape
+    itemsize = {"bfloat16": 2, "float16": 2, "float32": 4}[dtype]
+    n_pow2 = 1 << (n - 1).bit_length()
+    d_pow2 = 1 << (d - 1).bit_length()
+    forward_resident = n_pow2 * d_pow2 <= RESIDENT_TILE_MAX
+    if name == "current":
+        backward = backward_traffic_estimate(
+            "resident" if forward_resident else "tiled",
+            n,
+            b,
+            t,
+            d,
+            itemsize=itemsize,
+        ).as_dict()
+        forward = forward_traffic_estimate(
+            "resident" if forward_resident else "tiled",
+            n,
+            b,
+            t,
+            d,
+            itemsize=itemsize,
+        ).as_dict()
+        return _canonical_json(backward), _canonical_json(forward)
+    if name == "liger":
+        return None
+
+    plan = get_training_plan(name)
+    family = plan.backward.family
+    options = {}
+    if family in {
+        "cuda_cluster",
+        "cuda_cluster4",
+        "cuda_register",
+        "cuda_register_cluster",
+    }:
+        active = _launch_info_active_workers(
+            record,
+            plan_name=name,
+            shape=shape,
+            dtype=dtype,
+            problems=problems,
+        )
+        if active is None:
+            return None
+        options["persistent_clusters"] = min(b * t, active)
+    model_name = {
+        "source_serial": ("source_serial_saved" if plan.saves_forward_stats else "source_serial"),
+        "cuda_shared": "cuda_shared",
+        "cuda_cluster": "cuda_cluster",
+        "cuda_cluster4": "cuda_cluster4",
+        "cuda_register": "cuda_register",
+        "cuda_register_cluster": "cuda_register_cluster",
+    }[family]
+    backward = backward_traffic_estimate(
+        model_name,
+        n,
+        b,
+        t,
+        d,
+        itemsize=itemsize,
+        source_tokens_per_cta=plan.backward.tokens_per_cta,
+        source_uses_partials=plan.backward.dw_reduction == "partials",
+        **options,
+    ).as_dict()
+    forward = forward_traffic_estimate(
+        (
+            "cuda_register_cluster"
+            if plan.forward.family == "cuda_register_cluster"
+            else "resident"
+            if forward_resident
+            else "tiled"
+        ),
+        n,
+        b,
+        t,
+        d,
+        itemsize=itemsize,
+        saves_backward_coefficients=plan.saves_forward_stats,
+    ).as_dict()
+    return _canonical_json(backward), _canonical_json(forward)
 
 
 def report_completeness_problems(
@@ -591,6 +891,15 @@ def report_completeness_problems(
         by_pair[pair] = record
         supported, expected_plan = _plan_support(name, shape, dtype)
         expected_status = _expected_result_status(name)
+        plan_family = expected_plan["backward"]["family"] if expected_plan is not None else None
+        expected_fields = _expected_record_fields(
+            name,
+            supported=supported,
+            has_plan=expected_plan is not None,
+            plan_family=plan_family,
+        )
+        if set(record) != expected_fields:
+            problems.append(f"{name} at {shape} has a non-exact result field set")
         if expected_status is None or record.get("status") != expected_status:
             problems.append(f"{name} at {shape} has an invalid result status")
         skipped = record.get("skipped")
@@ -604,14 +913,23 @@ def report_completeness_problems(
             problems.append(f"supported implementation {name} at {shape} is skipped")
             continue
         correctness = record.get("correctness_by_seed")
-        if not isinstance(correctness, list) or [
-            item.get("seed") for item in correctness if isinstance(item, dict)
-        ] != [0, 1, 2]:
+        if (
+            not isinstance(correctness, list)
+            or len(correctness) != 3
+            or any(
+                not isinstance(item, dict) or set(item) != {"seed", "report"}
+                for item in correctness
+            )
+            or [item["seed"] for item in correctness if isinstance(item, dict)] != [0, 1, 2]
+            or any(type(item["seed"]) is not int for item in correctness)
+        ):
             problems.append(f"{name} at {shape} has an incomplete correctness matrix")
         elif any(
             not _accuracy_complete(item.get("report"), expected_tolerances) for item in correctness
         ) or not _accuracy_complete(record.get("correctness"), expected_tolerances):
             problems.append(f"{name} at {shape} has incomplete correctness evidence")
+        elif record.get("correctness") != correctness[0]["report"]:
+            problems.append(f"{name} at {shape} aggregate correctness differs from seed zero")
         for metric in ("forward", "backward", "fwd_bwd"):
             _complete_timing(
                 record.get(metric),
@@ -626,6 +944,13 @@ def report_completeness_problems(
                 problems.append(f"{name} at {shape} has incomplete {field}")
         if not _memory_profile_complete(record.get("fwd_bwd_memory")):
             problems.append(f"{name} at {shape} has incomplete fwd_bwd_memory")
+        expected_traffic = _expected_traffic_models(name, shape, dtype, record, problems)
+        if expected_traffic is not None:
+            backward_traffic, forward_traffic = expected_traffic
+            if record.get("traffic_model") != backward_traffic:
+                problems.append(f"{name} at {shape} has an invalid backward traffic model")
+            if record.get("forward_traffic_model") != forward_traffic:
+                problems.append(f"{name} at {shape} has an invalid forward traffic model")
 
     expected_pairs = {(shape, name) for shape in expected_shapes for name in implementations}
     if set(by_pair) != expected_pairs:
@@ -636,8 +961,9 @@ def report_completeness_problems(
         problems.append("execution_order must be a list")
         schedules = []
     by_shape: dict[tuple[int, int, int, int], dict] = {}
-    for schedule in schedules:
+    for index, schedule in enumerate(schedules):
         if not isinstance(schedule, dict):
+            problems.append(f"execution_order[{index}] must be an object")
             continue
         shape = _shape(schedule.get("shape"))
         if shape is None or shape in by_shape:
@@ -665,26 +991,36 @@ def report_completeness_problems(
             if not isinstance(trials, list) or len(trials) != trial_count:
                 problems.append(f"execution schedule at {shape} {metric} is incomplete")
                 continue
-            if [trial.get("trial") for trial in trials if isinstance(trial, dict)] != list(
-                range(trial_count)
+            if any(
+                not isinstance(trial, dict) or set(trial) != {"trial", "implementations"}
+                for trial in trials
+            ):
+                problems.append(f"execution schedule at {shape} {metric} has malformed trials")
+                continue
+            if [trial["trial"] for trial in trials] != list(range(trial_count)) or any(
+                type(trial["trial"]) is not int for trial in trials
             ):
                 problems.append(f"execution schedule at {shape} {metric} has wrong trial IDs")
             for trial in trials:
-                names = trial.get("implementations") if isinstance(trial, dict) else None
+                names = trial["implementations"]
                 if (
                     not isinstance(names, list)
                     or len(names) != len(runnable)
-                    or set(names) != runnable
+                    or any(not isinstance(name, str) for name in names)
+                    or (all(isinstance(name, str) for name in names) and set(names) != runnable)
                 ):
                     problems.append(f"execution schedule at {shape} {metric} is not exact")
                     break
                 trial_id = trial["trial"]
+                if type(trial_id) is not int or not 0 <= trial_id < trial_count:
+                    continue
                 for order, name in enumerate(names):
-                    timing = by_pair[(shape, name)].get(metric)
+                    timing = by_pair.get((shape, name), {}).get(metric)
                     measured_trials = timing.get("trials") if isinstance(timing, dict) else None
                     if (
                         not isinstance(measured_trials, list)
                         or trial_id >= len(measured_trials)
+                        or not isinstance(measured_trials[trial_id], dict)
                         or measured_trials[trial_id].get("order_in_trial") != order
                     ):
                         problems.append(
@@ -697,8 +1033,9 @@ def report_completeness_problems(
         problems.append("correctness_only must be a list")
         tails = []
     by_tail: dict[tuple[int, int, int, int], dict] = {}
-    for case in tails:
+    for index, case in enumerate(tails):
         if not isinstance(case, dict):
+            problems.append(f"correctness_only[{index}] must be an object")
             continue
         shape = _shape(case.get("shape"))
         if shape is None or shape in by_tail:
@@ -713,10 +1050,16 @@ def report_completeness_problems(
             problems.append(f"correctness-only case {shape} has no implementation rows")
             continue
         observed: dict[tuple[str, int], dict] = {}
-        for row in rows:
+        for row_index, row in enumerate(rows):
             if not isinstance(row, dict):
+                problems.append(f"correctness-only case {shape} row {row_index} must be an object")
                 continue
-            key = (row.get("impl"), row.get("seed"))
+            name = row.get("impl")
+            seed = row.get("seed")
+            if not isinstance(name, str) or type(seed) is not int:
+                problems.append(f"correctness-only case {shape} row {row_index} has an invalid key")
+                continue
+            key = (name, seed)
             if key in observed:
                 problems.append(f"correctness-only case {shape} has a duplicate row")
             observed[key] = row
@@ -726,17 +1069,19 @@ def report_completeness_problems(
             continue
         for (name, _seed), row in observed.items():
             supported, expected_plan = _plan_support(name, shape, dtype)
-            if (
-                expected_plan is not None
-                and row.get("training_plan", expected_plan) != expected_plan
-            ):
+            expected_fields = {"impl", "seed"}
+            if expected_plan is not None:
+                expected_fields.add("training_plan")
+            expected_fields.add("correctness" if supported else "skipped")
+            if set(row) != expected_fields:
+                problems.append(f"correctness-only {name} at {shape} has a non-exact field set")
+            if expected_plan is not None and row.get("training_plan") != expected_plan:
                 problems.append(f"correctness-only {name} at {shape} has the wrong plan")
             if not supported:
-                if not str(row.get("skipped", "")).startswith("unsupported plan:"):
+                skipped = row.get("skipped")
+                if not isinstance(skipped, str) or not skipped.startswith("unsupported plan:"):
                     problems.append(f"correctness-only {name} at {shape} must be unsupported")
-            elif row.get("skipped") or not _accuracy_complete(
-                row.get("correctness"), expected_tolerances
-            ):
+            elif not _accuracy_complete(row.get("correctness"), expected_tolerances):
                 problems.append(f"correctness-only {name} at {shape} is incomplete")
     return problems
 
@@ -836,6 +1181,7 @@ def report_schema_problems(report: dict) -> list[str]:
             "logical_device",
             "device_id",
             "device_query",
+            "timestamp_utc",
             "benchmark_process_context_count",
             "foreign_compute_process_count_at_start",
             "exclusive_access_required",
@@ -850,6 +1196,7 @@ def report_schema_problems(report: dict) -> list[str]:
             "logical_device",
             "device_id",
             "device_query",
+            "timestamp_utc",
             "benchmark_process_context_count",
             "foreign_compute_process_count_at_start",
             "exclusive_access_required",
@@ -862,6 +1209,7 @@ def report_schema_problems(report: dict) -> list[str]:
         report.get("gpu_postflight"),
         {
             "device_id",
+            "timestamp_utc",
             "benchmark_process_context_count",
             "foreign_compute_process_count_at_end",
         },
@@ -872,6 +1220,7 @@ def report_schema_problems(report: dict) -> list[str]:
         report.get("gpu_postflight"),
         {
             "device_id",
+            "timestamp_utc",
             "benchmark_process_context_count",
             "foreign_compute_process_count_at_end",
         },
@@ -883,6 +1232,8 @@ def report_schema_problems(report: dict) -> list[str]:
         monitor,
         {
             "device_id",
+            "started_at_utc",
+            "ended_at_utc",
             "interval_seconds",
             "samples",
             "duration_seconds",
@@ -897,6 +1248,8 @@ def report_schema_problems(report: dict) -> list[str]:
         monitor,
         {
             "device_id",
+            "started_at_utc",
+            "ended_at_utc",
             "interval_seconds",
             "samples",
             "duration_seconds",
@@ -1158,7 +1511,7 @@ def validate_report(
         )
     )
     expected = {
-        "schema_version": 2,
+        "schema_version": 3,
         "run_status": "complete",
         "dtype": dtype,
         "shape_set": shape_set,
@@ -1178,6 +1531,11 @@ def validate_report(
         problems.append("correctness_seeds must equal [0, 1, 2]")
     run_id = report.get("run_id")
     run_id_valid = _timestamp_valid(run_id, RUN_ID_PATTERN, "%Y%m%dT%H%M%SZ")
+    run_time = (
+        datetime.strptime(run_id, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        if run_id_valid
+        else None
+    )
     if not run_id_valid:
         problems.append("run_id must use the benchmark UTC timestamp format")
     selected_implementations = report.get("selected_implementations")
@@ -1205,13 +1563,10 @@ def validate_report(
             problems.append(f"environment.{field} differs from the campaign environment")
     timestamp = environment.get("timestamp_utc")
     timestamp_valid = _timestamp_valid(timestamp, UTC_TIMESTAMP_PATTERN, "%Y-%m-%dT%H:%M:%SZ")
+    environment_time = _parse_utc(timestamp)
     if not timestamp_valid:
         problems.append("environment.timestamp_utc must be a UTC timestamp")
-    elif run_id_valid:
-        environment_time = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=timezone.utc
-        )
-        run_time = datetime.strptime(run_id, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    elif run_time is not None and environment_time is not None:
         if not 0 <= (environment_time - run_time).total_seconds() <= 60:
             problems.append("environment timestamp is not bound to the report start")
 
@@ -1281,6 +1636,8 @@ def validate_report(
 
     preflight = _object(report.get("gpu_preflight"))
     postflight = _object(report.get("gpu_postflight"))
+    preflight_time = _parse_utc(preflight.get("timestamp_utc"))
+    postflight_time = _parse_utc(postflight.get("timestamp_utc"))
     device_id = preflight.get("device_id")
     if device_id != expected_device_id:
         problems.append("device ID differs from the campaign device")
@@ -1289,6 +1646,7 @@ def validate_report(
     preflight_valid = (
         preflight.get("logical_device") == "cuda:0"
         and _device_query_valid(preflight.get("device_query"))
+        and preflight_time is not None
         and preflight.get("benchmark_process_context_count") == 1
         and type(preflight.get("benchmark_process_context_count")) is int
         and type(preflight.get("foreign_compute_process_count_at_start")) is int
@@ -1300,6 +1658,7 @@ def validate_report(
         problems.append("GPU preflight was not exclusive")
     postflight_invalid = (
         postflight.get("device_id") != device_id
+        or postflight_time is None
         or postflight.get("benchmark_process_context_count") != 1
         or type(postflight.get("benchmark_process_context_count")) is not int
         or type(postflight.get("foreign_compute_process_count_at_end")) is not int
@@ -1312,6 +1671,30 @@ def validate_report(
     samples = monitor.get("samples")
     interval = monitor.get("interval_seconds")
     duration = monitor.get("duration_seconds")
+    monitor_started = _parse_utc(monitor.get("started_at_utc"))
+    monitor_ended = _parse_utc(monitor.get("ended_at_utc"))
+    wall_duration = (
+        (monitor_ended - monitor_started).total_seconds()
+        if monitor_started is not None and monitor_ended is not None
+        else None
+    )
+    timeline_ok = (
+        wall_duration is not None
+        and wall_duration >= 0
+        and type(duration) is float
+        and math.isfinite(duration)
+        and abs(wall_duration - duration) <= 2.0
+        and preflight_time is not None
+        and run_time is not None
+        and environment_time is not None
+        and postflight_time is not None
+        and preflight_time <= monitor_started
+        and monitor_started <= run_time.replace(microsecond=999999)
+        and monitor_started <= environment_time.replace(microsecond=999999)
+        and run_time <= monitor_ended
+        and environment_time <= monitor_ended
+        and postflight_time <= monitor_ended.replace(microsecond=999999)
+    )
     coverage_ok = (
         type(samples) is int
         and samples >= 2
@@ -1329,6 +1712,7 @@ def validate_report(
         or monitor.get("collision_events") != []
         or monitor.get("probe_errors") != []
         or not coverage_ok
+        or not timeline_ok
     ):
         problems.append("sampled GPU monitor was incomplete or contaminated")
     if _private_metadata_present(report):
@@ -1351,8 +1735,8 @@ def main() -> int:
     if not args.report.is_file():
         return 1
     try:
-        report = json.loads(args.report.read_text())
-    except (OSError, json.JSONDecodeError):
+        report = json.loads(args.report.read_text(), parse_constant=_reject_json_constant)
+    except (OSError, ValueError, json.JSONDecodeError):
         return 1
     problems = validate_report(
         report,

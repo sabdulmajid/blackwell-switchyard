@@ -78,7 +78,7 @@ def check_reports(
         dtype = report.get("dtype", "")
         prefix = dtype or "unknown dtype"
         if (
-            report.get("schema_version") != 2
+            report.get("schema_version") != 3
             or report.get("shape_set") != "gate"
             or not isinstance(report.get("run_id"), str)
             or re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", report["run_id"]) is None

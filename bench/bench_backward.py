@@ -1,7 +1,7 @@
 """Compare complete backward architectures before any dispatch change.
 
 This benchmark is intentionally separate from the accepted operator sweep. The
-candidates are private and normal dispatch cannot select them. A result from
+candidates are experimental and normal dispatch cannot select them. A result from
 this file is evidence for a dispatch change, not a dispatch change by itself.
 
 Every timed implementation first runs forward and backward against a float64
@@ -164,9 +164,11 @@ def _compute_process_counts(device_uuid: str) -> tuple[int, int]:
         "--query-compute-apps=pid",
         "--format=csv,noheader,nounits",
     ]
-    rows = subprocess.run(
-        process_query, check=True, capture_output=True, text=True
-    ).stdout.strip().splitlines()
+    rows = (
+        subprocess.run(process_query, check=True, capture_output=True, text=True)
+        .stdout.strip()
+        .splitlines()
+    )
     rows = [row for row in rows if row.strip()]
     own_pid = str(os.getpid())
     own_contexts = sum(row.split(",", 1)[0].strip() == own_pid for row in rows)
@@ -198,6 +200,7 @@ def _gpu_preflight(device: torch.device, *, allow_busy: bool) -> tuple[dict, str
             "logical_device": str(device),
             "device_id": public_device_id,
             "device_query": state,
+            "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "benchmark_process_context_count": own_contexts,
             "foreign_compute_process_count_at_start": foreign_processes,
             "exclusive_access_required": True,
@@ -212,6 +215,7 @@ def _gpu_postflight(physical_uuid: str, public_device_id: str) -> dict:
     own_contexts, foreign_processes = _compute_process_counts(physical_uuid)
     return {
         "device_id": public_device_id,
+        "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "benchmark_process_context_count": own_contexts,
         "foreign_compute_process_count_at_end": foreign_processes,
     }
@@ -273,9 +277,7 @@ def _write_checkpoint(report: dict, out: Path) -> None:
     os.replace(temporary, out)
 
 
-def _balanced_trial_order(
-    names: list[str], trial_index: int, rotation: int
-) -> list[str]:
+def _balanced_trial_order(names: list[str], trial_index: int, rotation: int) -> list[str]:
     """Balance which member of every pair runs first across adjacent trials."""
     offset = (rotation + trial_index // 2) % len(names)
     order = names[offset:] + names[:offset]
@@ -321,6 +323,7 @@ def _measure_paired_trials(
 
 def build_implementations(v: torch.Tensor) -> tuple[dict, list[str]]:
     """Return accepted, candidate, and optional Liger implementations."""
+
     def plan_spec(name: str, status: str) -> dict:
         plan = get_training_plan(name)
 
@@ -425,9 +428,7 @@ def _make_runtime(fn, v: torch.Tensor, w: torch.Tensor, g: torch.Tensor) -> dict
     }
 
 
-def _training_memory_bytes(
-    v: torch.Tensor, w: torch.Tensor, g: torch.Tensor
-) -> tuple[int, int]:
+def _training_memory_bytes(v: torch.Tensor, w: torch.Tensor, g: torch.Tensor) -> tuple[int, int]:
     """Return resident and mandatory-output bytes for one training call."""
     if not (v.element_size() == w.element_size() == g.element_size()):
         raise ValueError("training tensors must use one element size")
@@ -507,11 +508,9 @@ def bench_one(
             shape.d,
             itemsize=itemsize,
         ).as_dict()
-        forward_resident = (
-            (1 << (shape.n - 1).bit_length())
-            * (1 << (shape.d - 1).bit_length())
-            <= 32768
-        )
+        forward_resident = (1 << (shape.n - 1).bit_length()) * (
+            1 << (shape.d - 1).bit_length()
+        ) <= 32768
         record["forward_traffic_model"] = forward_traffic_estimate(
             "resident" if forward_resident else "tiled",
             shape.n,
@@ -554,9 +553,7 @@ def bench_one(
                     record["register_cluster_forward_launch_info"] = (
                         cuda_register_cluster_forward_launch_info(v)
                     )
-            traffic_options["persistent_clusters"] = min(
-                shape.b * shape.t, active_workers
-            )
+            traffic_options["persistent_clusters"] = min(shape.b * shape.t, active_workers)
         model_name = {
             "source_serial": (
                 "source_serial_saved" if plan.saves_forward_stats else "source_serial"
@@ -578,16 +575,16 @@ def bench_one(
             source_uses_partials=plan.backward.dw_reduction == "partials",
             **traffic_options,
         ).as_dict()
-        forward_resident = (
-            (1 << (shape.n - 1).bit_length())
-            * (1 << (shape.d - 1).bit_length())
-            <= 32768
-        )
+        forward_resident = (1 << (shape.n - 1).bit_length()) * (
+            1 << (shape.d - 1).bit_length()
+        ) <= 32768
         record["forward_traffic_model"] = forward_traffic_estimate(
             (
                 "cuda_register_cluster"
                 if plan.forward.family == "cuda_register_cluster"
-                else "resident" if forward_resident else "tiled"
+                else "resident"
+                if forward_resident
+                else "tiled"
             ),
             shape.n,
             shape.b,
@@ -648,7 +645,7 @@ def main() -> None:
     out = args.out or REPO / "results" / f"backward_candidates_{args.dtype}.json"
 
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "run_id": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
         "campaign_attempt": int(os.environ.get("SWITCHYARD_RUN_ATTEMPT", "0")),
         "experiment": "backward architecture selection",
@@ -656,9 +653,7 @@ def main() -> None:
         "candidate_reachable_from_production": False,
         "environment": environment(),
         "gpu_preflight": preflight,
-        "provenance": repository_provenance(
-            REPO, {"Liger-Kernel": THIRD_PARTY / "Liger-Kernel"}
-        ),
+        "provenance": repository_provenance(REPO, {"Liger-Kernel": THIRD_PARTY / "Liger-Kernel"}),
         "comparators": comparators,
         "dtype": args.dtype,
         "shape_set": args.shape_set,
@@ -739,9 +734,7 @@ def main() -> None:
                 seed_v, seed_w, seed_g = v, w, g
             else:
                 torch.manual_seed(seed)
-                seed_v = torch.randn(
-                    shape.n, shape.b, shape.t, shape.d, device=device, dtype=dtype
-                )
+                seed_v = torch.randn(shape.n, shape.b, shape.t, shape.d, device=device, dtype=dtype)
                 seed_w = torch.randn(shape.d, device=device, dtype=torch.float32)
                 seed_w = (seed_w / seed_w.norm()).to(dtype)
                 torch.manual_seed(1000 + seed)
@@ -778,8 +771,7 @@ def main() -> None:
             if all(_correct(item["report"]) for item in correctness[name])
         ]
         runtimes = {
-            name: _make_runtime(implementations[name]["fn"], v, w, g)
-            for name in valid_order
+            name: _make_runtime(implementations[name]["fn"], v, w, g) for name in valid_order
         }
         timings = {name: {} for name in valid_order}
         shape_schedule = {"shape": asdict(shape), "metrics": {}}
@@ -852,28 +844,27 @@ def main() -> None:
                         )
                         continue
                 if spec is not None:
-                    case["implementations"].append(
-                        {
-                            "impl": name,
-                            "seed": seed,
-                            "correctness": _correctness(
-                                spec["fn"],
-                                v,
-                                w,
-                                g,
-                                oracle,
-                                TOLERANCES[dtype],
-                            ),
-                        }
-                    )
+                    row = {
+                        "impl": name,
+                        "seed": seed,
+                        "correctness": _correctness(
+                            spec["fn"],
+                            v,
+                            w,
+                            g,
+                            oracle,
+                            TOLERANCES[dtype],
+                        ),
+                    }
+                    if spec.get("plan") is not None:
+                        row["training_plan"] = spec["plan"].as_dict()
+                    case["implementations"].append(row)
             del oracle, v, w, g
             torch.cuda.empty_cache()
         report["correctness_only"].append(case)
         _write_checkpoint(report, out)
 
-    report["gpu_postflight"] = _gpu_postflight(
-        physical_uuid, preflight["device_id"]
-    )
+    report["gpu_postflight"] = _gpu_postflight(physical_uuid, preflight["device_id"])
     report["gpu_process_monitor"] = process_monitor.stop()
     report["run_status"] = "complete"
     _write_checkpoint(report, out)

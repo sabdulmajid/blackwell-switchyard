@@ -42,6 +42,8 @@ def test_gpu_process_monitor_records_a_transient_competitor(monkeypatch):
 
     assert report["samples"] == 2
     assert report["device_id"] == "device-0123456789abcdef"
+    assert report["started_at_utc"].endswith("Z")
+    assert report["ended_at_utc"].endswith("Z")
     assert report["collision_detected"]
     assert report["collision_events"][0]["foreign_process_count"] == 1
     assert not report["probe_errors"]
@@ -61,9 +63,7 @@ def test_gpu_process_monitor_requests_immediate_exit_on_collision(monkeypatch):
     monkeypatch.setitem(sys.modules, "pynvml", fake)
     monkeypatch.setattr(os, "_exit", exits.append)
 
-    monitor = MODULE.GPUProcessMonitor(
-        "GPU-test", interval_seconds=60.0, abort_on_collision=True
-    )
+    monitor = MODULE.GPUProcessMonitor("GPU-test", interval_seconds=60.0, abort_on_collision=True)
     monitor.start()
     monitor.stop()
 
