@@ -9,6 +9,11 @@ import sys
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "check_backward_bundle.py"
+COMPILE_REPORT = (
+    Path(__file__).resolve().parents[1]
+    / "results"
+    / "backward_candidates_compile_sm120.json"
+)
 SPEC = importlib.util.spec_from_file_location("check_backward_bundle", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -17,66 +22,15 @@ SPEC.loader.exec_module(MODULE)
 
 
 def _compile_report(*, stack_bytes=0):
-    resources = []
-    for kernel, count in MODULE.EXPECTED_CUDA_INSTANCES.items():
-        resources.extend(
-            {
-                "kernel": kernel,
-                "registers": MODULE.EXPECTED_CUDA_LIMITS[kernel],
-                "stack_bytes": stack_bytes,
-                "local_bytes": 0,
-                **(
-                    {
-                        "global_load_instructions": (
-                            MODULE.EXPECTED_CUDA_GLOBAL_LOADS[kernel]
-                        ),
-                        "global_load_instruction_roles": (
-                            MODULE.EXPECTED_CUDA_GLOBAL_LOAD_ROLES[kernel]
-                        ),
-                    }
-                    if kernel in MODULE.EXPECTED_CUDA_GLOBAL_LOADS
-                    else {}
-                ),
-            }
-            for _ in range(count)
-        )
-    compilations = [
-        {
-            "name": "one_read_cuda",
-            "kind": "cuda",
-            "required_template_instances": MODULE.EXPECTED_CUDA_INSTANCES,
-            "register_limits": MODULE.EXPECTED_CUDA_LIMITS,
-            "required_global_load_instruction_counts": (
-                MODULE.EXPECTED_CUDA_GLOBAL_LOADS
-            ),
-            "required_global_load_role_counts": (
-                MODULE.EXPECTED_CUDA_GLOBAL_LOAD_ROLES
-            ),
-            "resources": resources,
-        }
-    ]
-    compilations.extend(
-        {
-            "name": name,
-            "kind": "triton",
-            "resources": [
-                {
-                    "kernel": name,
-                    "registers": 1,
-                    "stack_bytes": 0,
-                    "local_bytes": 0,
-                }
-            ],
-        }
-        for name in MODULE.EXPECTED_COMPILATIONS - {"one_read_cuda"}
-    )
-    return {
-        "target": {"arch": 120},
-        "gpu_visible": False,
-        "provenance": {"repository_commit": "abc", "worktree_clean": True},
-        "plans": [{"name": name} for name in MODULE.CANDIDATES],
-        "compilations": compilations,
-    }
+    report = json.loads(COMPILE_REPORT.read_text())
+    if stack_bytes:
+        report["compilations"][-1]["resources"][0]["stack_bytes"] = stack_bytes
+    return report
+
+
+def _compile_arguments(report):
+    provenance = report["provenance"]
+    return provenance["repository_commit"], provenance["cuda_source_sha256"]
 
 
 def test_bundle_has_one_exact_file_for_every_phase_and_candidate():
@@ -86,18 +40,53 @@ def test_bundle_has_one_exact_file_for_every_phase_and_candidate():
 
 
 def test_compile_gate_accepts_only_clean_spill_free_resources():
-    assert not MODULE._compile_problems(_compile_report(), "abc")
-    problems = MODULE._compile_problems(_compile_report(stack_bytes=8), "abc")
+    report = _compile_report()
+    assert not MODULE._compile_problems(report, *_compile_arguments(report))
+    report = _compile_report(stack_bytes=8)
+    problems = MODULE._compile_problems(report, *_compile_arguments(report))
     assert any("spills" in problem for problem in problems)
 
 
 def test_compile_gate_rejects_unknown_nested_fields():
     report = _compile_report()
     report["provenance"]["private_note"] = "must not be published"
-    report["compilations"][0]["resources"][0]["prompt"] = "must not be published"
-    problems = MODULE._compile_problems(report, "abc")
-    assert any("compile provenance contains unexpected fields" in item for item in problems)
-    assert any("resources[0] contains unexpected fields" in item for item in problems)
+    report["compilations"][-1]["resources"][0]["prompt"] = "must not be published"
+    problems = MODULE._compile_problems(report, *_compile_arguments(report))
+    assert any("compile provenance field set is not exact" in item for item in problems)
+    assert any("CUDA resources[0] field set is not exact" in item for item in problems)
+
+
+def test_compile_gate_binds_plan_and_triton_compiler_contracts():
+    mutations = [
+        lambda report: report["plans"][0].update(rationale="different"),
+        lambda report: report["compilations"][0]["constants"].update(BLOCK_D=2048),
+        lambda report: report["compilations"][0]["resources"][0].update(registers=1),
+        lambda report: report["target"].update(backend="not-cuda"),
+        lambda report: report["provenance"].update(triton="different"),
+    ]
+    for mutate in mutations:
+        report = _compile_report()
+        mutate(report)
+        assert MODULE._compile_problems(report, *_compile_arguments(report))
+
+
+def test_compile_gate_rejects_malformed_lists_without_crashing():
+    report = _compile_report()
+    report["compilations"][0] = "not-an-object"
+    assert MODULE._compile_problems(report, *_compile_arguments(report))
+
+
+def test_private_metadata_filter_covers_common_host_paths_and_names():
+    rejected = [
+        "/mnt/team/run.json",
+        "/scratch/user/run.json",
+        "/workspace/project/run.json",
+        r"C:\Users\person\run.json",
+        "worker.cluster.internal",
+        "buildbox.lab.local",
+    ]
+    for value in rejected:
+        assert MODULE.PRIVATE_METADATA_PATTERN.search(value), value
 
 
 def _valid_bundle(monkeypatch):

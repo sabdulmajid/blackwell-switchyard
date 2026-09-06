@@ -24,7 +24,7 @@ cd "$repo_dir"
 result_branch=${SWITCHYARD_RESULT_BRANCH:-codex/backward-architecture}
 cpu_recovery=${SWITCHYARD_CPU_RECOVERY:-0}
 expected_origin=https://github.com/sabdulmajid/blackwell-switchyard.git
-forbidden_metadata='co-authored-by|claude|anthropic|wizchem|chatgpt|openai\.com|session[-_/][[:alnum:]]|file://|/(home|tmp|pub[0-9]+)/|GPU-[[:alnum:]-]+'
+forbidden_metadata='co-authored-by|claude|anthropic|wizchem|chatgpt|openai\.com|session[-_/][[:alnum:]]|file://|/(home|tmp|pub[0-9]+|mnt|scratch|workspace)/|[[:alpha:]]:[\\/](Users|home|tmp|workspace)[\\/]|([[:alnum:]-]+\.)+(internal|local)([^[:alnum:]_]|$)|GPU-[[:alnum:]-]+'
 all_impls=current,serial_recompute_atomic_t4,serial_saved_partials_t16,cuda_shared,cuda_cluster,cuda_cluster4,cuda_register,cuda_register_cluster,cuda_register_cluster_full,liger
 portable_impls=current,serial_recompute_atomic_t4,serial_saved_partials_t16,liger
 candidates=(

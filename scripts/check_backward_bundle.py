@@ -23,6 +23,8 @@ from check_backward_report import validate_report  # noqa: E402
 from check_backward_smoke import check_reports  # noqa: E402
 from evaluate_backward import evaluate_reports  # noqa: E402
 
+from switchyard.training_plan import get_training_plan  # noqa: E402
+
 ALL_IMPLEMENTATIONS = [
     "current",
     "serial_recompute_atomic_t4",
@@ -136,6 +138,224 @@ EXPECTED_COMPILATIONS = {
     "dw_partial_reduction",
     "one_read_cuda",
 }
+EXPECTED_COMPILE_PROVENANCE = {
+    "torch": "2.9.0+cu128",
+    "triton": "3.5.0",
+    "nvcc": "Build cuda_12.8.r12.8/compiler.35583870_0",
+}
+EXPECTED_TRITON_COMPILATIONS = {
+    "serial_recompute_atomic_t4_n9_d4096": {
+        "constants": {
+            "BLOCK_N": 16,
+            "BLOCK_D": 4096,
+            "TOKENS": 4,
+            "USE_SAVED": False,
+            "WRITE_PARTIAL": False,
+        },
+        "num_warps": 8,
+        "num_stages": 1,
+        "shared_bytes": 32,
+        "resource": {
+            "kernel": "_bwd_source_serial_grouped",
+            "registers": 241,
+            "stack_bytes": 0,
+            "static_shared_bytes": 1024,
+            "local_bytes": 0,
+            "global_load_instructions": 544,
+        },
+    },
+    "serial_saved_partials_t16_n9_d4096": {
+        "constants": {
+            "BLOCK_N": 16,
+            "BLOCK_D": 4096,
+            "TOKENS": 16,
+            "USE_SAVED": True,
+            "WRITE_PARTIAL": True,
+        },
+        "num_warps": 8,
+        "num_stages": 1,
+        "shared_bytes": 32,
+        "resource": {
+            "kernel": "_bwd_source_serial_grouped",
+            "registers": 204,
+            "stack_bytes": 0,
+            "static_shared_bytes": 1024,
+            "local_bytes": 0,
+            "global_load_instructions": 547,
+        },
+    },
+    "serial_saved_partials_t16_n32_d4096": {
+        "constants": {
+            "BLOCK_N": 32,
+            "BLOCK_D": 4096,
+            "TOKENS": 16,
+            "USE_SAVED": True,
+            "WRITE_PARTIAL": True,
+        },
+        "num_warps": 8,
+        "num_stages": 1,
+        "shared_bytes": 32,
+        "resource": {
+            "kernel": "_bwd_source_serial_grouped",
+            "registers": 255,
+            "stack_bytes": 0,
+            "static_shared_bytes": 1024,
+            "local_bytes": 0,
+            "global_load_instructions": 1059,
+        },
+    },
+    "serial_saved_partials_t16_n32_d2048": {
+        "constants": {
+            "BLOCK_N": 32,
+            "BLOCK_D": 2048,
+            "TOKENS": 16,
+            "USE_SAVED": True,
+            "WRITE_PARTIAL": True,
+        },
+        "num_warps": 8,
+        "num_stages": 1,
+        "shared_bytes": 32,
+        "resource": {
+            "kernel": "_bwd_source_serial_grouped",
+            "registers": 255,
+            "stack_bytes": 0,
+            "static_shared_bytes": 1024,
+            "local_bytes": 0,
+            "global_load_instructions": 531,
+        },
+    },
+    "saved_training_forward_n9_d8192": {
+        "constants": {"BLOCK_N": 16, "BLOCK_D": 2048},
+        "num_warps": 8,
+        "num_stages": 3,
+        "shared_bytes": 4096,
+        "resource": {
+            "kernel": "_fwd_tiled_saved",
+            "registers": 241,
+            "stack_bytes": 0,
+            "static_shared_bytes": 1024,
+            "local_bytes": 0,
+            "global_load_instructions": 264,
+        },
+    },
+    "accepted_tiled_forward_n9_d4096": {
+        "constants": {"BLOCK_N": 16, "BLOCK_D": 2048},
+        "num_warps": 8,
+        "num_stages": 1,
+        "shared_bytes": 4096,
+        "resource": {
+            "kernel": "_fwd_tiled",
+            "registers": 237,
+            "stack_bytes": 0,
+            "static_shared_bytes": 1024,
+            "local_bytes": 0,
+            "global_load_instructions": 264,
+        },
+    },
+    "saved_resident_forward_n8_d1024": {
+        "constants": {"BLOCK_N": 8, "BLOCK_D": 1024},
+        "num_warps": 4,
+        "num_stages": 1,
+        "shared_bytes": 2048,
+        "resource": {
+            "kernel": "_fwd_resident_saved",
+            "registers": 126,
+            "stack_bytes": 0,
+            "static_shared_bytes": 1024,
+            "local_bytes": 0,
+            "global_load_instructions": 72,
+        },
+    },
+    "dw_partial_reduction": {
+        "constants": {"BLOCK_P": 8, "BLOCK_D": 128},
+        "num_warps": 4,
+        "num_stages": 1,
+        "shared_bytes": 0,
+        "resource": {
+            "kernel": "_reduce_dw_partials",
+            "registers": 35,
+            "stack_bytes": 0,
+            "static_shared_bytes": 0,
+            "local_bytes": 0,
+            "global_load_instructions": 8,
+        },
+    },
+}
+EXPECTED_CUDA_RESOURCE_ROWS = (
+    Counter(
+        {
+            ("shared_backward_kernel", 48, 1024, 4, None): 2,
+            ("feature_cluster_backward_kernel_2block", 64, 1024, 12, None): 2,
+            ("feature_cluster_backward_kernel_4block", 72, 1024, 12, None): 2,
+            ("register_backward_kernel", 128, 1024, 74, None): 2,
+        }
+    )
+    + Counter(
+        {
+            (
+                name,
+                128,
+                1024,
+                EXPECTED_CUDA_GLOBAL_LOADS[name],
+                json.dumps(EXPECTED_CUDA_GLOBAL_LOAD_ROLES[name], sort_keys=True),
+            ): 1
+            for name in EXPECTED_CUDA_GLOBAL_LOADS
+            if "backward" in name
+        }
+    )
+    + Counter(
+        {
+            (
+                "register_cluster_forward_kernel_bfloat16_n9_d8192_c4",
+                96,
+                1024,
+                20,
+                json.dumps(
+                    EXPECTED_CUDA_GLOBAL_LOAD_ROLES[
+                        "register_cluster_forward_kernel_bfloat16_n9_d8192_c4"
+                    ],
+                    sort_keys=True,
+                ),
+            ): 1,
+            (
+                "register_cluster_forward_kernel_bfloat16_n32_d2048_c2",
+                103,
+                1024,
+                33,
+                json.dumps(
+                    EXPECTED_CUDA_GLOBAL_LOAD_ROLES[
+                        "register_cluster_forward_kernel_bfloat16_n32_d2048_c2"
+                    ],
+                    sort_keys=True,
+                ),
+            ): 1,
+            (
+                "register_cluster_forward_kernel_float16_n9_d8192_c4",
+                96,
+                1024,
+                20,
+                json.dumps(
+                    EXPECTED_CUDA_GLOBAL_LOAD_ROLES[
+                        "register_cluster_forward_kernel_float16_n9_d8192_c4"
+                    ],
+                    sort_keys=True,
+                ),
+            ): 1,
+            (
+                "register_cluster_forward_kernel_float16_n32_d2048_c2",
+                109,
+                1024,
+                33,
+                json.dumps(
+                    EXPECTED_CUDA_GLOBAL_LOAD_ROLES[
+                        "register_cluster_forward_kernel_float16_n32_d2048_c2"
+                    ],
+                    sort_keys=True,
+                ),
+            ): 1,
+        }
+    )
+)
 MIN_IDLE_SECONDS = 1800
 MIN_WAIT_POLL_SECONDS = 30
 MAX_WAIT_POLL_SECONDS = 300
@@ -144,7 +364,10 @@ MIN_FINALIZE_SECONDS = 1800
 MAX_CAMPAIGN_ATTEMPTS = 3
 PRIVATE_METADATA_PATTERN = re.compile(
     r"co-authored-by|claude|anthropic|wizchem|chatgpt|openai\.com|"
-    r"session[-_/][A-Za-z0-9]|file://|/(?:home|tmp|pub[0-9]+)/|GPU-[A-Za-z0-9-]+",
+    r"session[-_/][A-Za-z0-9]|file://|"
+    r"/(?:home|tmp|pub[0-9]+|mnt|scratch|workspace)/|"
+    r"[A-Za-z]:[\\/](?:Users|home|tmp|workspace)[\\/]|"
+    r"(?:[A-Za-z0-9-]+\.)+(?:internal|local)\b|GPU-[A-Za-z0-9-]+",
     re.IGNORECASE,
 )
 
@@ -178,176 +401,134 @@ def _unexpected_fields(value: object, allowed: set[str], label: str) -> list[str
     return [f"{label} contains unexpected fields: {unexpected}"] if unexpected else []
 
 
+def _exact_fields(value: object, expected: set[str], label: str) -> list[str]:
+    if not isinstance(value, dict):
+        return [f"{label} must be an object"]
+    if set(value) != expected:
+        return [f"{label} field set is not exact"]
+    return []
+
+
 def _compile_problems(
     report: dict, expected_commit: str, expected_source_sha256: str | None = None
 ) -> list[str]:
-    problems = []
-    problems.extend(
-        _unexpected_fields(
-            report,
-            {"target", "gpu_visible", "provenance", "plans", "compilations"},
-            "offline compile report",
-        )
-    )
-    problems.extend(
-        _unexpected_fields(
-            report.get("target"), {"backend", "arch", "warp_size"}, "compile target"
-        )
-    )
-    problems.extend(
-        _unexpected_fields(
-            report.get("provenance"),
-            {
-                "repository_commit",
-                "worktree_clean",
-                "torch",
-                "triton",
-                "nvcc",
-                "cuda_source_sha256",
-            },
-            "compile provenance",
-        )
-    )
-    for index, plan in enumerate(report.get("plans", [])):
-        label = f"compile plans[{index}]"
-        problems.extend(
-            _unexpected_fields(
-                plan,
-                {"name", "forward", "backward", "production", "rationale"},
-                label,
-            )
-        )
-        problems.extend(
-            _unexpected_fields(
-                plan.get("forward") if isinstance(plan, dict) else None,
-                {"family", "saved_state"},
-                f"{label}.forward",
-            )
-        )
-        problems.extend(
-            _unexpected_fields(
-                plan.get("backward") if isinstance(plan, dict) else None,
-                {"family", "tokens_per_cta", "dw_reduction"},
-                f"{label}.backward",
-            )
-        )
-    for index, compilation in enumerate(report.get("compilations", [])):
-        if not isinstance(compilation, dict):
-            continue
-        label = f"compilations[{index}]"
-        allowed = (
-            {
-                "name",
-                "kind",
-                "required_template_instances",
-                "register_limits",
-                "required_global_load_instruction_counts",
-                "required_global_load_role_counts",
-                "resources",
-            }
-            if compilation.get("kind") == "cuda"
-            else {
-                "name",
-                "kind",
-                "constants",
-                "num_warps",
-                "num_stages",
-                "shared_bytes",
-                "resources",
-            }
-        )
-        problems.extend(_unexpected_fields(compilation, allowed, label))
-        problems.extend(
-            _unexpected_fields(
-                compilation.get("constants"),
-                {"BLOCK_N", "BLOCK_D", "TOKENS", "USE_SAVED", "WRITE_PARTIAL", "BLOCK_P"},
-                f"{label}.constants",
-            )
-        )
-        for resource_index, resource in enumerate(compilation.get("resources", [])):
-            problems.extend(
-                _unexpected_fields(
-                    resource,
-                    {
-                        "kernel",
-                        "registers",
-                        "stack_bytes",
-                        "static_shared_bytes",
-                        "local_bytes",
-                        "global_load_instructions",
-                        "global_load_instruction_roles",
-                    },
-                    f"{label}.resources[{resource_index}]",
-                )
-            )
-    if report.get("target", {}).get("arch") != 120 or report.get("gpu_visible") is not False:
-        problems.append("offline compile report does not target sm_120 without a GPU")
-    provenance = report.get("provenance", {})
-    if provenance.get("repository_commit") != expected_commit:
-        problems.append("offline compile report uses the wrong repository commit")
-    if provenance.get("worktree_clean") is not True:
-        problems.append("offline compile report was not produced from a clean worktree")
-    if (
-        expected_source_sha256 is not None
-        and provenance.get("cuda_source_sha256") != expected_source_sha256
+    problems: list[str] = []
+    top_fields = {"target", "gpu_visible", "provenance", "plans", "compilations"}
+    problems.extend(_exact_fields(report, top_fields, "offline compile report"))
+    if not isinstance(report, dict):
+        return problems
+
+    if report.get("target") != {"backend": "cuda", "arch": 120, "warp_size": 32}:
+        problems.append("offline compile report does not have the exact sm_120 target")
+    if report.get("gpu_visible") is not False:
+        problems.append("offline compile report was not produced without a visible GPU")
+
+    provenance = report.get("provenance")
+    provenance_fields = {
+        "repository_commit",
+        "worktree_clean",
+        "torch",
+        "triton",
+        "nvcc",
+        "cuda_source_sha256",
+    }
+    problems.extend(_exact_fields(provenance, provenance_fields, "compile provenance"))
+    if isinstance(provenance, dict):
+        if provenance.get("repository_commit") != expected_commit:
+            problems.append("offline compile report uses the wrong repository commit")
+        if provenance.get("worktree_clean") is not True:
+            problems.append("offline compile report was not produced from a clean worktree")
+        for field, expected in EXPECTED_COMPILE_PROVENANCE.items():
+            if provenance.get(field) != expected:
+                problems.append(f"offline compile report uses the wrong {field} version")
+        source_hash = provenance.get("cuda_source_sha256")
+        if not isinstance(source_hash, str) or re.fullmatch(r"[0-9a-f]{64}", source_hash) is None:
+            problems.append("offline compile report has an invalid CUDA source hash")
+        if expected_source_sha256 is not None and source_hash != expected_source_sha256:
+            problems.append("offline compile report uses different CUDA source bytes")
+
+    expected_plans = [get_training_plan(name).as_dict() for name in CANDIDATES]
+    if report.get("plans") != expected_plans:
+        problems.append("offline compile report does not contain the exact campaign plans")
+
+    compilations = report.get("compilations")
+    if not isinstance(compilations, list) or not all(
+        isinstance(item, dict) for item in compilations
     ):
-        problems.append("offline compile report uses different CUDA source bytes")
-    compilation_names = [item.get("name") for item in report.get("compilations", [])]
-    if (
-        len(compilation_names) != len(EXPECTED_COMPILATIONS)
-        or set(compilation_names) != EXPECTED_COMPILATIONS
-    ):
+        problems.append("offline compile report has a malformed compilation list")
+        return problems
+    expected_names = [*EXPECTED_TRITON_COMPILATIONS, "one_read_cuda"]
+    if [item.get("name") for item in compilations] != expected_names:
         problems.append("offline compile report does not contain the exact compilation set")
-    cuda_records = [
-        item for item in report.get("compilations", []) if item.get("kind") == "cuda"
-    ]
-    if len(cuda_records) != 1:
-        problems.append("offline compile report must contain one CUDA build")
         return problems
-    cuda = cuda_records[0]
-    expected_counts = cuda.get("required_template_instances", {})
-    limits = cuda.get("register_limits", {})
-    required_loads = cuda.get("required_global_load_instruction_counts", {})
-    required_load_roles = cuda.get("required_global_load_role_counts", {})
-    resources = cuda.get("resources", [])
-    if not isinstance(expected_counts, dict) or not isinstance(limits, dict):
-        problems.append("offline CUDA resource contracts are malformed")
-        return problems
+
+    for compilation in compilations[:-1]:
+        name = compilation["name"]
+        contract = EXPECTED_TRITON_COMPILATIONS[name]
+        expected = {
+            "name": name,
+            "kind": "triton",
+            "constants": contract["constants"],
+            "num_warps": contract["num_warps"],
+            "num_stages": contract["num_stages"],
+            "shared_bytes": contract["shared_bytes"],
+            "resources": [contract["resource"]],
+        }
+        if compilation != expected:
+            problems.append(f"offline Triton compilation contract differs: {name}")
+
+    cuda = compilations[-1]
+    cuda_fields = {
+        "name",
+        "kind",
+        "required_template_instances",
+        "register_limits",
+        "required_global_load_instruction_counts",
+        "required_global_load_role_counts",
+        "resources",
+    }
+    problems.extend(_exact_fields(cuda, cuda_fields, "offline CUDA compilation"))
+    if cuda.get("name") != "one_read_cuda" or cuda.get("kind") != "cuda":
+        problems.append("offline compile report does not contain the exact CUDA build")
     if (
-        expected_counts != EXPECTED_CUDA_INSTANCES
-        or limits != EXPECTED_CUDA_LIMITS
-        or required_loads != EXPECTED_CUDA_GLOBAL_LOADS
-        or required_load_roles != EXPECTED_CUDA_GLOBAL_LOAD_ROLES
+        cuda.get("required_template_instances") != EXPECTED_CUDA_INSTANCES
+        or cuda.get("register_limits") != EXPECTED_CUDA_LIMITS
+        or cuda.get("required_global_load_instruction_counts") != EXPECTED_CUDA_GLOBAL_LOADS
+        or cuda.get("required_global_load_role_counts") != EXPECTED_CUDA_GLOBAL_LOAD_ROLES
     ):
         problems.append("offline CUDA resource contracts differ from the source gate")
-    if Counter(item.get("kernel") for item in resources) != Counter(expected_counts):
-        problems.append("offline CUDA template-instance counts are incomplete")
-    for item in resources:
-        kernel = item.get("kernel")
+
+    resources = cuda.get("resources")
+    if not isinstance(resources, list) or not all(isinstance(item, dict) for item in resources):
+        problems.append("offline CUDA resource records are malformed")
+        return problems
+    observed_rows = Counter()
+    for index, item in enumerate(resources):
+        fields = {
+            "kernel",
+            "registers",
+            "stack_bytes",
+            "static_shared_bytes",
+            "local_bytes",
+            "global_load_instructions",
+        }
+        roles = item.get("global_load_instruction_roles")
+        if roles is not None:
+            fields.add("global_load_instruction_roles")
+        problems.extend(_exact_fields(item, fields, f"CUDA resources[{index}]"))
+        observed_rows[
+            (
+                item.get("kernel"),
+                item.get("registers"),
+                item.get("static_shared_bytes"),
+                item.get("global_load_instructions"),
+                json.dumps(roles, sort_keys=True) if roles is not None else None,
+            )
+        ] += 1
         if item.get("stack_bytes") != 0 or item.get("local_bytes") != 0:
-            problems.append(f"offline CUDA resource record spills: {kernel}")
-        if not isinstance(limits.get(kernel), int) or item.get("registers", 10**9) > limits[kernel]:
-            problems.append(f"offline CUDA register budget failed: {kernel}")
-        if (
-            kernel in required_loads
-            and item.get("global_load_instructions") != required_loads[kernel]
-        ):
-            problems.append(f"offline CUDA global-load contract failed: {kernel}")
-        if (
-            kernel in required_load_roles
-            and item.get("global_load_instruction_roles")
-            != required_load_roles[kernel]
-        ):
-            problems.append(f"offline CUDA load-role contract failed: {kernel}")
-    for compilation in report.get("compilations", []):
-        if not compilation.get("resources"):
-            problems.append(f"offline compilation has no resource record: {compilation.get('name')}")
-        for item in compilation.get("resources", []):
-            if item.get("stack_bytes") != 0 or item.get("local_bytes") != 0:
-                problems.append(f"offline resource record spills: {compilation.get('name')}")
-    plan_names = [item.get("name") for item in report.get("plans", [])]
-    if len(plan_names) != len(CANDIDATES) or set(plan_names) != set(CANDIDATES):
-        problems.append("offline compile report does not contain the exact campaign plans")
+            problems.append(f"offline CUDA resource record spills: {item.get('kernel')}")
+    if observed_rows != EXPECTED_CUDA_RESOURCE_ROWS:
+        problems.append("offline CUDA resource rows differ from the exact compiler contract")
     return problems
 
 
@@ -392,9 +573,7 @@ def validate_bundle(
             problems.append(f"{suffix} contains private host or task metadata")
 
     problems.extend(
-        _compile_problems(
-            payloads["offline_compile"], expected_commit, expected_source_sha256
-        )
+        _compile_problems(payloads["offline_compile"], expected_commit, expected_source_sha256)
     )
 
     phase_specs = {
@@ -467,9 +646,7 @@ def validate_bundle(
         or not isinstance(manifest.get("attempt"), int)
         or not 1 <= manifest["attempt"] <= MAX_CAMPAIGN_ATTEMPTS
     ):
-        problems.append(
-            f"manifest attempt must be between 1 and {MAX_CAMPAIGN_ATTEMPTS}"
-        )
+        problems.append(f"manifest attempt must be between 1 and {MAX_CAMPAIGN_ATTEMPTS}")
     guards = manifest.get("guard_attestations")
     expected_manifest_fields = set(exact_manifest) | {"attempt", "guard_attestations"}
     if set(manifest) != expected_manifest_fields:
@@ -543,9 +720,7 @@ def validate_bundle(
                 f"manifest guard {index} max_idle_gpu_utilization_percent must be an integer"
             )
         elif idle_utilization != 0:
-            problems.append(
-                f"manifest guard {index} max_idle_gpu_utilization_percent must be zero"
-            )
+            problems.append(f"manifest guard {index} max_idle_gpu_utilization_percent must be zero")
         idle_memory = guard["max_idle_memory_mib"]
         if isinstance(idle_memory, bool) or not isinstance(idle_memory, int) or idle_memory < 0:
             problems.append(
@@ -574,9 +749,7 @@ def validate_bundle(
                 f"manifest guard {index} finalize_seconds must be at least {MIN_FINALIZE_SECONDS}"
             )
         if len(moments) == 3 and numeric_guard_valid:
-            observed_idle = (
-                moments["launch_at"] - moments["idle_started_at"]
-            ).total_seconds()
+            observed_idle = (moments["launch_at"] - moments["idle_started_at"]).total_seconds()
             if moments["launch_at"] < moments["not_before"]:
                 problems.append(f"manifest guard {index} launch precedes not_before")
             if observed_idle < guard["idle_seconds"]:
@@ -592,13 +765,10 @@ def validate_bundle(
 
     attempt_order = [guard.get("attempt") for guard in guards if isinstance(guard, dict)]
     valid_attempt_order = [
-        value
-        for value in attempt_order
-        if isinstance(value, int) and not isinstance(value, bool)
+        value for value in attempt_order if isinstance(value, int) and not isinstance(value, bool)
     ]
-    if (
-        len(valid_attempt_order) != len(guards)
-        or valid_attempt_order != sorted(set(valid_attempt_order))
+    if len(valid_attempt_order) != len(guards) or valid_attempt_order != sorted(
+        set(valid_attempt_order)
     ):
         problems.append("manifest guards are not in strictly increasing attempt order")
     if isinstance(manifest.get("attempt"), int) and (
@@ -623,9 +793,7 @@ def validate_bundle(
         if (phase_time - moments["launch_at"]).total_seconds() < -1.0:
             problems.append(f"{suffix} predates its guarded launch")
         later_launches = [
-            by_attempt[value][1]["launch_at"]
-            for value in ordered_attempts
-            if value > attempt
+            by_attempt[value][1]["launch_at"] for value in ordered_attempts if value > attempt
         ]
         if later_launches and phase_time >= min(later_launches):
             problems.append(f"{suffix} is not bound to its recorded attempt")

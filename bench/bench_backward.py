@@ -336,44 +336,44 @@ def build_implementations(v: torch.Tensor) -> tuple[dict, list[str]]:
         },
         "source_serial": {
             "fn": _block_attn_res_source_serial,
-            "status": "private candidate; not reachable from production dispatch",
+            "status": "experimental candidate; not reachable from production dispatch",
             "plan": get_training_plan("serial_recompute_atomic_t1"),
         },
         "serial_recompute_atomic_t4": plan_spec(
             "serial_recompute_atomic_t4",
-            "private grouped L2-local control",
+            "experimental candidate; not reachable from production dispatch",
         ),
         "serial_saved_atomic_t4": plan_spec(
             "serial_saved_atomic_t4",
-            "private grouped saved-state control",
+            "experimental candidate; not reachable from production dispatch",
         ),
         "serial_saved_partials_t16": plan_spec(
             "serial_saved_partials_t16",
-            "private saved-state hierarchical-reduction candidate",
+            "experimental candidate; not reachable from production dispatch",
         ),
         "cuda_shared": plan_spec(
             "cuda_shared",
-            "private one-token one-read shared-memory control",
+            "experimental candidate; not reachable from production dispatch",
         ),
         "cuda_cluster": plan_spec(
             "cuda_cluster",
-            "private persistent feature-sharded one-read cluster candidate",
+            "experimental candidate; not reachable from production dispatch",
         ),
         "cuda_cluster4": plan_spec(
             "cuda_cluster4",
-            "private four-block feature-sharded one-read cluster candidate",
+            "experimental candidate; not reachable from production dispatch",
         ),
         "cuda_register": plan_spec(
             "cuda_register",
-            "private persistent packed-register one-read candidate",
+            "experimental candidate; not reachable from production dispatch",
         ),
         "cuda_register_cluster": plan_spec(
             "cuda_register_cluster",
-            "private shape-specialized packed-register cluster candidate",
+            "experimental candidate; not reachable from production dispatch",
         ),
         "cuda_register_cluster_full": plan_spec(
             "cuda_register_cluster_full",
-            "private one-read register-cluster forward and backward candidate",
+            "experimental candidate; not reachable from production dispatch",
         ),
     }
     notes: list[str] = []

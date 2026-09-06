@@ -9,6 +9,7 @@ import math
 import re
 import statistics
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -17,9 +18,7 @@ sys.path.insert(0, str(REPO / "src"))
 from switchyard.training_plan import get_training_plan, plan_supports  # noqa: E402
 
 PINNED_LIGER_COMMIT = "777799588a89d74c489ed995e3bf006427738e85"
-PINNED_LIGER_SOURCE_SHA256 = (
-    "57da6fed98f794088b2a56223e6c7ef9fc920824f0c483cb0ef0b5a343dab0b1"
-)
+PINNED_LIGER_SOURCE_SHA256 = "57da6fed98f794088b2a56223e6c7ef9fc920824f0c483cb0ef0b5a343dab0b1"
 
 TOP_LEVEL_FIELDS = {
     "schema_version",
@@ -155,12 +154,160 @@ MEMORY_FIELDS = {
     "accounted_output_bytes",
     "allocation_count",
 }
+# A report is publishable only for the repository's documented measurement host.
+EXPECTED_ENVIRONMENT = {
+    "torch": "2.9.0+cu128",
+    "torch_cuda": "12.8",
+    "triton": "3.5.0",
+    "python": "3.12.3",
+    "platform": "Linux-6.8.0-117-generic-x86_64-with-glibc2.39",
+    "device_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+    "device_cc": "12.0",
+    "device_index": 0,
+}
+ACCEPTED_STATUS = "accepted production dispatch"
+EXPERIMENTAL_STATUS = "experimental candidate; not reachable from production dispatch"
+LIGER_STATUS = "pinned third-party comparator; RMSNorm gain fixed to one"
+EXPERIMENTAL_IMPLEMENTATIONS = {
+    "source_serial",
+    "serial_recompute_atomic_t4",
+    "serial_saved_atomic_t4",
+    "serial_saved_partials_t16",
+    "cuda_shared",
+    "cuda_cluster",
+    "cuda_cluster4",
+    "cuda_register",
+    "cuda_register_cluster",
+    "cuda_register_cluster_full",
+}
 PUBLIC_DEVICE_ID_PATTERN = re.compile(r"device-[0-9a-f]{16}")
+GIT_OBJECT_PATTERN = re.compile(r"[0-9a-f]{40}")
+RUN_ID_PATTERN = re.compile(r"[0-9]{8}T[0-9]{6}Z")
+UTC_TIMESTAMP_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 PRIVATE_METADATA_PATTERN = re.compile(
-    r"co-authored-by|claude|anthropic|wizchem|chatgpt|openai\.com|"
-    r"session[-_/][A-Za-z0-9]|file://|/(?:home|tmp|pub[0-9]+)/|GPU-[A-Za-z0-9-]+",
+    r"co[\s_-]*authored[\s_-]*by|claude(?:\.ai)?|anthropic|wizchem|chatgpt|"
+    r"openai(?:\.com)?|session(?:[-_/ ]?(?:id|url))?[-_/:= ]+[A-Za-z0-9]|"
+    r"\b(?:host(?:name)?|node(?:name)?|machine(?:name)?)\s*[:=]\s*\S+|"
+    r"\b[A-Za-z][A-Za-z0-9+.-]*://|GPU-[A-Za-z0-9-]+|"
+    r"\b[A-Z]:[\\/]|\\\\[^\\\s]+\\|(?:^|\s)~/|"
+    r"(?:[A-Za-z0-9-]+\.)+(?:internal|local)\b|"
+    r"(?<![A-Za-z0-9:/])/(?!/)[^\s\"']+|"
+    r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
     re.IGNORECASE,
 )
+EMPTY_DIFF_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+
+def _expected_result_status(name: str) -> str | None:
+    if name == "current":
+        return ACCEPTED_STATUS
+    if name == "liger":
+        return LIGER_STATUS
+    if name in EXPERIMENTAL_IMPLEMENTATIONS:
+        return EXPERIMENTAL_STATUS
+    return None
+
+
+def _private_metadata_present(value: object) -> bool:
+    if isinstance(value, str):
+        if re.fullmatch(r"<external>/[A-Za-z0-9._-]+", value) is not None:
+            return False
+        return PRIVATE_METADATA_PATTERN.search(value) is not None
+    if isinstance(value, dict):
+        return any(
+            _private_metadata_present(key) or _private_metadata_present(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_private_metadata_present(item) for item in value)
+    return False
+
+
+def _expected_argv(
+    *, dtype: str, shape_set: str, implementations: list[str], quick: bool
+) -> list[str]:
+    phase = "smoke" if quick else "full"
+    argv = [
+        "bench/bench_backward.py",
+        "--shape-set",
+        shape_set,
+        "--dtype",
+        dtype,
+    ]
+    if quick:
+        argv.append("--quick")
+    argv.extend(
+        [
+            "--impls",
+            ",".join(implementations),
+            "--out",
+            f"<external>/{phase}_{dtype}.json",
+        ]
+    )
+    return argv
+
+
+def _expected_methodology(*, quick: bool) -> dict[str, str]:
+    trial_count = 2 if quick else 15
+    return {
+        "oracle": "float64 forward and first-order gradients on each timed shape",
+        "timing": (
+            (
+                "two interleaved trials of 10 CUDA-event samples"
+                if quick
+                else "15 interleaved trials of 13 CUDA-event samples"
+            )
+            + "; all raw samples and trial order stored"
+        ),
+        "statistics": (
+            "paired trial medians are independent observations; individual event "
+            "samples are not treated as independent; a dispatch cell must win every "
+            f"one of the {trial_count} trials against current and Liger"
+        ),
+        "cache": "L2 flushed after graph setup and before every timed region",
+        "compilation": "excluded by warmup",
+        "backward": "measured directly on a retained graph; not median subtraction",
+        "promotion": "run scripts/evaluate_backward.py on this raw result",
+    }
+
+
+def _device_query_valid(value: object) -> bool:
+    if not isinstance(value, str) or not value or any(char in value for char in "\r\n\0"):
+        return False
+    fields = [field.strip() for field in value.split(",")]
+    if len(fields) != 7 or fields[0] != EXPECTED_ENVIRONMENT["device_name"]:
+        return False
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}", fields[1]) is None:
+        return False
+    if re.fullmatch(r"[0-9]+", fields[2]) is None:
+        return False
+    try:
+        power_draw, power_limit = (float(fields[index]) for index in (3, 4))
+        sm_clock, memory_clock = (int(fields[index]) for index in (5, 6))
+    except ValueError:
+        return False
+    return (
+        math.isfinite(power_draw)
+        and power_draw >= 0
+        and math.isfinite(power_limit)
+        and power_limit > 0
+        and sm_clock > 0
+        and memory_clock > 0
+    )
+
+
+def _object(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _timestamp_valid(value: object, pattern: re.Pattern, time_format: str) -> bool:
+    if not isinstance(value, str) or pattern.fullmatch(value) is None:
+        return False
+    try:
+        datetime.strptime(value, time_format)
+    except ValueError:
+        return False
+    return True
 
 
 def _only_fields(value: object, allowed: set[str], label: str, problems: list[str]) -> None:
@@ -184,10 +331,7 @@ def _shape(value: object) -> tuple[int, int, int, int] | None:
     if not isinstance(value, dict):
         return None
     fields = tuple(value.get(name) for name in ("n", "b", "t", "d"))
-    if any(
-        isinstance(item, bool) or not isinstance(item, int) or item <= 0
-        for item in fields
-    ):
+    if any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in fields):
         return None
     return fields
 
@@ -281,7 +425,10 @@ def _complete_timing(
             "mean_ms": mean,
             "cv": statistics.pstdev(samples) / mean,
         }
-        if any(not _same_number(trial.get(field), expected) for field, expected in expected_trial.items()):
+        if any(
+            not _same_number(trial.get(field), expected)
+            for field, expected in expected_trial.items()
+        ):
             problems.append(f"{label} contains inconsistent trial statistics")
             return
         all_samples.extend(samples)
@@ -304,7 +451,9 @@ def _complete_timing(
         "mean_ms": mean,
         "cv": statistics.pstdev(all_samples) / mean,
     }
-    if any(not _same_number(value.get(field), expected) for field, expected in expected_summary.items()):
+    if any(
+        not _same_number(value.get(field), expected) for field, expected in expected_summary.items()
+    ):
         problems.append(f"{label} summary does not match the raw samples")
 
 
@@ -349,18 +498,22 @@ def _kernel_profile_complete(value: object) -> bool:
     ):
         return False
     launches = 0.0
+    cuda_us = []
     for measurement in by_name.values():
         if not isinstance(measurement, dict) or set(measurement) != {
             "launches_per_call",
             "cuda_us_per_call",
         }:
             return False
-        if not _finite_number(measurement["launches_per_call"], minimum=1e-12) or not _finite_number(
-            measurement["cuda_us_per_call"], minimum=1e-12
-        ):
+        if not _finite_number(
+            measurement["launches_per_call"], minimum=1e-12
+        ) or not _finite_number(measurement["cuda_us_per_call"], minimum=1e-12):
             return False
         launches += measurement["launches_per_call"]
-    return math.isclose(launches, total, rel_tol=1e-9, abs_tol=1e-9)
+        cuda_us.append(measurement["cuda_us_per_call"])
+    return math.isclose(launches, total, rel_tol=1e-9, abs_tol=1e-9) and math.isclose(
+        math.fsum(cuda_us), value["total_cuda_us"], rel_tol=1e-6, abs_tol=1e-6
+    )
 
 
 def _memory_profile_complete(value: object) -> bool:
@@ -374,8 +527,7 @@ def _memory_profile_complete(value: object) -> bool:
     return (
         value["resident_bytes"] > 0
         and value["accounted_output_bytes"] > 0
-        and value["peak_allocated_bytes"]
-        == value["resident_bytes"] + value["workspace_bytes"]
+        and value["peak_allocated_bytes"] == value["resident_bytes"] + value["workspace_bytes"]
         and value["workspace_bytes"]
         == max(0, value["incremental_peak_bytes"] - value["accounted_output_bytes"])
     )
@@ -438,6 +590,9 @@ def report_completeness_problems(
             continue
         by_pair[pair] = record
         supported, expected_plan = _plan_support(name, shape, dtype)
+        expected_status = _expected_result_status(name)
+        if expected_status is None or record.get("status") != expected_status:
+            problems.append(f"{name} at {shape} has an invalid result status")
         skipped = record.get("skipped")
         if expected_plan is not None and record.get("training_plan") != expected_plan:
             problems.append(f"{name} at {shape} has the wrong training plan")
@@ -454,8 +609,7 @@ def report_completeness_problems(
         ] != [0, 1, 2]:
             problems.append(f"{name} at {shape} has an incomplete correctness matrix")
         elif any(
-            not _accuracy_complete(item.get("report"), expected_tolerances)
-            for item in correctness
+            not _accuracy_complete(item.get("report"), expected_tolerances) for item in correctness
         ) or not _accuracy_complete(record.get("correctness"), expected_tolerances):
             problems.append(f"{name} at {shape} has incomplete correctness evidence")
         for metric in ("forward", "backward", "fwd_bwd"):
@@ -473,9 +627,7 @@ def report_completeness_problems(
         if not _memory_profile_complete(record.get("fwd_bwd_memory")):
             problems.append(f"{name} at {shape} has incomplete fwd_bwd_memory")
 
-    expected_pairs = {
-        (shape, name) for shape in expected_shapes for name in implementations
-    }
+    expected_pairs = {(shape, name) for shape in expected_shapes for name in implementations}
     if set(by_pair) != expected_pairs:
         problems.append("result shape and implementation matrix is not exact")
 
@@ -513,9 +665,9 @@ def report_completeness_problems(
             if not isinstance(trials, list) or len(trials) != trial_count:
                 problems.append(f"execution schedule at {shape} {metric} is incomplete")
                 continue
-            if [
-                trial.get("trial") for trial in trials if isinstance(trial, dict)
-            ] != list(range(trial_count)):
+            if [trial.get("trial") for trial in trials if isinstance(trial, dict)] != list(
+                range(trial_count)
+            ):
                 problems.append(f"execution schedule at {shape} {metric} has wrong trial IDs")
             for trial in trials:
                 names = trial.get("implementations") if isinstance(trial, dict) else None
@@ -606,9 +758,7 @@ def _check_plan_schema(value: object, label: str, problems: list[str]) -> None:
         label,
         problems,
     )
-    _only_fields(
-        value.get("forward"), {"family", "saved_state"}, f"{label}.forward", problems
-    )
+    _only_fields(value.get("forward"), {"family", "saved_state"}, f"{label}.forward", problems)
     _only_fields(
         value.get("backward"),
         {"family", "tokens_per_cta", "dw_reduction"},
@@ -621,7 +771,10 @@ def _check_timing_schema(value: object, label: str, problems: list[str]) -> None
     if not isinstance(value, dict):
         return
     _only_fields(value, TIMING_FIELDS, label, problems)
-    for index, trial in enumerate(value.get("trials", [])):
+    trials = value.get("trials")
+    if not isinstance(trials, list):
+        return
+    for index, trial in enumerate(trials):
         _only_fields(trial, TRIAL_FIELDS, f"{label}.trials[{index}]", problems)
 
 
@@ -755,7 +908,10 @@ def report_schema_problems(report: dict) -> list[str]:
         problems,
     )
     if isinstance(monitor, dict):
-        for index, event in enumerate(monitor.get("collision_events", [])):
+        collision_events = monitor.get("collision_events")
+        if not isinstance(collision_events, list):
+            collision_events = []
+        for index, event in enumerate(collision_events):
             _only_fields(
                 event,
                 {"time", "foreign_process_count"},
@@ -838,16 +994,25 @@ def report_schema_problems(report: dict) -> list[str]:
     )
     _require_fields(report.get("methodology"), METHOD_FIELDS, "methodology", problems)
 
-    for record_index, record in enumerate(report.get("results", [])):
+    records = report.get("results")
+    if not isinstance(records, list):
+        records = []
+    for record_index, record in enumerate(records):
         label = f"results[{record_index}]"
         _only_fields(record, RECORD_FIELDS, label, problems)
+        if not isinstance(record, dict):
+            continue
         _only_fields(record.get("shape"), {"n", "b", "t", "d"}, f"{label}.shape", problems)
         _check_plan_schema(record.get("training_plan"), f"{label}.training_plan", problems)
         _check_accuracy_schema(record.get("correctness"), f"{label}.correctness", problems)
-        for seed_index, seed in enumerate(record.get("correctness_by_seed", [])):
+        correctness_by_seed = record.get("correctness_by_seed")
+        if not isinstance(correctness_by_seed, list):
+            correctness_by_seed = []
+        for seed_index, seed in enumerate(correctness_by_seed):
             seed_label = f"{label}.correctness_by_seed[{seed_index}]"
             _only_fields(seed, {"seed", "report"}, seed_label, problems)
-            _check_accuracy_schema(seed.get("report"), f"{seed_label}.report", problems)
+            if isinstance(seed, dict):
+                _check_accuracy_schema(seed.get("report"), f"{seed_label}.report", problems)
         for metric in ("forward", "backward", "fwd_bwd"):
             _check_timing_schema(record.get(metric), f"{label}.{metric}", problems)
         for profile in ("forward_kernels", "backward_kernels", "fwd_bwd_kernels"):
@@ -918,11 +1083,19 @@ def report_schema_problems(report: dict) -> list[str]:
                 problems,
             )
 
-    for case_index, case in enumerate(report.get("correctness_only", [])):
+    correctness_only = report.get("correctness_only")
+    if not isinstance(correctness_only, list):
+        correctness_only = []
+    for case_index, case in enumerate(correctness_only):
         label = f"correctness_only[{case_index}]"
         _only_fields(case, {"shape", "implementations"}, label, problems)
+        if not isinstance(case, dict):
+            continue
         _only_fields(case.get("shape"), {"n", "b", "t", "d"}, f"{label}.shape", problems)
-        for row_index, row in enumerate(case.get("implementations", [])):
+        rows = case.get("implementations")
+        if not isinstance(rows, list):
+            rows = []
+        for row_index, row in enumerate(rows):
             row_label = f"{label}.implementations[{row_index}]"
             _only_fields(
                 row,
@@ -930,17 +1103,25 @@ def report_schema_problems(report: dict) -> list[str]:
                 row_label,
                 problems,
             )
-            _check_plan_schema(row.get("training_plan"), f"{row_label}.training_plan", problems)
-            _check_accuracy_schema(row.get("correctness"), f"{row_label}.correctness", problems)
+            if isinstance(row, dict):
+                _check_plan_schema(row.get("training_plan"), f"{row_label}.training_plan", problems)
+                _check_accuracy_schema(row.get("correctness"), f"{row_label}.correctness", problems)
 
-    for schedule_index, schedule in enumerate(report.get("execution_order", [])):
+    execution_order = report.get("execution_order")
+    if not isinstance(execution_order, list):
+        execution_order = []
+    for schedule_index, schedule in enumerate(execution_order):
         label = f"execution_order[{schedule_index}]"
         _only_fields(schedule, {"shape", "metrics"}, label, problems)
+        if not isinstance(schedule, dict):
+            continue
         _only_fields(schedule.get("shape"), {"n", "b", "t", "d"}, f"{label}.shape", problems)
         metrics = schedule.get("metrics")
         _only_fields(metrics, {"forward", "backward", "fwd_bwd"}, f"{label}.metrics", problems)
         if isinstance(metrics, dict):
             for metric, trials in metrics.items():
+                if not isinstance(trials, list):
+                    continue
                 for trial_index, trial in enumerate(trials):
                     _only_fields(
                         trial,
@@ -964,6 +1145,8 @@ def validate_report(
     expected_device_id: str,
 ) -> list[str]:
     """Return every reason a report cannot be reused."""
+    if not isinstance(report, dict):
+        return ["report must be an object"]
     problems = report_schema_problems(report)
     problems.extend(
         report_completeness_problems(
@@ -979,16 +1162,30 @@ def validate_report(
         "run_status": "complete",
         "dtype": dtype,
         "shape_set": shape_set,
-        "candidate_reachable_from_production": False,
-        "correctness_seeds": [0, 1, 2],
     }
     for field, value in expected.items():
-        if report.get(field) != value:
+        observed = report.get(field)
+        if type(observed) is not type(value) or observed != value:
             problems.append(f"{field} must equal {value!r}")
+    if report.get("candidate_reachable_from_production") is not False:
+        problems.append("candidate_reachable_from_production must equal False")
+    correctness_seeds = report.get("correctness_seeds")
+    if (
+        not isinstance(correctness_seeds, list)
+        or correctness_seeds != [0, 1, 2]
+        or any(type(seed) is not int for seed in correctness_seeds)
+    ):
+        problems.append("correctness_seeds must equal [0, 1, 2]")
     run_id = report.get("run_id")
-    if not isinstance(run_id, str) or re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", run_id) is None:
+    run_id_valid = _timestamp_valid(run_id, RUN_ID_PATTERN, "%Y%m%dT%H%M%SZ")
+    if not run_id_valid:
         problems.append("run_id must use the benchmark UTC timestamp format")
-    if report.get("selected_implementations") != implementations:
+    selected_implementations = report.get("selected_implementations")
+    if (
+        not isinstance(selected_implementations, list)
+        or selected_implementations != implementations
+        or any(not isinstance(name, str) for name in selected_implementations)
+    ):
         problems.append("selected implementation order differs from the requested phase")
     if report.get("experiment") != "backward architecture selection":
         problems.append("experiment name is not exact")
@@ -1001,76 +1198,140 @@ def validate_report(
     ):
         problems.append("campaign_attempt must be an integer from 1 through 3")
 
-    provenance = report.get("provenance", {})
+    environment = _object(report.get("environment"))
+    for field, expected_value in EXPECTED_ENVIRONMENT.items():
+        observed = environment.get(field)
+        if type(observed) is not type(expected_value) or observed != expected_value:
+            problems.append(f"environment.{field} differs from the campaign environment")
+    timestamp = environment.get("timestamp_utc")
+    timestamp_valid = _timestamp_valid(timestamp, UTC_TIMESTAMP_PATTERN, "%Y-%m-%dT%H:%M:%SZ")
+    if not timestamp_valid:
+        problems.append("environment.timestamp_utc must be a UTC timestamp")
+    elif run_id_valid:
+        environment_time = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+        run_time = datetime.strptime(run_id, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        if not 0 <= (environment_time - run_time).total_seconds() <= 60:
+            problems.append("environment timestamp is not bound to the report start")
+
+    if report.get("methodology") != _expected_methodology(quick=quick):
+        problems.append("benchmark methodology differs from the campaign contract")
+
+    provenance = _object(report.get("provenance"))
     if provenance.get("repository_commit") != expected_commit:
         problems.append("repository commit differs from the campaign commit")
     if provenance.get("repository_branch") != expected_branch:
         problems.append("repository branch differs from the campaign branch")
     if provenance.get("repository_tree") != expected_tree:
         problems.append("repository tree differs from the campaign tree")
+    if (
+        not isinstance(expected_commit, str)
+        or GIT_OBJECT_PATTERN.fullmatch(expected_commit) is None
+        or not isinstance(expected_tree, str)
+        or GIT_OBJECT_PATTERN.fullmatch(expected_tree) is None
+    ):
+        problems.append("expected repository identity is malformed")
+    branch = provenance.get("repository_branch")
+    if (
+        not isinstance(branch, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch) is None
+        or ".." in branch
+        or "//" in branch
+    ):
+        problems.append("repository branch provenance is malformed")
     if provenance.get("worktree_dirty") is not False:
         problems.append("benchmark worktree was not fully clean")
     if provenance.get("tracked_worktree_dirty") is not False:
         problems.append("tracked benchmark worktree was not clean")
-    if provenance.get("third_party_commits", {}).get("Liger-Kernel") != PINNED_LIGER_COMMIT:
+    if provenance.get("dirty_paths") != []:
+        problems.append("clean benchmark provenance must have no dirty paths")
+    if provenance.get("diff_sha256") != EMPTY_DIFF_SHA256:
+        problems.append("clean benchmark provenance has a nonempty diff hash")
+    if provenance.get("third_party_commits") != {"Liger-Kernel": PINNED_LIGER_COMMIT}:
         problems.append("pinned Liger commit is missing or wrong")
-    if provenance.get("third_party_dirty", {}).get("Liger-Kernel") is not False:
+    third_party_dirty = provenance.get("third_party_dirty")
+    if (
+        not isinstance(third_party_dirty, dict)
+        or set(third_party_dirty) != {"Liger-Kernel"}
+        or third_party_dirty.get("Liger-Kernel") is not False
+    ):
         problems.append("pinned Liger checkout was not clean")
-    argv = provenance.get("argv", [])
-    if not isinstance(argv, list) or ("--quick" in argv) is not quick:
-        problems.append("quick/full command provenance differs from the requested phase")
+    if provenance.get("input_seed") != 0 or type(provenance.get("input_seed")) is not int:
+        problems.append("input seed provenance is not exact")
+    if provenance.get("query_seed") != 1 or type(provenance.get("query_seed")) is not int:
+        problems.append("query seed provenance is not exact")
+    if provenance.get("argv") != _expected_argv(
+        dtype=dtype,
+        shape_set=shape_set,
+        implementations=implementations,
+        quick=quick,
+    ):
+        problems.append("command provenance is not the exact sanitized campaign command")
 
-    liger = report.get("comparators", {}).get("liger", {})
+    liger = _object(_object(report.get("comparators")).get("liger"))
     if (
         liger.get("commit") != PINNED_LIGER_COMMIT
         or liger.get("source_sha256") != PINNED_LIGER_SOURCE_SHA256
         or liger.get("worktree_dirty") is not False
         or liger.get("under_pinned_checkout") is not True
-        or not liger.get("source_path")
+        or liger.get("source_path") != "src/liger_kernel/ops/attn_res.py"
     ):
         problems.append("imported Liger source provenance is incomplete")
 
-    preflight = report.get("gpu_preflight", {})
-    postflight = report.get("gpu_postflight", {})
+    preflight = _object(report.get("gpu_preflight"))
+    postflight = _object(report.get("gpu_postflight"))
     device_id = preflight.get("device_id")
     if device_id != expected_device_id:
         problems.append("device ID differs from the campaign device")
     if not isinstance(device_id, str) or PUBLIC_DEVICE_ID_PATTERN.fullmatch(device_id) is None:
         problems.append("campaign device ID is not an opaque public identifier")
-    if (
-        not device_id
-        or preflight.get("foreign_compute_process_count_at_start") != 0
-        or preflight.get("busy_override")
-    ):
+    preflight_valid = (
+        preflight.get("logical_device") == "cuda:0"
+        and _device_query_valid(preflight.get("device_query"))
+        and preflight.get("benchmark_process_context_count") == 1
+        and type(preflight.get("benchmark_process_context_count")) is int
+        and type(preflight.get("foreign_compute_process_count_at_start")) is int
+        and preflight.get("foreign_compute_process_count_at_start") == 0
+        and preflight.get("exclusive_access_required") is True
+        and preflight.get("busy_override") is False
+    )
+    if not preflight_valid:
         problems.append("GPU preflight was not exclusive")
-    if (
+    postflight_invalid = (
         postflight.get("device_id") != device_id
+        or postflight.get("benchmark_process_context_count") != 1
+        or type(postflight.get("benchmark_process_context_count")) is not int
+        or type(postflight.get("foreign_compute_process_count_at_end")) is not int
         or postflight.get("foreign_compute_process_count_at_end") != 0
-    ):
+    )
+    if postflight_invalid:
         problems.append("GPU postflight was not exclusive on the same device")
 
-    monitor = report.get("gpu_process_monitor", {})
+    monitor = _object(report.get("gpu_process_monitor"))
     samples = monitor.get("samples")
     interval = monitor.get("interval_seconds")
     duration = monitor.get("duration_seconds")
     coverage_ok = (
-        isinstance(samples, int)
+        type(samples) is int
         and samples >= 2
-        and isinstance(interval, int | float)
-        and 0 < interval <= 1
-        and isinstance(duration, int | float)
+        and type(interval) is float
+        and math.isfinite(interval)
+        and math.isclose(interval, 0.05, rel_tol=0.0, abs_tol=1e-12)
+        and type(duration) is float
+        and math.isfinite(duration)
         and duration >= interval
         and samples >= max(2, int(duration / (2 * interval)))
     )
     if (
         monitor.get("device_id") != device_id
         or monitor.get("collision_detected") is not False
-        or monitor.get("collision_events")
-        or monitor.get("probe_errors")
+        or monitor.get("collision_events") != []
+        or monitor.get("probe_errors") != []
         or not coverage_ok
     ):
         problems.append("sampled GPU monitor was incomplete or contaminated")
-    if PRIVATE_METADATA_PATTERN.search(json.dumps(report, sort_keys=True)):
+    if _private_metadata_present(report):
         problems.append("report contains private host or task metadata")
     return problems
 
