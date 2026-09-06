@@ -40,6 +40,9 @@ def test_campaign_preserves_per_attempt_guard_attestations():
     assert 'document["attempts"].append(attempt)' in SCRIPT
     assert '"guard_attestations": guards' in SCRIPT
     assert 'key != "target_gpu_uuid"' in SCRIPT
+    assert "tempfile.NamedTemporaryFile" in SCRIPT
+    assert "os.fsync(handle.fileno())" in SCRIPT
+    assert 'temporary = f"{path}.tmp"' not in SCRIPT
 
 
 def test_campaign_publishes_only_to_exact_origin_and_recovers_pushes():

@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import time
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,24 @@ assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+
+
+def _recovery_context(attempt: int = 3) -> dict:
+    return {
+        "target_uuid": "GPU-test",
+        "attempt": attempt,
+        "not_before": "2026-01-01T00:00:00+00:00",
+        "idle_seconds": 1800,
+        "wait_poll_seconds": 60,
+        "watchdog_seconds": 0.25,
+        "finalize_seconds": 1800,
+        "idle_started_at": "2026-01-01T00:00:00+00:00",
+        "launch_at": "2026-01-01T00:30:00+00:00",
+        "idle_probe_count": 31,
+        "max_idle_gpu_utilization_percent": 0,
+        "max_idle_memory_mib": 8,
+        "gpu_count": 2,
+    }
 
 
 def test_nvidia_smi_parsers_keep_physical_identity():
@@ -76,11 +95,13 @@ def test_state_recorder_resumes_attempt_count_without_process_data(tmp_path):
     state = tmp_path / "state.json"
     recorder = MODULE.StateRecorder(state, "campaign-a")
     recorder.write("launching_workload", attempt=2, target_uuid="GPU-test")
+    recorder.set_recovery_context(_recovery_context(attempt=2))
     resumed = MODULE.StateRecorder(state, "campaign-a")
     assert resumed.attempts == 2
     assert resumed.last_phase == "launching_workload"
     assert resumed.public_device_id == recorder.public_device_id
     assert MODULE.PUBLIC_DEVICE_ID_PATTERN.fullmatch(resumed.public_device_id)
+    assert resumed.recovery_context == _recovery_context(attempt=2)
     assert "pid" not in state.read_text().lower()
     with pytest.raises(ValueError, match="different campaign"):
         MODULE.StateRecorder(state, "campaign-b")
@@ -95,6 +116,120 @@ def test_state_recorder_rejects_malformed_history(tmp_path):
         MODULE.StateRecorder(state, "campaign-a")
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda value: value.pop("gpu_count"),
+        lambda value: value.update(attempt=True),
+        lambda value: value.update(target_uuid="not-a-gpu"),
+        lambda value: value.update(launch_at="missing-offset"),
+        lambda value: value.update(max_idle_memory_mib=65),
+    ],
+)
+def test_recovery_context_fails_closed(change):
+    context = _recovery_context()
+    change(context)
+    with pytest.raises(ValueError, match="recovery"):
+        MODULE._validate_recovery_context(context)
+
+
+def test_recovery_environment_contains_only_reconstructable_guard_values():
+    context = _recovery_context()
+    environment = MODULE._recovery_environment(
+        {"PATH": "/bin", "UNRELATED": "kept"}, context, "device-0123456789abcdef"
+    )
+    assert environment["CUDA_VISIBLE_DEVICES"] == "GPU-test"
+    assert environment["SWITCHYARD_RUN_ATTEMPT"] == "3"
+    assert environment["SWITCHYARD_GUARD_IDLE_PROBE_COUNT"] == "31"
+    assert environment["SWITCHYARD_GUARD_MAX_IDLE_MEMORY_MIB"] == "8"
+    assert environment["SWITCHYARD_PUBLIC_DEVICE_ID"] == "device-0123456789abcdef"
+    assert environment["UNRELATED"] == "kept"
+
+
+def test_main_recovers_completed_gpu_phase_before_inventory_or_attempt_limit(
+    tmp_path, monkeypatch
+):
+    command = ["/bin/true"]
+    state = tmp_path / "state.json"
+    log = tmp_path / "runner.log"
+    lock = tmp_path / "runner.lock"
+    marker = tmp_path / "gpu_complete"
+    cwd = tmp_path / "worktree"
+    cwd.mkdir()
+    parsed = Namespace(
+        not_before=0.0,
+        gpu_index=1,
+        idle_seconds=1800,
+        wait_poll_seconds=60,
+        watchdog_seconds=0.25,
+        finalize_seconds=1800,
+        deadline_hours=36.0,
+        max_attempts=3,
+        state=state,
+        log=log,
+        lock=lock,
+        gpu_lock_dir=tmp_path,
+        gpu_complete_marker=marker,
+        cwd=cwd,
+    )
+    recorder = MODULE.StateRecorder(state, MODULE._campaign_identity(parsed, command))
+    recorder.write("gpu_phase_complete", attempt=3)
+    recorder.set_recovery_context(_recovery_context())
+    marker.touch()
+
+    observed = {}
+
+    def recover(_command, **kwargs):
+        observed.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(MODULE, "_run_cpu_recovery", recover)
+    monkeypatch.setattr(
+        MODULE, "_inventory", lambda: pytest.fail("GPU inventory must not be queried")
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SCRIPT),
+            "--not-before",
+            "1970-01-01T00:00:00+00:00",
+            "--gpu-index",
+            "1",
+            "--idle-seconds",
+            "1800",
+            "--wait-poll-seconds",
+            "60",
+            "--watchdog-seconds",
+            "0.25",
+            "--finalize-seconds",
+            "1800",
+            "--deadline-hours",
+            "36",
+            "--max-attempts",
+            "3",
+            "--state",
+            str(state),
+            "--log",
+            str(log),
+            "--lock",
+            str(lock),
+            "--gpu-lock-dir",
+            str(tmp_path),
+            "--gpu-complete-marker",
+            str(marker),
+            "--cwd",
+            str(cwd),
+            "--",
+            *command,
+        ],
+    )
+    assert MODULE.main() == 0
+    assert observed["attempt"] == 3
+    assert observed["environment"]["SWITCHYARD_RUN_ATTEMPT"] == "3"
+    assert observed["inherited_fds"]
+
+
 def test_runner_source_exports_idle_attestation_without_process_ids():
     source = SCRIPT.read_text()
     assert "SWITCHYARD_GUARD_IDLE_STARTED_AT" in source
@@ -104,6 +239,7 @@ def test_runner_source_exports_idle_attestation_without_process_ids():
     assert "SWITCHYARD_GUARD_MAX_IDLE_MEMORY_MIB" in source
     assert "SWITCHYARD_GUARD_GPU_COUNT" in source
     assert "SWITCHYARD_PUBLIC_DEVICE_ID" in source
+    assert "pass_fds=(lock_handle.fileno(), gpu_lock_handle.fileno())" in source
 
 
 def test_cpu_recovery_disables_gpu_visibility_and_preserves_attempt(tmp_path):

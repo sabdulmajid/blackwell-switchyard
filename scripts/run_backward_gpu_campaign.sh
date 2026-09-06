@@ -221,6 +221,7 @@ import json
 import math
 import os
 import sys
+import tempfile
 from datetime import datetime
 
 path = sys.argv[1]
@@ -273,11 +274,29 @@ if not matches:
     ):
         raise SystemExit("guard attempts must be appended in increasing order")
     document["attempts"].append(attempt)
-    temporary = f"{path}.tmp"
-    with open(temporary, "x", encoding="utf-8") as handle:
-        json.dump(document, handle, indent=2, sort_keys=True)
-        handle.write("\n")
-    os.replace(temporary, path)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=os.path.dirname(path) or ".",
+            prefix=f".{os.path.basename(path)}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = handle.name
+            json.dump(document, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
 
 attestation = attempt
 

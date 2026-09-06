@@ -29,6 +29,22 @@ from pathlib import Path
 CPU_RECOVERY_EXIT = 74
 MAX_IDLE_MEMORY_MIB = 64
 PUBLIC_DEVICE_ID_PATTERN = re.compile(r"device-[0-9a-f]{16}")
+GPU_UUID_PATTERN = re.compile(r"GPU-[A-Za-z0-9-]+")
+RECOVERY_CONTEXT_FIELDS = {
+    "target_uuid",
+    "attempt",
+    "not_before",
+    "idle_seconds",
+    "wait_poll_seconds",
+    "watchdog_seconds",
+    "finalize_seconds",
+    "idle_started_at",
+    "launch_at",
+    "idle_probe_count",
+    "max_idle_gpu_utilization_percent",
+    "max_idle_memory_mib",
+    "gpu_count",
+}
 
 
 def _parse_inventory(text: str) -> dict[int, str]:
@@ -157,6 +173,7 @@ class StateRecorder:
         self.campaign_identity = campaign_identity
         self.events: list[dict] = []
         self._attempts = 0
+        self.recovery_context: dict | None = None
         self.public_device_id = f"device-{secrets.token_hex(8)}"
         if path.exists():
             payload = json.loads(path.read_text())
@@ -183,6 +200,13 @@ class StateRecorder:
                 if isinstance(event.get("attempt"), int)
             ]
             self._attempts = max(recorded_attempts, *event_attempts, 0)
+            recovery_context = payload.get("recovery_context")
+            if recovery_context is not None:
+                self.recovery_context = _validate_recovery_context(recovery_context)
+                if self.recovery_context["attempt"] != self._attempts:
+                    raise ValueError(
+                        "runner state recovery context does not match its attempt count"
+                    )
 
     @property
     def last_phase(self) -> str | None:
@@ -191,6 +215,26 @@ class StateRecorder:
     @property
     def attempts(self) -> int:
         return self._attempts
+
+    def _save(self, current: dict | None) -> None:
+        payload = {
+            "campaign_identity": self.campaign_identity,
+            "public_device_id": self.public_device_id,
+            "attempts": self._attempts,
+            "current": current,
+            "events": self.events[-200:],
+            "recovery_context": self.recovery_context,
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, indent=2) + "\n")
+        os.replace(temporary, self.path)
+
+    def set_recovery_context(self, context: dict | None) -> None:
+        self.recovery_context = (
+            None if context is None else _validate_recovery_context(context)
+        )
+        self._save(self.events[-1] if self.events else None)
 
     def write(self, phase: str, **fields) -> None:
         event = {
@@ -202,18 +246,90 @@ class StateRecorder:
         if isinstance(attempt, int):
             self._attempts = max(self._attempts, attempt)
         self.events.append(event)
-        payload = {
-            "campaign_identity": self.campaign_identity,
-            "public_device_id": self.public_device_id,
-            "attempts": self._attempts,
-            "current": event,
-            "events": self.events[-200:],
-        }
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        temporary.write_text(json.dumps(payload, indent=2) + "\n")
-        os.replace(temporary, self.path)
+        self._save(event)
         print(json.dumps(event, sort_keys=True), flush=True)
+
+
+def _offset_timestamp(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return moment.tzinfo is not None
+
+
+def _positive_int(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int) and value > 0
+
+
+def _positive_number(value: object) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, int | float)
+        and value > 0
+    )
+
+
+def _validate_recovery_context(value: object) -> dict:
+    if not isinstance(value, dict) or set(value) != RECOVERY_CONTEXT_FIELDS:
+        raise ValueError("runner state has an invalid recovery context field set")
+    if (
+        not isinstance(value["target_uuid"], str)
+        or GPU_UUID_PATTERN.fullmatch(value["target_uuid"]) is None
+        or not _positive_int(value["attempt"])
+        or not _offset_timestamp(value["not_before"])
+        or not _positive_int(value["idle_seconds"])
+        or not _positive_int(value["wait_poll_seconds"])
+        or not _positive_number(value["watchdog_seconds"])
+        or not _positive_int(value["finalize_seconds"])
+        or not _offset_timestamp(value["idle_started_at"])
+        or not _offset_timestamp(value["launch_at"])
+        or not _positive_int(value["idle_probe_count"])
+        or value["max_idle_gpu_utilization_percent"] != 0
+        or isinstance(value["max_idle_memory_mib"], bool)
+        or not isinstance(value["max_idle_memory_mib"], int)
+        or not 0 <= value["max_idle_memory_mib"] <= MAX_IDLE_MEMORY_MIB
+        or not _positive_int(value["gpu_count"])
+    ):
+        raise ValueError("runner state has invalid recovery context values")
+    if value["attempt"] > 10**6:
+        raise ValueError("runner state has an invalid recovery attempt")
+    return value.copy()
+
+
+def _recovery_environment(
+    base_environment: dict[str, str], context: dict, public_device_id: str
+) -> dict[str, str]:
+    context = _validate_recovery_context(context)
+    environment = base_environment.copy()
+    environment.update(
+        {
+            "CUDA_VISIBLE_DEVICES": context["target_uuid"],
+            "SWITCHYARD_TARGET_GPU_UUID": context["target_uuid"],
+            "SWITCHYARD_PUBLIC_DEVICE_ID": public_device_id,
+            "SWITCHYARD_RUN_ATTEMPT": str(context["attempt"]),
+            "SWITCHYARD_GUARD_NOT_BEFORE": context["not_before"],
+            "SWITCHYARD_GUARD_IDLE_SECONDS": str(context["idle_seconds"]),
+            "SWITCHYARD_GUARD_WAIT_POLL_SECONDS": str(
+                context["wait_poll_seconds"]
+            ),
+            "SWITCHYARD_GUARD_WATCHDOG_SECONDS": str(context["watchdog_seconds"]),
+            "SWITCHYARD_GUARD_FINALIZE_SECONDS": str(context["finalize_seconds"]),
+            "SWITCHYARD_GUARD_IDLE_STARTED_AT": context["idle_started_at"],
+            "SWITCHYARD_GUARD_LAUNCH_AT": context["launch_at"],
+            "SWITCHYARD_GUARD_IDLE_PROBE_COUNT": str(context["idle_probe_count"]),
+            "SWITCHYARD_GUARD_MAX_IDLE_GPU_UTILIZATION_PERCENT": str(
+                context["max_idle_gpu_utilization_percent"]
+            ),
+            "SWITCHYARD_GUARD_MAX_IDLE_MEMORY_MIB": str(
+                context["max_idle_memory_mib"]
+            ),
+            "SWITCHYARD_GUARD_GPU_COUNT": str(context["gpu_count"]),
+        }
+    )
+    return environment
 
 
 def _campaign_identity(args: argparse.Namespace, command: list[str]) -> str:
@@ -275,6 +391,7 @@ def _run_cpu_recovery(
     deadline: float,
     finalize_seconds: int,
     retry_seconds: int,
+    inherited_fds: tuple[int, ...] = (),
 ) -> int:
     """Retry post-GPU publication without querying a GPU or spending an attempt."""
     cpu_environment = environment.copy()
@@ -292,6 +409,7 @@ def _run_cpu_recovery(
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
                 text=True,
+                pass_fds=inherited_fds,
             )
             try:
                 return_code = process.wait(
@@ -376,6 +494,32 @@ def main() -> int:
     if recorder.last_phase == "complete":
         return 0
     attempt = recorder.attempts
+    deadline = time.time() + args.deadline_hours * 3600
+    if (
+        args.gpu_complete_marker is not None
+        and args.gpu_complete_marker.exists()
+        and recorder.recovery_context is not None
+    ):
+        context = recorder.recovery_context
+        recovery_code = _run_cpu_recovery(
+            command,
+            cwd=args.cwd,
+            environment=_recovery_environment(
+                os.environ, context, recorder.public_device_id
+            ),
+            log_path=args.log,
+            recorder=recorder,
+            attempt=context["attempt"],
+            deadline=deadline,
+            finalize_seconds=args.finalize_seconds,
+            retry_seconds=args.wait_poll_seconds,
+            inherited_fds=(lock_handle.fileno(),),
+        )
+        if recovery_code != 75:
+            return recovery_code
+        args.gpu_complete_marker.unlink(missing_ok=True)
+        recorder.set_recovery_context(None)
+        recorder.write("cpu_recovery_requires_gpu", attempt=attempt)
     if attempt >= args.max_attempts:
         recorder.write("expired", attempts=attempt)
         return 75
@@ -385,8 +529,6 @@ def main() -> int:
             not_before=datetime.fromtimestamp(args.not_before).astimezone().isoformat(),
         )
         time.sleep(max(0.0, args.not_before - time.time()))
-    deadline = time.time() + args.deadline_hours * 3600
-
     inventory = _inventory()
     if args.gpu_index not in inventory:
         recorder.write("failed", reason=f"GPU index {args.gpu_index} does not exist")
@@ -478,30 +620,31 @@ def main() -> int:
         if idle_since_wall is None:
             recorder.write("failed", reason="idle wall-clock evidence is missing")
             return 2
-        environment = os.environ.copy()
-        environment["CUDA_VISIBLE_DEVICES"] = target_uuid
-        environment["SWITCHYARD_TARGET_GPU_UUID"] = target_uuid
-        environment["SWITCHYARD_PUBLIC_DEVICE_ID"] = recorder.public_device_id
-        environment["SWITCHYARD_RUN_ATTEMPT"] = str(attempt)
-        environment["SWITCHYARD_GUARD_NOT_BEFORE"] = datetime.fromtimestamp(
-            args.not_before
-        ).astimezone().isoformat()
-        environment["SWITCHYARD_GUARD_IDLE_SECONDS"] = str(args.idle_seconds)
-        environment["SWITCHYARD_GUARD_WAIT_POLL_SECONDS"] = str(args.wait_poll_seconds)
-        environment["SWITCHYARD_GUARD_WATCHDOG_SECONDS"] = str(args.watchdog_seconds)
-        environment["SWITCHYARD_GUARD_FINALIZE_SECONDS"] = str(args.finalize_seconds)
-        environment["SWITCHYARD_GUARD_IDLE_STARTED_AT"] = datetime.fromtimestamp(
-            idle_since_wall
-        ).astimezone().isoformat()
-        environment["SWITCHYARD_GUARD_LAUNCH_AT"] = datetime.fromtimestamp(
-            launch_time
-        ).astimezone().isoformat()
-        environment["SWITCHYARD_GUARD_IDLE_PROBE_COUNT"] = str(idle_probe_count)
-        environment["SWITCHYARD_GUARD_MAX_IDLE_GPU_UTILIZATION_PERCENT"] = "0"
-        environment["SWITCHYARD_GUARD_MAX_IDLE_MEMORY_MIB"] = str(max_idle_memory_mib)
-        environment["SWITCHYARD_GUARD_GPU_COUNT"] = str(len(inventory))
+        context = {
+            "target_uuid": target_uuid,
+            "attempt": attempt,
+            "not_before": datetime.fromtimestamp(args.not_before)
+            .astimezone()
+            .isoformat(),
+            "idle_seconds": args.idle_seconds,
+            "wait_poll_seconds": args.wait_poll_seconds,
+            "watchdog_seconds": args.watchdog_seconds,
+            "finalize_seconds": args.finalize_seconds,
+            "idle_started_at": datetime.fromtimestamp(idle_since_wall)
+            .astimezone()
+            .isoformat(),
+            "launch_at": datetime.fromtimestamp(launch_time).astimezone().isoformat(),
+            "idle_probe_count": idle_probe_count,
+            "max_idle_gpu_utilization_percent": 0,
+            "max_idle_memory_mib": max_idle_memory_mib,
+            "gpu_count": len(inventory),
+        }
+        environment = _recovery_environment(
+            os.environ, context, recorder.public_device_id
+        )
         if args.gpu_complete_marker is not None:
             args.gpu_complete_marker.unlink(missing_ok=True)
+        recorder.set_recovery_context(context)
         recorder.write("launching_workload", attempt=attempt, target_uuid=target_uuid)
         args.log.parent.mkdir(parents=True, exist_ok=True)
         with args.log.open("a") as log:
@@ -513,6 +656,7 @@ def main() -> int:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
                 text=True,
+                pass_fds=(lock_handle.fileno(), gpu_lock_handle.fileno()),
             )
             recorder.write(
                 "workload_started",
@@ -601,6 +745,7 @@ def main() -> int:
                 deadline=deadline,
                 finalize_seconds=args.finalize_seconds,
                 retry_seconds=args.wait_poll_seconds,
+                inherited_fds=(lock_handle.fileno(), gpu_lock_handle.fileno()),
             )
             if recovery_code == 75:
                 recorder.write("cpu_recovery_requires_gpu", attempt=attempt)
@@ -631,6 +776,7 @@ def main() -> int:
                 deadline=deadline,
                 finalize_seconds=args.finalize_seconds,
                 retry_seconds=args.wait_poll_seconds,
+                inherited_fds=(lock_handle.fileno(), gpu_lock_handle.fileno()),
             )
             if recovery_code == 75:
                 recorder.write("cpu_recovery_requires_gpu", attempt=attempt)
