@@ -581,6 +581,7 @@ __global__ __launch_bounds__(kRegisterThreads, 1) void register_backward_kernel(
   const int lane = threadIdx.x & (kWarpSize - 1);
   const int warp = threadIdx.x / kWarpSize;
   uint32_t held[kHeldPairs];
+  uint32_t held_grad[kFeaturePairsPerThread];
 
   for (int feature = threadIdx.x; feature < Width; feature += blockDim.x) {
     shared_dw[feature] = 0.0f;
@@ -588,6 +589,12 @@ __global__ __launch_bounds__(kRegisterThreads, 1) void register_backward_kernel(
   __syncthreads();
 
   for (int token = blockIdx.x; token < n_tokens; token += gridDim.x) {
+#pragma unroll
+    for (int slot = 0; slot < kFeaturePairsPerThread; ++slot) {
+      const int pair = threadIdx.x + slot * kRegisterThreads;
+      held_grad[slot] = reinterpret_cast<const uint32_t*>(
+          grad_out + static_cast<int64_t>(token) * Width + 2 * pair)[0];
+    }
 #pragma unroll
     for (int source = 0; source < NSources; ++source) {
       float grad_dot = 0.0f;
@@ -601,9 +608,7 @@ __global__ __launch_bounds__(kRegisterThreads, 1) void register_backward_kernel(
             reinterpret_cast<const uint32_t*>(values + value_offset)[0];
         held[source * kFeaturePairsPerThread + slot] = raw;
         const float2 value = PairOps<scalar_t>::unpack(raw);
-        const uint32_t grad_raw = reinterpret_cast<const uint32_t*>(
-            grad_out + static_cast<int64_t>(token) * Width + 2 * pair)[0];
-        const float2 output_grad = PairOps<scalar_t>::unpack(grad_raw);
+        const float2 output_grad = PairOps<scalar_t>::unpack(held_grad[slot]);
         grad_dot += value.x * output_grad.x + value.y * output_grad.y;
       }
       grad_dot = warp_sum(grad_dot);
@@ -648,9 +653,7 @@ __global__ __launch_bounds__(kRegisterThreads, 1) void register_backward_kernel(
       const int feature = 2 * pair;
       const float2 query_value = PairOps<scalar_t>::unpack(
           reinterpret_cast<const uint32_t*>(query + feature)[0]);
-      const float2 output_grad = PairOps<scalar_t>::unpack(
-          reinterpret_cast<const uint32_t*>(
-              grad_out + static_cast<int64_t>(token) * Width + feature)[0]);
+      const float2 output_grad = PairOps<scalar_t>::unpack(held_grad[slot]);
       float dw_x = 0.0f;
       float dw_y = 0.0f;
 #pragma unroll
@@ -686,6 +689,181 @@ __global__ __launch_bounds__(kRegisterThreads, 1) void register_backward_kernel(
   }
 }
 
+// Two 512-thread blocks shard D while retaining their source pairs in
+// registers. This extends the spill-free register design to the wide and
+// many-source gap shapes. Only per-source scalar reductions cross DSM.
+template <typename scalar_t, int NSources, int Width, int ClusterBlocks>
+__global__ __cluster_dims__(ClusterBlocks, 1, 1) __launch_bounds__(kRegisterThreads, 1)
+void register_cluster_backward_kernel(
+    const scalar_t* __restrict__ values,
+    const scalar_t* __restrict__ query,
+    const scalar_t* __restrict__ grad_out,
+    const float* __restrict__ saved_alpha,
+    const float* __restrict__ saved_rstd,
+    const float* __restrict__ saved_norm,
+    scalar_t* __restrict__ grad_values,
+    float* __restrict__ grad_query,
+    int n_tokens,
+    int64_t stride_source,
+    int64_t stride_token) {
+  constexpr int kLocalWidth = Width / ClusterBlocks;
+  static_assert(Width % ClusterBlocks == 0);
+  static_assert(kLocalWidth % 2 == 0);
+  constexpr int kPairsPerBlock = kLocalWidth / 2;
+  static_assert(kPairsPerBlock % kRegisterThreads == 0);
+  constexpr int kFeaturePairsPerThread = kPairsPerBlock / kRegisterThreads;
+  constexpr int kHeldPairs = NSources * kFeaturePairsPerThread;
+
+  extern __shared__ __align__(16) float shared[];
+  float* warp_partials = shared;
+  float* stats = warp_partials + NSources * kRegisterWarps;
+  float* grad_dots = stats;
+  float* alphas = grad_dots + NSources;
+  float* rstds = alphas + NSources;
+  float* norms = rstds + NSources;
+  float* dlogits = norms + NSources;
+  float* shared_dw = dlogits + NSources;
+  volatile uint32_t* shared_grad = reinterpret_cast<uint32_t*>(
+      shared_dw + kLocalWidth);
+
+  const auto cluster = cg::this_cluster();
+  const int rank = static_cast<int>(cluster.block_rank());
+  const int cluster_id = static_cast<int>(blockIdx.x) / ClusterBlocks;
+  const int cluster_count = static_cast<int>(gridDim.x) / ClusterBlocks;
+  const int feature_begin = rank * kLocalWidth;
+  const int lane = threadIdx.x & (kWarpSize - 1);
+  const int warp = threadIdx.x / kWarpSize;
+  uint32_t held[kHeldPairs];
+
+  for (int local_feature = threadIdx.x;
+       local_feature < kLocalWidth;
+       local_feature += blockDim.x) {
+    shared_dw[local_feature] = 0.0f;
+  }
+  __syncthreads();
+
+  for (int token = cluster_id; token < n_tokens; token += cluster_count) {
+#pragma unroll
+    for (int slot = 0; slot < kFeaturePairsPerThread; ++slot) {
+      const int local_pair = threadIdx.x + slot * kRegisterThreads;
+      const int feature = feature_begin + 2 * local_pair;
+      shared_grad[local_pair] = reinterpret_cast<const uint32_t*>(
+          grad_out + static_cast<int64_t>(token) * Width + feature)[0];
+    }
+
+#pragma unroll
+    for (int source = 0; source < NSources; ++source) {
+      float grad_dot = 0.0f;
+#pragma unroll
+      for (int slot = 0; slot < kFeaturePairsPerThread; ++slot) {
+        const int local_pair = threadIdx.x + slot * kRegisterThreads;
+        const int feature = feature_begin + 2 * local_pair;
+        const int64_t value_offset =
+            static_cast<int64_t>(source) * stride_source +
+            static_cast<int64_t>(token) * stride_token + feature;
+        const uint32_t raw = reinterpret_cast<const uint32_t*>(values + value_offset)[0];
+        held[source * kFeaturePairsPerThread + slot] = raw;
+        const float2 value = PairOps<scalar_t>::unpack(raw);
+        const float2 output_grad = PairOps<scalar_t>::unpack(shared_grad[local_pair]);
+        grad_dot += value.x * output_grad.x + value.y * output_grad.y;
+      }
+      grad_dot = warp_sum(grad_dot);
+      if (lane == 0) {
+        warp_partials[source * kRegisterWarps + warp] = grad_dot;
+      }
+    }
+    __syncthreads();
+
+    for (int source = warp; source < NSources; source += kRegisterWarps) {
+      float grad_dot = lane < kRegisterWarps
+          ? warp_partials[source * kRegisterWarps + lane]
+          : 0.0f;
+      grad_dot = warp_sum(grad_dot);
+      if (lane == 0) {
+        grad_dots[source] = grad_dot;
+      }
+    }
+    cluster.sync();
+
+    if (rank == 0 && warp == 0) {
+      const int source = lane;
+      float grad_dot = 0.0f;
+      float alpha = 0.0f;
+      if (source < NSources) {
+#pragma unroll
+        for (int owner = 0; owner < ClusterBlocks; ++owner) {
+          grad_dot += cluster.map_shared_rank(grad_dots, owner)[source];
+        }
+        const int64_t saved_offset =
+            static_cast<int64_t>(source) * n_tokens + token;
+        alpha = saved_alpha[saved_offset];
+      }
+      float centered_grad = warp_sum(alpha * grad_dot);
+      centered_grad = __shfl_sync(0xffffffffu, centered_grad, 0);
+      if (source < NSources) {
+        const int64_t saved_offset =
+            static_cast<int64_t>(source) * n_tokens + token;
+        const float rstd = saved_rstd[saved_offset];
+        const float norm = saved_norm[saved_offset];
+        const float dlogit = alpha * (grad_dot - centered_grad);
+#pragma unroll
+        for (int owner = 0; owner < ClusterBlocks; ++owner) {
+          float* owner_stats = cluster.map_shared_rank(stats, owner);
+          owner_stats[NSources + source] = alpha;
+          owner_stats[2 * NSources + source] = rstd;
+          owner_stats[3 * NSources + source] = norm;
+          owner_stats[4 * NSources + source] = dlogit;
+        }
+      }
+    }
+    cluster.sync();
+
+#pragma unroll
+    for (int slot = 0; slot < kFeaturePairsPerThread; ++slot) {
+      const int local_pair = threadIdx.x + slot * kRegisterThreads;
+      const int local_feature = 2 * local_pair;
+      const int feature = feature_begin + local_feature;
+      const float2 query_value = PairOps<scalar_t>::unpack(
+          reinterpret_cast<const uint32_t*>(query + feature)[0]);
+      const float2 output_grad = PairOps<scalar_t>::unpack(shared_grad[local_pair]);
+      float dw_x = 0.0f;
+      float dw_y = 0.0f;
+#pragma unroll
+      for (int source = 0; source < NSources; ++source) {
+        const float2 value = PairOps<scalar_t>::unpack(
+            held[source * kFeaturePairsPerThread + slot]);
+        const float alpha = alphas[source];
+        const float rstd = rstds[source];
+        const float norm = norms[source];
+        const float dlogit = dlogits[source];
+        const float dv_x = alpha * output_grad.x +
+            dlogit * rstd * query_value.x - dlogit * norm * value.x;
+        const float dv_y = alpha * output_grad.y +
+            dlogit * rstd * query_value.y - dlogit * norm * value.y;
+        const int64_t value_offset =
+            static_cast<int64_t>(source) * stride_source +
+            static_cast<int64_t>(token) * stride_token + feature;
+        reinterpret_cast<uint32_t*>(grad_values + value_offset)[0] =
+            PairOps<scalar_t>::pack(dv_x, dv_y);
+        dw_x += dlogit * rstd * value.x;
+        dw_y += dlogit * rstd * value.y;
+      }
+      shared_dw[local_feature] += dw_x;
+      shared_dw[local_feature + 1] += dw_y;
+    }
+    __syncthreads();
+  }
+
+#pragma unroll
+  for (int slot = 0; slot < kFeaturePairsPerThread; ++slot) {
+    const int local_feature =
+        2 * (threadIdx.x + slot * kRegisterThreads);
+    const int feature = feature_begin + local_feature;
+    atomicAdd(grad_query + feature, shared_dw[local_feature]);
+    atomicAdd(grad_query + feature + 1, shared_dw[local_feature + 1]);
+  }
+}
+
 template <typename scalar_t>
 size_t shared_bytes(int n_sources, int width, int cluster_blocks) {
   const int local_capacity = (n_sources + cluster_blocks - 1) / cluster_blocks;
@@ -712,6 +890,13 @@ constexpr size_t register_shared_bytes() {
   return sizeof(float) * (NSources * (kRegisterWarps + kStatFields) + Width);
 }
 
+template <typename scalar_t, int NSources, int Width, int ClusterBlocks>
+constexpr size_t register_cluster_shared_bytes() {
+  return sizeof(float) *
+      (NSources * (kRegisterWarps + kStatFields) + Width / ClusterBlocks) +
+      sizeof(scalar_t) * (Width / ClusterBlocks);
+}
+
 template <typename scalar_t, int NSources, int Width>
 std::vector<int64_t> register_occupancy(int device) {
   constexpr size_t dynamic_shared = register_shared_bytes<NSources, Width>();
@@ -736,6 +921,41 @@ std::vector<int64_t> register_occupancy(int device) {
   };
 }
 
+template <typename scalar_t, int NSources, int Width, int ClusterBlocks>
+std::vector<int64_t> register_cluster_occupancy(int device) {
+  constexpr size_t dynamic_shared =
+      register_cluster_shared_bytes<scalar_t, NSources, Width, ClusterBlocks>();
+  C10_CUDA_CHECK(cudaFuncSetAttribute(
+      register_cluster_backward_kernel<scalar_t, NSources, Width, ClusterBlocks>,
+      cudaFuncAttributeMaxDynamicSharedMemorySize,
+      static_cast<int>(dynamic_shared)));
+  cudaFuncAttributes attributes{};
+  C10_CUDA_CHECK(cudaFuncGetAttributes(
+      &attributes,
+      register_cluster_backward_kernel<scalar_t, NSources, Width, ClusterBlocks>));
+  int multiprocessors = 0;
+  C10_CUDA_CHECK(cudaDeviceGetAttribute(
+      &multiprocessors, cudaDevAttrMultiProcessorCount, device));
+  cudaLaunchConfig_t config{};
+  config.gridDim = dim3(multiprocessors * ClusterBlocks, 1, 1);
+  config.blockDim = dim3(kRegisterThreads, 1, 1);
+  config.dynamicSmemBytes = dynamic_shared;
+  config.stream = at::cuda::getCurrentCUDAStream(device);
+  int active_clusters = 0;
+  C10_CUDA_CHECK(cudaOccupancyMaxActiveClusters(
+      &active_clusters,
+      register_cluster_backward_kernel<scalar_t, NSources, Width, ClusterBlocks>,
+      &config));
+  return {
+      static_cast<int64_t>(active_clusters),
+      static_cast<int64_t>(dynamic_shared),
+      static_cast<int64_t>(attributes.sharedSizeBytes),
+      static_cast<int64_t>(multiprocessors),
+      kRegisterThreads,
+      ClusterBlocks,
+  };
+}
+
 template <typename scalar_t, int NSources, int Width>
 void launch_register_specialization(
     const torch::Tensor& values,
@@ -755,6 +975,42 @@ void launch_register_specialization(
       <<<persistent_blocks,
          kRegisterThreads,
          register_shared_bytes<NSources, Width>(),
+         stream>>>(
+          reinterpret_cast<const scalar_t*>(values.data_ptr()),
+          reinterpret_cast<const scalar_t*>(query.data_ptr()),
+          reinterpret_cast<const scalar_t*>(grad_out.data_ptr()),
+          saved_alpha.data_ptr<float>(),
+          saved_rstd.data_ptr<float>(),
+          saved_norm.data_ptr<float>(),
+          reinterpret_cast<scalar_t*>(grad_values.data_ptr()),
+          grad_query.data_ptr<float>(),
+          n_tokens,
+          values.stride(0),
+          values.stride(2));
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+template <typename scalar_t, int NSources, int Width, int ClusterBlocks>
+void launch_register_cluster_specialization(
+    const torch::Tensor& values,
+    const torch::Tensor& query,
+    const torch::Tensor& grad_out,
+    const torch::Tensor& saved_alpha,
+    const torch::Tensor& saved_rstd,
+    const torch::Tensor& saved_norm,
+    torch::Tensor& grad_values,
+    torch::Tensor& grad_query) {
+  const int n_tokens = static_cast<int>(values.size(1) * values.size(2));
+  const auto occupancy =
+      register_cluster_occupancy<scalar_t, NSources, Width, ClusterBlocks>(
+          values.get_device());
+  const int persistent_clusters = std::min(n_tokens, static_cast<int>(occupancy[0]));
+  TORCH_CHECK(persistent_clusters > 0, "register cluster has zero achievable occupancy");
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream(values.get_device());
+  register_cluster_backward_kernel<scalar_t, NSources, Width, ClusterBlocks>
+      <<<persistent_clusters * ClusterBlocks,
+         kRegisterThreads,
+         register_cluster_shared_bytes<scalar_t, NSources, Width, ClusterBlocks>(),
          stream>>>(
           reinterpret_cast<const scalar_t*>(values.data_ptr()),
           reinterpret_cast<const scalar_t*>(query.data_ptr()),
@@ -802,6 +1058,47 @@ std::vector<int64_t> dispatch_register_occupancy(const torch::Tensor& values) {
   TORCH_CHECK(
       false,
       "register backward supports only (N,D)=(9,4096)");
+}
+
+template <typename scalar_t>
+void dispatch_register_cluster_backward(
+    const torch::Tensor& values,
+    const torch::Tensor& query,
+    const torch::Tensor& grad_out,
+    const torch::Tensor& saved_alpha,
+    const torch::Tensor& saved_rstd,
+    const torch::Tensor& saved_norm,
+    torch::Tensor& grad_values,
+    torch::Tensor& grad_query) {
+  const int n_sources = static_cast<int>(values.size(0));
+  const int width = static_cast<int>(values.size(3));
+  if (n_sources == 9 && width == 8192) {
+    launch_register_cluster_specialization<scalar_t, 9, 8192, 4>(
+        values, query, grad_out, saved_alpha, saved_rstd, saved_norm, grad_values, grad_query);
+  } else if (n_sources == 32 && width == 2048) {
+    launch_register_cluster_specialization<scalar_t, 32, 2048, 2>(
+        values, query, grad_out, saved_alpha, saved_rstd, saved_norm, grad_values, grad_query);
+  } else {
+    TORCH_CHECK(
+        false,
+        "register cluster supports only (N,D)=(9,8192) or (32,2048)");
+  }
+}
+
+template <typename scalar_t>
+std::vector<int64_t> dispatch_register_cluster_occupancy(
+    const torch::Tensor& values) {
+  const int n_sources = static_cast<int>(values.size(0));
+  const int width = static_cast<int>(values.size(3));
+  if (n_sources == 9 && width == 8192) {
+    return register_cluster_occupancy<scalar_t, 9, 8192, 4>(values.get_device());
+  }
+  if (n_sources == 32 && width == 2048) {
+    return register_cluster_occupancy<scalar_t, 32, 2048, 2>(values.get_device());
+  }
+  TORCH_CHECK(
+      false,
+      "register cluster supports only (N,D)=(9,8192) or (32,2048)");
 }
 
 template <typename scalar_t>
@@ -1077,6 +1374,68 @@ std::vector<torch::Tensor> register_backward(
   return {grad_values, grad_query};
 }
 
+std::vector<torch::Tensor> register_cluster_backward(
+    torch::Tensor values,
+    torch::Tensor query,
+    torch::Tensor grad_out,
+    torch::Tensor saved_alpha,
+    torch::Tensor saved_rstd,
+    torch::Tensor saved_norm) {
+  TORCH_CHECK(values.is_cuda() && query.is_cuda() && grad_out.is_cuda(), "all tensors must be CUDA tensors");
+  const c10::cuda::CUDAGuard device_guard(values.device());
+  TORCH_CHECK(values.device() == query.device() && values.device() == grad_out.device(), "all tensors must share one device");
+  TORCH_CHECK(values.is_contiguous() && query.is_contiguous() && grad_out.is_contiguous(), "all tensors must be contiguous");
+  TORCH_CHECK(values.dim() == 4, "values must be [N, B, T, D]");
+  TORCH_CHECK(query.dim() == 1 && query.size(0) == values.size(3), "query must be [D]");
+  TORCH_CHECK(
+      grad_out.sizes() == torch::IntArrayRef({values.size(1), values.size(2), values.size(3)}),
+      "grad_out must be [B, T, D]");
+  TORCH_CHECK(values.scalar_type() == query.scalar_type() && values.scalar_type() == grad_out.scalar_type(), "all tensors must have one dtype");
+  TORCH_CHECK(
+      values.scalar_type() == torch::kFloat16 || values.scalar_type() == torch::kBFloat16,
+      "register cluster supports float16 and bfloat16");
+  TORCH_CHECK(values.size(0) > 0 && values.size(1) > 0 && values.size(2) > 0 && values.size(3) > 0, "all dimensions must be positive");
+  constexpr int64_t kIntMax = std::numeric_limits<int>::max();
+  TORCH_CHECK(
+      values.size(0) <= kIntMax && values.size(3) <= kIntMax &&
+          values.size(1) <= kIntMax / values.size(2),
+      "N, B*T, and D must fit in signed 32-bit kernel indices");
+  const int64_t n_tokens = values.size(1) * values.size(2);
+  const std::vector<int64_t> expected{values.size(0), n_tokens};
+  for (const auto& saved : {saved_alpha, saved_rstd, saved_norm}) {
+    TORCH_CHECK(saved.is_cuda() && saved.device() == values.device(), "saved state must use the values device");
+    TORCH_CHECK(saved.scalar_type() == torch::kFloat32, "saved state must be fp32");
+    TORCH_CHECK(saved.is_contiguous() && saved.sizes() == expected, "saved state must be contiguous [N, B*T]");
+  }
+  int compute_major = 0;
+  int compute_minor = 0;
+  int cluster_launch = 0;
+  C10_CUDA_CHECK(cudaDeviceGetAttribute(
+      &compute_major, cudaDevAttrComputeCapabilityMajor, values.get_device()));
+  C10_CUDA_CHECK(cudaDeviceGetAttribute(
+      &compute_minor, cudaDevAttrComputeCapabilityMinor, values.get_device()));
+  C10_CUDA_CHECK(cudaDeviceGetAttribute(
+      &cluster_launch, cudaDevAttrClusterLaunch, values.get_device()));
+  TORCH_CHECK(
+      compute_major == 12 && compute_minor == 0,
+      "register cluster was compiled for sm_120 but received sm_",
+      compute_major,
+      compute_minor);
+  TORCH_CHECK(cluster_launch, "device does not support thread-block clusters");
+
+  auto grad_values = torch::empty_like(values);
+  auto grad_query = torch::zeros(
+      {values.size(3)}, values.options().dtype(torch::kFloat32));
+  if (values.scalar_type() == torch::kFloat16) {
+    dispatch_register_cluster_backward<__half>(
+        values, query, grad_out, saved_alpha, saved_rstd, saved_norm, grad_values, grad_query);
+  } else {
+    dispatch_register_cluster_backward<__nv_bfloat16>(
+        values, query, grad_out, saved_alpha, saved_rstd, saved_norm, grad_values, grad_query);
+  }
+  return {grad_values, grad_query};
+}
+
 template <typename scalar_t, int ClusterBlocks>
 std::vector<int64_t> cluster_launch_info_t(const torch::Tensor& values) {
   const int n_sources = static_cast<int>(values.size(0));
@@ -1180,6 +1539,33 @@ std::vector<int64_t> register_launch_info(torch::Tensor values) {
   return dispatch_register_occupancy<__nv_bfloat16>(values);
 }
 
+std::vector<int64_t> register_cluster_launch_info(torch::Tensor values) {
+  TORCH_CHECK(values.is_cuda() && values.dim() == 4, "values must be a CUDA [N, B, T, D] tensor");
+  const c10::cuda::CUDAGuard device_guard(values.device());
+  TORCH_CHECK(values.is_contiguous(), "values must be contiguous");
+  TORCH_CHECK(values.size(1) > 0 && values.size(2) > 0, "B and T must be positive");
+  int compute_major = 0;
+  int compute_minor = 0;
+  int cluster_launch = 0;
+  C10_CUDA_CHECK(cudaDeviceGetAttribute(
+      &compute_major, cudaDevAttrComputeCapabilityMajor, values.get_device()));
+  C10_CUDA_CHECK(cudaDeviceGetAttribute(
+      &compute_minor, cudaDevAttrComputeCapabilityMinor, values.get_device()));
+  C10_CUDA_CHECK(cudaDeviceGetAttribute(
+      &cluster_launch, cudaDevAttrClusterLaunch, values.get_device()));
+  TORCH_CHECK(
+      compute_major == 12 && compute_minor == 0,
+      "register cluster launch information requires sm_120, received sm_",
+      compute_major,
+      compute_minor);
+  TORCH_CHECK(cluster_launch, "device does not support thread-block clusters");
+  if (values.scalar_type() == torch::kFloat16) {
+    return dispatch_register_cluster_occupancy<__half>(values);
+  }
+  TORCH_CHECK(values.scalar_type() == torch::kBFloat16, "register cluster supports float16 and bfloat16");
+  return dispatch_register_cluster_occupancy<__nv_bfloat16>(values);
+}
+
 }  // namespace
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
@@ -1215,5 +1601,20 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
       "register_launch_info",
       &register_launch_info,
       "Block AttnRes register-resident launch information",
+      pybind11::arg("values"));
+  module.def(
+      "register_cluster_backward",
+      &register_cluster_backward,
+      "Block AttnRes register-cluster backward",
+      pybind11::arg("values"),
+      pybind11::arg("query"),
+      pybind11::arg("grad_out"),
+      pybind11::arg("saved_alpha"),
+      pybind11::arg("saved_rstd"),
+      pybind11::arg("saved_norm"));
+  module.def(
+      "register_cluster_launch_info",
+      &register_cluster_launch_info,
+      "Block AttnRes register-cluster launch information",
       pybind11::arg("values"));
 }
