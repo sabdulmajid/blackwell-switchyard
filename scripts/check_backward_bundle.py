@@ -142,6 +142,11 @@ MAX_WAIT_POLL_SECONDS = 300
 MAX_WATCHDOG_SECONDS = 0.25
 MIN_FINALIZE_SECONDS = 1800
 MAX_CAMPAIGN_ATTEMPTS = 3
+PRIVATE_METADATA_PATTERN = re.compile(
+    r"co-authored-by|claude|anthropic|wizchem|chatgpt|openai\.com|"
+    r"session[-_/][A-Za-z0-9]|file://|/(?:home|tmp|pub[0-9]+)/|GPU-[A-Za-z0-9-]+",
+    re.IGNORECASE,
+)
 
 
 def _suffixes() -> list[str]:
@@ -356,7 +361,7 @@ def validate_bundle(
     expected_branch: str,
     result_branch: str,
     expected_origin: str,
-    expected_gpu_uuid: str,
+    expected_device_id: str,
     expected_source_sha256: str | None = None,
 ) -> list[str]:
     problems: list[str] = []
@@ -382,6 +387,9 @@ def validate_bundle(
             problems.append(f"cannot read {path.name}: {type(exc).__name__}")
     if len(payloads) != len(paths):
         return problems
+    for suffix, contents in raw.items():
+        if PRIVATE_METADATA_PATTERN.search(contents.decode("utf-8")):
+            problems.append(f"{suffix} contains private host or task metadata")
 
     problems.extend(
         _compile_problems(
@@ -406,7 +414,7 @@ def validate_bundle(
             expected_commit=expected_commit,
             expected_branch=expected_branch,
             expected_tree=expected_tree,
-            expected_gpu_uuid=expected_gpu_uuid,
+            expected_device_id=expected_device_id,
         )
         problems.extend(f"{suffix}: {problem}" for problem in phase_problems)
     if payloads["full_bfloat16"].get("run_id") != campaign_id:
@@ -448,24 +456,26 @@ def validate_bundle(
         "benchmark_branch": expected_branch,
         "result_branch": result_branch,
         "origin": expected_origin,
-        "gpu_uuid": expected_gpu_uuid,
+        "device_id": expected_device_id,
         "liger_commit": "777799588a89d74c489ed995e3bf006427738e85",
     }
     for field, expected in exact_manifest.items():
         if manifest.get(field) != expected:
             problems.append(f"manifest {field} differs from the campaign contract")
     if (
-        not isinstance(manifest.get("attempt"), int)
+        isinstance(manifest.get("attempt"), bool)
+        or not isinstance(manifest.get("attempt"), int)
         or not 1 <= manifest["attempt"] <= MAX_CAMPAIGN_ATTEMPTS
     ):
         problems.append(
             f"manifest attempt must be between 1 and {MAX_CAMPAIGN_ATTEMPTS}"
         )
-    guard = manifest.get("guard", {})
-    expected_manifest_fields = set(exact_manifest) | {"attempt", "guard"}
+    guards = manifest.get("guard_attestations")
+    expected_manifest_fields = set(exact_manifest) | {"attempt", "guard_attestations"}
     if set(manifest) != expected_manifest_fields:
         problems.append("manifest field set is not exact")
     guard_fields = {
+        "attempt",
         "not_before",
         "idle_started_at",
         "launch_at",
@@ -475,11 +485,16 @@ def validate_bundle(
         "watchdog_seconds",
         "finalize_seconds",
         "gpu_count",
-        "target_gpu_uuid",
+        "device_id",
     }
-    if not isinstance(guard, dict) or set(guard) != guard_fields:
-        problems.append("manifest guard field set is not exact")
-    else:
+    by_attempt: dict[int, tuple[dict, dict[str, datetime]]] = {}
+    if not isinstance(guards, list) or not guards:
+        problems.append("manifest guard attestations must be a nonempty list")
+        guards = []
+    for index, guard in enumerate(guards):
+        if not isinstance(guard, dict) or set(guard) != guard_fields:
+            problems.append(f"manifest guard {index} field set is not exact")
+            continue
         moments = {}
         try:
             for field in ("not_before", "idle_started_at", "launch_at"):
@@ -487,7 +502,7 @@ def validate_bundle(
                 if moments[field].tzinfo is None:
                     raise ValueError("missing UTC offset")
         except (TypeError, ValueError):
-            problems.append("manifest guard timestamps must include UTC offsets")
+            problems.append(f"manifest guard {index} timestamps must include UTC offsets")
         numeric_guard_fields = {
             "idle_seconds",
             "idle_probe_count",
@@ -500,65 +515,102 @@ def validate_bundle(
         for field in numeric_guard_fields:
             value = guard[field]
             if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
-                problems.append(f"manifest guard {field} must be positive")
+                problems.append(f"manifest guard {index} {field} must be positive")
                 numeric_guard_valid = False
-        if guard["target_gpu_uuid"] != expected_gpu_uuid:
-            problems.append("manifest guard target GPU differs from the campaign GPU")
+        attempt = guard.get("attempt")
+        if (
+            isinstance(attempt, bool)
+            or not isinstance(attempt, int)
+            or not 1 <= attempt <= MAX_CAMPAIGN_ATTEMPTS
+            or attempt in by_attempt
+        ):
+            problems.append(f"manifest guard {index} has an invalid or duplicate attempt")
+        elif len(moments) == 3:
+            by_attempt[attempt] = (guard, moments)
+        if guard["device_id"] != expected_device_id:
+            problems.append(f"manifest guard {index} has the wrong device ID")
         if isinstance(guard["idle_seconds"], int | float) and (
             guard["idle_seconds"] < MIN_IDLE_SECONDS
         ):
             problems.append(
-                f"manifest guard idle_seconds must be at least {MIN_IDLE_SECONDS}"
+                f"manifest guard {index} idle_seconds must be at least {MIN_IDLE_SECONDS}"
             )
         wait_poll = guard["wait_poll_seconds"]
         if isinstance(wait_poll, int | float) and not (
             MIN_WAIT_POLL_SECONDS <= wait_poll <= MAX_WAIT_POLL_SECONDS
         ):
             problems.append(
-                "manifest guard wait_poll_seconds must be between "
+                f"manifest guard {index} wait_poll_seconds must be between "
                 f"{MIN_WAIT_POLL_SECONDS} and {MAX_WAIT_POLL_SECONDS}"
             )
         watchdog = guard["watchdog_seconds"]
         if isinstance(watchdog, int | float) and watchdog > MAX_WATCHDOG_SECONDS:
             problems.append(
-                "manifest guard watchdog_seconds must be no more than "
+                f"manifest guard {index} watchdog_seconds must be no more than "
                 f"{MAX_WATCHDOG_SECONDS}"
             )
         if isinstance(guard["finalize_seconds"], int | float) and (
             guard["finalize_seconds"] < MIN_FINALIZE_SECONDS
         ):
             problems.append(
-                f"manifest guard finalize_seconds must be at least {MIN_FINALIZE_SECONDS}"
+                f"manifest guard {index} finalize_seconds must be at least {MIN_FINALIZE_SECONDS}"
             )
         if len(moments) == 3 and numeric_guard_valid:
             observed_idle = (
                 moments["launch_at"] - moments["idle_started_at"]
             ).total_seconds()
             if moments["launch_at"] < moments["not_before"]:
-                problems.append("manifest guard launch precedes not_before")
+                problems.append(f"manifest guard {index} launch precedes not_before")
             if observed_idle < guard["idle_seconds"]:
-                problems.append("manifest guard does not attest the required idle interval")
+                problems.append(
+                    f"manifest guard {index} does not attest the required idle interval"
+                )
             minimum_probes = max(
                 2,
                 math.floor(guard["idle_seconds"] / guard["wait_poll_seconds"]),
             )
             if guard["idle_probe_count"] < minimum_probes:
-                problems.append("manifest guard has too few idle probes")
-            phase_times = []
-            for suffix in phase_specs:
-                try:
-                    phase_times.append(
-                        datetime.strptime(
-                            payloads[suffix]["run_id"], "%Y%m%dT%H%M%SZ"
-                        ).replace(tzinfo=timezone.utc)
-                    )
-                except (KeyError, TypeError, ValueError):
-                    pass
-            if len(phase_times) == len(phase_specs) and any(
-                (phase_time - moments["launch_at"]).total_seconds() < -1.0
-                for phase_time in phase_times
-            ):
-                problems.append("a benchmark phase predates the guarded launch")
+                problems.append(f"manifest guard {index} has too few idle probes")
+
+    attempt_order = [guard.get("attempt") for guard in guards if isinstance(guard, dict)]
+    valid_attempt_order = [
+        value
+        for value in attempt_order
+        if isinstance(value, int) and not isinstance(value, bool)
+    ]
+    if (
+        len(valid_attempt_order) != len(guards)
+        or valid_attempt_order != sorted(set(valid_attempt_order))
+    ):
+        problems.append("manifest guards are not in strictly increasing attempt order")
+    if isinstance(manifest.get("attempt"), int) and (
+        not by_attempt or max(by_attempt) != manifest["attempt"]
+    ):
+        problems.append("manifest final attempt has no matching guard attestation")
+
+    ordered_attempts = sorted(by_attempt)
+    for suffix in phase_specs:
+        report = payloads[suffix]
+        attempt = report.get("campaign_attempt")
+        if attempt not in by_attempt:
+            problems.append(f"{suffix} has no guard for its generating attempt")
+            continue
+        try:
+            phase_time = datetime.strptime(report["run_id"], "%Y%m%dT%H%M%SZ").replace(
+                tzinfo=timezone.utc
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        _guard, moments = by_attempt[attempt]
+        if (phase_time - moments["launch_at"]).total_seconds() < -1.0:
+            problems.append(f"{suffix} predates its guarded launch")
+        later_launches = [
+            by_attempt[value][1]["launch_at"]
+            for value in ordered_attempts
+            if value > attempt
+        ]
+        if later_launches and phase_time >= min(later_launches):
+            problems.append(f"{suffix} is not bound to its recorded attempt")
     return problems
 
 
@@ -593,7 +645,7 @@ def main() -> int:
     parser.add_argument("--expected-branch", required=True)
     parser.add_argument("--result-branch", required=True)
     parser.add_argument("--expected-origin", required=True)
-    parser.add_argument("--expected-gpu-uuid", required=True)
+    parser.add_argument("--expected-device-id", required=True)
     args = parser.parse_args()
     try:
         source = subprocess.run(
@@ -614,7 +666,7 @@ def main() -> int:
             expected_branch=args.expected_branch,
             result_branch=args.result_branch,
             expected_origin=args.expected_origin,
-            expected_gpu_uuid=args.expected_gpu_uuid,
+            expected_device_id=args.expected_device_id,
             expected_source_sha256=hashlib.sha256(source).hexdigest(),
         )
     except (KeyError, TypeError, ValueError, subprocess.SubprocessError) as exc:

@@ -575,7 +575,7 @@ def evaluate_reports(
     anchor_speedups: list[float] = []
     anchor_current_training_speedups: list[float] = []
     anchor_liger_training_speedups: list[float] = []
-    gpu_uuids: set[str] = set()
+    device_ids: set[str] = set()
 
     dtype_values = [report.get("dtype") for report in reports]
     if len(dtype_values) != len(set(dtype_values)):
@@ -643,17 +643,17 @@ def evaluate_reports(
             or preflight.get("busy_override")
         ):
             problems.append(f"{prefix}: benchmark did not start with exclusive access")
-        if not preflight.get("resolved_uuid"):
-            problems.append(f"{prefix}: physical GPU UUID was not recorded")
+        if not preflight.get("device_id"):
+            problems.append(f"{prefix}: campaign device ID was not recorded")
         else:
-            gpu_uuids.add(preflight["resolved_uuid"])
+            device_ids.add(preflight["device_id"])
         postflight = report.get("gpu_postflight", {})
-        if postflight.get("resolved_uuid") != preflight.get("resolved_uuid"):
+        if postflight.get("device_id") != preflight.get("device_id"):
             problems.append(f"{prefix}: GPU postflight identity is missing or changed")
         if postflight.get("foreign_compute_process_count_at_end") != 0:
             problems.append(f"{prefix}: another compute process appeared during the run")
         monitor = report.get("gpu_process_monitor", {})
-        if monitor.get("device_uuid") != preflight.get("resolved_uuid"):
+        if monitor.get("device_id") != preflight.get("device_id"):
             problems.append(f"{prefix}: sampled GPU process monitor is missing")
         if monitor.get("collision_detected") is not False or monitor.get("collision_events"):
             problems.append(f"{prefix}: sampled monitor observed a competing process")
@@ -1061,8 +1061,8 @@ def evaluate_reports(
                             f"95% lower bound={liger_lower:.3f}"
                         )
 
-    if len(gpu_uuids) > 1:
-        problems.append("all dtype runs must use the same physical GPU UUID")
+    if len(device_ids) > 1:
+        problems.append("all dtype runs must use the same campaign device ID")
     expected_anchor_count = sum(
         plan_supports(plan, *shape, dtype)[0]
         for dtype in required_dtypes

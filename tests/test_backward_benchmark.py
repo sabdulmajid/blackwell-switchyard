@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 import torch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "bench" / "bench_backward.py"
@@ -61,3 +64,38 @@ def test_training_memory_contract_includes_forward_output():
     expected_output = (values.numel() + query.numel() + grad.numel()) * 2
     assert output == expected_output
     assert resident == 2 * expected_output
+
+
+def test_gpu_preflight_keeps_physical_uuid_private(monkeypatch):
+    monkeypatch.setenv("SWITCHYARD_TARGET_GPU_UUID", "GPU-private-uuid")
+    monkeypatch.setenv("SWITCHYARD_PUBLIC_DEVICE_ID", "device-0123456789abcdef")
+    monkeypatch.setattr(
+        MODULE.torch.cuda,
+        "get_device_properties",
+        lambda _device: SimpleNamespace(uuid="GPU-private-uuid"),
+    )
+    monkeypatch.setattr(MODULE, "_compute_process_counts", lambda _uuid: (1, 0))
+    monkeypatch.setattr(
+        MODULE.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout="GPU model, driver, state"),
+    )
+
+    report, physical_uuid = MODULE._gpu_preflight(
+        torch.device("cuda:0"), allow_busy=False
+    )
+
+    assert physical_uuid == "GPU-private-uuid"
+    assert report["device_id"] == "device-0123456789abcdef"
+    assert "GPU-private-uuid" not in json.dumps(report)
+
+
+def test_gpu_preflight_rejects_a_different_guarded_device(monkeypatch):
+    monkeypatch.setenv("SWITCHYARD_TARGET_GPU_UUID", "GPU-expected")
+    monkeypatch.setattr(
+        MODULE.torch.cuda,
+        "get_device_properties",
+        lambda _device: SimpleNamespace(uuid="GPU-other"),
+    )
+    with pytest.raises(SystemExit, match="guarded physical device"):
+        MODULE._gpu_preflight(torch.device("cuda:0"), allow_busy=False)

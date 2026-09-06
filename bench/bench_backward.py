@@ -173,37 +173,45 @@ def _compute_process_counts(device_uuid: str) -> tuple[int, int]:
     return own_contexts, len(rows) - own_contexts
 
 
-def _gpu_preflight(device: torch.device, *, allow_busy: bool) -> dict:
+def _gpu_preflight(device: torch.device, *, allow_busy: bool) -> tuple[dict, str]:
     """Record device state and refuse to measure beside another process."""
     properties = torch.cuda.get_device_properties(device)
-    device_uuid = properties.uuid
+    physical_uuid = properties.uuid
+    expected_uuid = os.environ.get("SWITCHYARD_TARGET_GPU_UUID")
+    if expected_uuid is not None and physical_uuid != expected_uuid:
+        raise SystemExit("selected GPU does not match the guarded physical device")
+    public_device_id = os.environ.get(
+        "SWITCHYARD_PUBLIC_DEVICE_ID", f"local-cuda-{device.index or 0}"
+    )
     query = [
         "nvidia-smi",
-        f"--id={device_uuid}",
-        "--query-gpu=uuid,name,driver_version,temperature.gpu,power.draw,power.limit,clocks.sm,clocks.mem",
+        f"--id={physical_uuid}",
+        "--query-gpu=name,driver_version,temperature.gpu,power.draw,power.limit,clocks.sm,clocks.mem",
         "--format=csv,noheader,nounits",
     ]
     state = subprocess.run(query, check=True, capture_output=True, text=True).stdout.strip()
-    own_contexts, foreign_processes = _compute_process_counts(device_uuid)
+    own_contexts, foreign_processes = _compute_process_counts(physical_uuid)
     if foreign_processes and not allow_busy:
         raise SystemExit("selected GPU has another active compute process")
-    return {
-        "logical_device": str(device),
-        "resolved_uuid": device_uuid,
-        "resolved_pci_bus_id": properties.pci_bus_id,
-        "device_query": state,
-        "benchmark_process_context_count": own_contexts,
-        "foreign_compute_process_count_at_start": foreign_processes,
-        "exclusive_access_required": True,
-        "busy_override": allow_busy,
-    }
+    return (
+        {
+            "logical_device": str(device),
+            "device_id": public_device_id,
+            "device_query": state,
+            "benchmark_process_context_count": own_contexts,
+            "foreign_compute_process_count_at_start": foreign_processes,
+            "exclusive_access_required": True,
+            "busy_override": allow_busy,
+        },
+        physical_uuid,
+    )
 
 
-def _gpu_postflight(preflight: dict) -> dict:
+def _gpu_postflight(physical_uuid: str, public_device_id: str) -> dict:
     """Confirm that no competing process appeared during the benchmark."""
-    own_contexts, foreign_processes = _compute_process_counts(preflight["resolved_uuid"])
+    own_contexts, foreign_processes = _compute_process_counts(physical_uuid)
     return {
-        "resolved_uuid": preflight["resolved_uuid"],
+        "device_id": public_device_id,
         "benchmark_process_context_count": own_contexts,
         "foreign_compute_process_count_at_end": foreign_processes,
     }
@@ -624,9 +632,11 @@ def main() -> None:
     comparators = {"liger": _liger_provenance()} if "liger" in selected else {}
     device = torch.device(f"cuda:{args.device}")
     torch.cuda.set_device(device)
-    preflight = _gpu_preflight(device, allow_busy=args.allow_busy_gpu)
+    preflight, physical_uuid = _gpu_preflight(device, allow_busy=args.allow_busy_gpu)
     process_monitor = GPUProcessMonitor(
-        preflight["resolved_uuid"], abort_on_collision=True
+        physical_uuid,
+        report_device_id=preflight["device_id"],
+        abort_on_collision=True,
     )
     process_monitor.start()
     dtype = getattr(torch, args.dtype)
@@ -640,6 +650,7 @@ def main() -> None:
     report = {
         "schema_version": 2,
         "run_id": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
+        "campaign_attempt": int(os.environ.get("SWITCHYARD_RUN_ATTEMPT", "0")),
         "experiment": "backward architecture selection",
         "run_status": "running",
         "candidate_reachable_from_production": False,
@@ -860,7 +871,9 @@ def main() -> None:
         report["correctness_only"].append(case)
         _write_checkpoint(report, out)
 
-    report["gpu_postflight"] = _gpu_postflight(preflight)
+    report["gpu_postflight"] = _gpu_postflight(
+        physical_uuid, preflight["device_id"]
+    )
     report["gpu_process_monitor"] = process_monitor.stop()
     report["run_status"] = "complete"
     _write_checkpoint(report, out)

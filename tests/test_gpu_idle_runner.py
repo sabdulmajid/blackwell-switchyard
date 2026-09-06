@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -60,6 +62,8 @@ def test_state_recorder_resumes_attempt_count_without_process_data(tmp_path):
     resumed = MODULE.StateRecorder(state, "campaign-a")
     assert resumed.attempts == 2
     assert resumed.last_phase == "launching_workload"
+    assert resumed.public_device_id == recorder.public_device_id
+    assert MODULE.PUBLIC_DEVICE_ID_PATTERN.fullmatch(resumed.public_device_id)
     assert "pid" not in state.read_text().lower()
     with pytest.raises(ValueError, match="different campaign"):
         MODULE.StateRecorder(state, "campaign-b")
@@ -80,3 +84,22 @@ def test_runner_source_exports_idle_attestation_without_process_ids():
     assert "SWITCHYARD_GUARD_LAUNCH_AT" in source
     assert "SWITCHYARD_GUARD_IDLE_PROBE_COUNT" in source
     assert "SWITCHYARD_GUARD_GPU_COUNT" in source
+    assert "SWITCHYARD_PUBLIC_DEVICE_ID" in source
+
+
+def test_cpu_recovery_disables_gpu_visibility_and_preserves_attempt(tmp_path):
+    recorder = MODULE.StateRecorder(tmp_path / "state.json", "campaign-a")
+    result = MODULE._run_cpu_recovery(
+        ["/bin/sh", "-c", 'test -z "$CUDA_VISIBLE_DEVICES"'],
+        cwd=tmp_path,
+        environment={**os.environ, "CUDA_VISIBLE_DEVICES": "GPU-private"},
+        log_path=tmp_path / "runner.log",
+        recorder=recorder,
+        attempt=3,
+        deadline=time.time() + 10,
+        finalize_seconds=5,
+        retry_seconds=1,
+    )
+    assert result == 0
+    assert recorder.attempts == 3
+    assert recorder.last_phase == "complete"

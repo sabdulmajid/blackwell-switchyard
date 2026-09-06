@@ -9,6 +9,7 @@ cd "$repo_dir"
 : "${SWITCHYARD_CAMPAIGN_BRANCH:?set SWITCHYARD_CAMPAIGN_BRANCH}"
 : "${SWITCHYARD_CAMPAIGN_DIR:?set SWITCHYARD_CAMPAIGN_DIR outside the repository}"
 : "${SWITCHYARD_TARGET_GPU_UUID:?the idle runner must select one GPU UUID}"
+: "${SWITCHYARD_PUBLIC_DEVICE_ID:?the idle runner must select one public device ID}"
 : "${SWITCHYARD_RUN_ATTEMPT:?the idle runner must number each attempt}"
 : "${SWITCHYARD_GUARD_NOT_BEFORE:?the idle runner must attest not-before time}"
 : "${SWITCHYARD_GUARD_IDLE_STARTED_AT:?the idle runner must attest idle start}"
@@ -19,8 +20,9 @@ cd "$repo_dir"
 : "${SWITCHYARD_TOOLCHAIN_DIR:?set SWITCHYARD_TOOLCHAIN_DIR to the local Python headers}"
 
 result_branch=${SWITCHYARD_RESULT_BRANCH:-codex/backward-architecture}
+cpu_recovery=${SWITCHYARD_CPU_RECOVERY:-0}
 expected_origin=https://github.com/sabdulmajid/blackwell-switchyard.git
-forbidden_metadata='co-authored-by|claude|anthropic|wizchem|chatgpt|openai\.com|session[-_/][[:alnum:]]|file://|/(home|tmp|pub[0-9]+)/'
+forbidden_metadata='co-authored-by|claude|anthropic|wizchem|chatgpt|openai\.com|session[-_/][[:alnum:]]|file://|/(home|tmp|pub[0-9]+)/|GPU-[[:alnum:]-]+'
 all_impls=current,serial_recompute_atomic_t4,serial_saved_partials_t16,cuda_shared,cuda_cluster,cuda_cluster4,cuda_register,cuda_register_cluster,cuda_register_cluster_full,liger
 portable_impls=current,serial_recompute_atomic_t4,serial_saved_partials_t16,liger
 candidates=(
@@ -36,6 +38,8 @@ candidates=(
 if [[ ! "$SWITCHYARD_EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] ||
    [[ ! "$SWITCHYARD_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] ||
    [[ ! "$SWITCHYARD_TARGET_GPU_UUID" =~ ^GPU-[A-Za-z0-9-]+$ ]] ||
+   [[ ! "$SWITCHYARD_PUBLIC_DEVICE_ID" =~ ^device-[0-9a-f]{16}$ ]] ||
+   [[ ! "$cpu_recovery" =~ ^[01]$ ]] ||
    ! git check-ref-format --branch "$SWITCHYARD_CAMPAIGN_BRANCH" >/dev/null ||
    ! git check-ref-format --branch "$result_branch" >/dev/null; then
   echo "campaign identity or Git reference is malformed" >&2
@@ -129,7 +133,7 @@ check_result_bundle() {
     --expected-branch "$SWITCHYARD_CAMPAIGN_BRANCH" \
     --result-branch "$result_branch" \
     --expected-origin "$expected_origin" \
-    --expected-gpu-uuid "$SWITCHYARD_TARGET_GPU_UUID"
+    --expected-device-id "$SWITCHYARD_PUBLIC_DEVICE_ID"
 }
 if [[ "$git_dir" == "$git_common_dir" || "$git_index" != "$git_dir/index" ]]; then
   echo "campaign must run from a dedicated linked worktree and index" >&2
@@ -154,7 +158,8 @@ if ! verify_origin; then
 fi
 if ! remote_head=$(read_result_branch); then
   echo "cannot read the result branch" >&2
-  exit 75
+  [[ "$git_head" == "$SWITCHYARD_EXPECTED_HEAD" && "$cpu_recovery" == 0 ]] && exit 75
+  exit 74
 fi
 
 # Recover a fully audited local result commit if a prior push or post-push
@@ -187,11 +192,11 @@ if [[ "$git_head" != "$SWITCHYARD_EXPECTED_HEAD" ]]; then
   if [[ "$remote_head" != "$SWITCHYARD_EXPECTED_HEAD" ]] ||
      ! push_result_commit "$git_head"; then
     echo "recoverable result commit still needs publication" >&2
-    exit 75
+    exit 74
   fi
-  remote_head=$(read_result_branch) || exit 75
+  remote_head=$(read_result_branch) || exit 74
   [[ "$remote_head" == "$git_head" ]] && exit 0
-  exit 75
+  exit 74
 fi
 if [[ "$remote_head" != "$SWITCHYARD_EXPECTED_HEAD" ]]; then
   echo "result branch changed while the campaign waited" >&2
@@ -217,7 +222,8 @@ import sys
 from datetime import datetime
 
 path = sys.argv[1]
-payload = {
+attempt = {
+    "attempt": int(os.environ["SWITCHYARD_RUN_ATTEMPT"]),
     "not_before": os.environ["SWITCHYARD_GUARD_NOT_BEFORE"],
     "idle_started_at": os.environ["SWITCHYARD_GUARD_IDLE_STARTED_AT"],
     "launch_at": os.environ["SWITCHYARD_GUARD_LAUNCH_AT"],
@@ -227,28 +233,47 @@ payload = {
     "watchdog_seconds": float(os.environ["SWITCHYARD_GUARD_WATCHDOG_SECONDS"]),
     "finalize_seconds": int(os.environ["SWITCHYARD_GUARD_FINALIZE_SECONDS"]),
     "gpu_count": int(os.environ["SWITCHYARD_GUARD_GPU_COUNT"]),
+    "device_id": os.environ["SWITCHYARD_PUBLIC_DEVICE_ID"],
     "target_gpu_uuid": os.environ["SWITCHYARD_TARGET_GPU_UUID"],
 }
 if os.path.exists(path):
     with open(path, encoding="utf-8") as handle:
-        existing = json.load(handle)
-    stable = {
-        "not_before",
-        "idle_seconds",
-        "wait_poll_seconds",
-        "watchdog_seconds",
-        "finalize_seconds",
-        "gpu_count",
-        "target_gpu_uuid",
-    }
-    if set(existing) != set(payload) or any(existing[key] != payload[key] for key in stable):
-        raise SystemExit("existing guard attestation differs from this runner")
-    attestation = existing
+        document = json.load(handle)
+    if (
+        set(document) != {"schema_version", "device_id", "target_gpu_uuid", "attempts"}
+        or document["schema_version"] != 1
+        or document["device_id"] != attempt["device_id"]
+        or document["target_gpu_uuid"] != attempt["target_gpu_uuid"]
+        or not isinstance(document["attempts"], list)
+    ):
+        raise SystemExit("existing guard document differs from this runner")
 else:
-    with open(path, "x", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, sort_keys=True)
+    document = {
+        "schema_version": 1,
+        "device_id": attempt["device_id"],
+        "target_gpu_uuid": attempt["target_gpu_uuid"],
+        "attempts": [],
+    }
+
+matches = [item for item in document["attempts"] if item.get("attempt") == attempt["attempt"]]
+if len(matches) > 1 or (matches and matches[0] != attempt):
+    raise SystemExit("existing attempt attestation differs from this launch")
+if not matches:
+    if any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("attempt"), int)
+        or item["attempt"] >= attempt["attempt"]
+        for item in document["attempts"]
+    ):
+        raise SystemExit("guard attempts must be appended in increasing order")
+    document["attempts"].append(attempt)
+    temporary = f"{path}.tmp"
+    with open(temporary, "x", encoding="utf-8") as handle:
+        json.dump(document, handle, indent=2, sort_keys=True)
         handle.write("\n")
-    attestation = payload
+    os.replace(temporary, path)
+
+attestation = attempt
 
 not_before = datetime.fromisoformat(attestation["not_before"])
 idle_started = datetime.fromisoformat(attestation["idle_started_at"])
@@ -261,6 +286,7 @@ if (
     or not 0 < attestation["watchdog_seconds"] <= 0.25
     or attestation["finalize_seconds"] < 1800
     or attestation["gpu_count"] < 1
+    or attestation["device_id"] != os.environ["SWITCHYARD_PUBLIC_DEVICE_ID"]
     or attestation["target_gpu_uuid"] != os.environ["SWITCHYARD_TARGET_GPU_UUID"]
     or launch < not_before
     or (launch - idle_started).total_seconds() < attestation["idle_seconds"]
@@ -270,15 +296,22 @@ if (
     raise SystemExit("guard attestation does not meet the campaign safety contract")
 PY
 
+gpu_complete_marker="$campaign_dir/gpu_complete"
 attempt_dir="$campaign_dir/attempt-$SWITCHYARD_RUN_ATTEMPT"
 if ! mkdir "$attempt_dir"; then
-  echo "attempt directory already exists: $attempt_dir" >&2
-  exit 2
+  if [[ ! -d "$attempt_dir" || ! -f "$gpu_complete_marker" ]]; then
+    echo "attempt directory already exists before GPU completion: $attempt_dir" >&2
+    exit 2
+  fi
 fi
 run_dir="$campaign_dir/run"
 mkdir -p "$run_dir"
-gpu_complete_marker="$campaign_dir/gpu_complete"
-rm -f "$gpu_complete_marker"
+if [[ "$cpu_recovery" == 0 ]]; then
+  rm -f "$gpu_complete_marker"
+elif [[ ! -f "$gpu_complete_marker" ]]; then
+  echo "CPU recovery requires a completed GPU phase" >&2
+  exit 2
+fi
 
 source scripts/env.sh
 export THIRD_PARTY_DIR="$third_party_dir"
@@ -308,12 +341,21 @@ report_reusable() {
     --expected-commit "$SWITCHYARD_EXPECTED_HEAD" \
     --expected-branch "$SWITCHYARD_CAMPAIGN_BRANCH" \
     --expected-tree "$expected_tree" \
-    --expected-gpu-uuid "$SWITCHYARD_TARGET_GPU_UUID" $quick_flag
+    --expected-device-id "$SWITCHYARD_PUBLIC_DEVICE_ID" $quick_flag
+}
+
+require_gpu_regeneration() {
+  local report=$1
+  if [[ "$cpu_recovery" == 1 ]]; then
+    echo "CPU recovery found incomplete GPU evidence: $report" >&2
+    exit 75
+  fi
 }
 
 if report_reusable "$smoke_bf16" bfloat16 gate "$all_impls" --quick; then
   echo "reusing clean completed bf16 smoke phase"
 else
+  require_gpu_regeneration "$smoke_bf16"
   rm -f "$smoke_bf16"
   timeout --foreground 2h python bench/bench_backward.py \
     --shape-set gate --dtype bfloat16 --quick --impls "$all_impls" --out "$smoke_bf16"
@@ -321,6 +363,7 @@ fi
 if report_reusable "$smoke_fp16" float16 gate "$all_impls" --quick; then
   echo "reusing clean completed fp16 smoke phase"
 else
+  require_gpu_regeneration "$smoke_fp16"
   rm -f "$smoke_fp16"
   timeout --foreground 2h python bench/bench_backward.py \
     --shape-set gate --dtype float16 --quick --impls "$all_impls" --out "$smoke_fp16"
@@ -344,6 +387,7 @@ fi
 if report_reusable "$full_bf16" bfloat16 full "$all_impls"; then
   echo "reusing clean completed bf16 full phase"
 else
+  require_gpu_regeneration "$full_bf16"
   rm -f "$full_bf16"
   timeout --foreground 8h python bench/bench_backward.py \
     --shape-set full --dtype bfloat16 --impls "$all_impls" --out "$full_bf16"
@@ -351,6 +395,7 @@ fi
 if report_reusable "$full_fp16" float16 full "$all_impls"; then
   echo "reusing clean completed fp16 full phase"
 else
+  require_gpu_regeneration "$full_fp16"
   rm -f "$full_fp16"
   timeout --foreground 8h python bench/bench_backward.py \
     --shape-set full --dtype float16 --impls "$all_impls" --out "$full_fp16"
@@ -358,6 +403,7 @@ fi
 if report_reusable "$full_fp32" float32 full "$portable_impls"; then
   echo "reusing clean completed fp32 full phase"
 else
+  require_gpu_regeneration "$full_fp32"
   rm -f "$full_fp32"
   timeout --foreground 6h python bench/bench_backward.py \
     --shape-set full --dtype float32 --impls "$portable_impls" --out "$full_fp32"
@@ -425,7 +471,7 @@ if [[ $(git rev-parse HEAD) != "$SWITCHYARD_EXPECTED_HEAD" ]] ||
 fi
 if ! remote_head=$(read_result_branch); then
   echo "cannot recheck the result branch; results remain external" >&2
-  exit 75
+  exit 74
 fi
 if [[ "$remote_head" != "$SWITCHYARD_EXPECTED_HEAD" ]]; then
   echo "result branch changed during measurement; results remain external" >&2
@@ -524,7 +570,12 @@ import os
 import sys
 
 with open(os.environ["SWITCHYARD_GUARD_ATTESTATION"], encoding="utf-8") as handle:
-    guard = json.load(handle)
+    private_guard = json.load(handle)
+
+guards = []
+for item in private_guard["attempts"]:
+    public = {key: value for key, value in item.items() if key != "target_gpu_uuid"}
+    guards.append(public)
 
 payload = {
     "schema_version": 1,
@@ -534,8 +585,8 @@ payload = {
     "result_branch": os.environ.get("SWITCHYARD_RESULT_BRANCH", "codex/backward-architecture"),
     "origin": os.environ["SWITCHYARD_EXPECTED_ORIGIN"],
     "attempt": int(os.environ["SWITCHYARD_RUN_ATTEMPT"]),
-    "gpu_uuid": os.environ["SWITCHYARD_TARGET_GPU_UUID"],
-    "guard": guard,
+    "device_id": os.environ["SWITCHYARD_PUBLIC_DEVICE_ID"],
+    "guard_attestations": guards,
     "liger_commit": "777799588a89d74c489ed995e3bf006427738e85",
 }
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
@@ -598,11 +649,11 @@ check_result_bundle "$result_prefix" HEAD
 
 if ! push_result_commit "$result_commit"; then
   echo "result commit is local and will be retried without rerunning GPU work" >&2
-  exit 75
+  exit 74
 fi
 if ! remote_head=$(read_result_branch); then
   echo "result commit was pushed but remote verification must be retried" >&2
-  exit 75
+  exit 74
 fi
 if [[ "$remote_head" != "$result_commit" ]] || [[ -n $(git status --porcelain) ]]; then
   echo "result push verification failed" >&2

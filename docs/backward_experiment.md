@@ -221,10 +221,12 @@ path and Liger in all 15 independent trial medians. Across the 264 candidate, sh
 comparator hypotheses and three permitted campaign attempts, the conservative Bonferroni
 sign-error bound is less than 0.05.
 
-The benchmark must store the exact training plan, device UUID, kernel names, main and auxiliary
-kernel launch counts, saved-state bytes, workspace, raw samples, and trial order. It must
-record the GPU process state before and after each run. It must check output, `dv`, and `dw`
-against the float64 oracle before timing.
+The benchmark must store the exact training plan, an opaque campaign device ID, kernel names,
+main and auxiliary kernel launch counts, saved-state bytes, workspace, raw samples, and trial
+order. The publication gate reconstructs the timing statistics from the raw samples. It rejects
+missing profiler data, missing memory data, and a mismatch between the recorded schedule and the
+raw trial order. The benchmark must record the GPU process state before and after each run. It
+must check output, `dv`, and `dw` against the float64 oracle before timing.
 
 `cuda_shared` is a recomputation control. It must pass the fixed float64-oracle bounds, but the
 smoke gate does not require it to match the accepted path's error floor. The promotion evaluator
@@ -249,16 +251,19 @@ does not store process names or process identifiers. Committed command arguments
 external absolute paths. The runner gives result validation, commit, and push up to 30 minutes
 after GPU work.
 
-The runner keeps its attempt count across process restarts. Each decision hashes the exact byte
-buffers that it parsed. Before commit, the campaign reconstructs every decision from the staged
+The runner keeps its attempt count across process restarts. A completed GPU phase uses a separate
+CPU-only publication retry. This retry does not wait for another idle GPU interval and does not
+consume another GPU attempt. Each decision hashes the exact byte buffers that it parsed. Before
+commit, the campaign reconstructs every decision from the staged
 Git blobs. It repeats that check against the committed blobs before it pushes. Recovery accepts
 only the exact 16-file bundle for one campaign ID. It reconstructs every gate and decision before
 it retries a push. Publication uses the literal canonical repository URL after checking that the
 configured remote has one matching fetch URL and one matching push URL.
 
-The manifest records the start and end of the idle interval, the idle probe count, the selected
-GPU, and the guarded launch time. Bundle validation checks these fields against the report times
-and the selected GPU. It rejects a report that predates the guarded launch.
+The manifest records one guard attestation for each attempt that produced reusable evidence.
+Each benchmark phase records its generating attempt. Bundle validation binds the phase timestamp
+to that attempt's idle interval and guarded launch. Public evidence uses a random campaign device
+ID. The physical GPU UUID remains only in external guard state and is never committed.
 
 A deterministic smoke, correctness, schema, or provenance failure stops the campaign. It does
 not spend another GPU attempt on the same inputs. Only a collision, interrupted phase, or

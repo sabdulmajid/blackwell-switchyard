@@ -32,11 +32,16 @@ def test_gpu_process_monitor_records_a_transient_competitor(monkeypatch):
     )
     monkeypatch.setitem(sys.modules, "pynvml", fake)
 
-    monitor = MODULE.GPUProcessMonitor("GPU-test", interval_seconds=60.0)
+    monitor = MODULE.GPUProcessMonitor(
+        "GPU-test",
+        report_device_id="device-0123456789abcdef",
+        interval_seconds=60.0,
+    )
     monitor.start()
     report = monitor.stop()
 
     assert report["samples"] == 2
+    assert report["device_id"] == "device-0123456789abcdef"
     assert report["collision_detected"]
     assert report["collision_events"][0]["foreign_process_count"] == 1
     assert not report["probe_errors"]

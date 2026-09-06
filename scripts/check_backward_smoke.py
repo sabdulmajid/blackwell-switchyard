@@ -61,11 +61,11 @@ def check_reports(
         problems.append("smoke gate requires exactly one bf16 and one fp16 report")
     commits = {report.get("provenance", {}).get("repository_commit") for report in reports}
     trees = {report.get("provenance", {}).get("repository_tree") for report in reports}
-    uuids = {report.get("gpu_preflight", {}).get("resolved_uuid") for report in reports}
+    device_ids = {report.get("gpu_preflight", {}).get("device_id") for report in reports}
     if len(commits) != 1 or None in commits:
         problems.append("reports do not use one recorded repository commit")
-    if len(uuids) != 1 or None in uuids:
-        problems.append("reports do not use one physical GPU")
+    if len(device_ids) != 1 or None in device_ids:
+        problems.append("reports do not use one campaign device ID")
     if len(trees) != 1 or None in trees:
         problems.append("reports do not use one recorded repository tree")
     if expected_commit is not None and commits != {expected_commit}:
@@ -118,7 +118,7 @@ def check_reports(
             problems.append(f"{prefix}: preflight was not exclusive")
         if postflight.get("foreign_compute_process_count_at_end") != 0:
             problems.append(f"{prefix}: postflight was not exclusive")
-        if postflight.get("resolved_uuid") != preflight.get("resolved_uuid"):
+        if postflight.get("device_id") != preflight.get("device_id"):
             problems.append(f"{prefix}: preflight and postflight GPU differ")
         monitor = report.get("gpu_process_monitor", {})
         samples = monitor.get("samples")
@@ -134,7 +134,7 @@ def check_reports(
             and samples >= max(2, int(duration / (2 * interval)))
         )
         if (
-            monitor.get("device_uuid") != preflight.get("resolved_uuid")
+            monitor.get("device_id") != preflight.get("device_id")
             or monitor.get("collision_detected") is not False
             or monitor.get("collision_events")
             or monitor.get("probe_errors")
@@ -266,7 +266,7 @@ def check_reports(
     return {
         "status": "PASS" if not problems else "FAIL",
         "repository_commit": next(iter(commits)) if len(commits) == 1 else None,
-        "gpu_uuid": next(iter(uuids)) if len(uuids) == 1 else None,
+        "device_id": next(iter(device_ids)) if len(device_ids) == 1 else None,
         "successful_records": successful,
         "problems": problems,
     }

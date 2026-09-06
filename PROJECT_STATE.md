@@ -3,7 +3,7 @@
 Living status document for `blackwell-switchyard`. The authoritative per-change detail lives
 in the branch descriptions on issue #1; this file is the index.
 
-**Last updated:** 2026-09-05
+**Last updated:** 2026-09-06
 
 ---
 
@@ -90,8 +90,11 @@ Ordered by how much the measurements say they are worth.
    blocks for `(N=32,D=2048)`. The evaluator now preserves a valid win for an exact shape and
    dtype instead of requiring one plan to win every supported case. Larger source-serial tiles
    were removed because the compiler spilled them. The benchmark stores raw paired trials and
-   uses a 50 ms sampled process monitor. Production dispatch is unchanged. GPU correctness,
-   occupancy, and latency are still pending.
+   uses a 50 ms sampled process monitor. Every reusable phase must contain the complete result,
+   schedule, timing, profiler, memory, and correctness matrices. The validator reconstructs
+   timing statistics and trial order from the raw samples. Public evidence uses an opaque
+   campaign device ID. It binds each reused phase to its guarded attempt. Production dispatch
+   is unchanged. GPU correctness, occupancy, and latency are still pending.
 2. **Complete the batched training contract.** The current batched API does not return
    merge statistics and does not implement backward. The resident forward is useful, but
    it is not the complete paper schedule.

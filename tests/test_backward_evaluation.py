@@ -235,16 +235,16 @@ def _report(dtype, *, candidate_ms=0.8, candidate_fwd_bwd=None, ok=True, dirty=F
         "candidate_reachable_from_production": False,
         "correctness_seeds": [0, 1, 2],
         "gpu_preflight": {
-            "resolved_uuid": "GPU-test",
+            "device_id": "device-0123456789abcdef",
             "foreign_compute_process_count_at_start": 0,
             "busy_override": False,
         },
         "gpu_postflight": {
-            "resolved_uuid": "GPU-test",
+            "device_id": "device-0123456789abcdef",
             "foreign_compute_process_count_at_end": 0,
         },
         "gpu_process_monitor": {
-            "device_uuid": "GPU-test",
+            "device_id": "device-0123456789abcdef",
             "samples": 100,
             "interval_seconds": 0.25,
             "duration_seconds": 25.0,
@@ -754,10 +754,10 @@ def test_duplicate_dtype_or_missing_kernel_identity_cannot_promote():
 
 def test_gpu_identity_and_postflight_are_mandatory():
     reports = _complete_reports()
-    reports[1]["gpu_preflight"]["resolved_uuid"] = "GPU-other"
-    reports[1]["gpu_postflight"]["resolved_uuid"] = "GPU-other"
+    reports[1]["gpu_preflight"]["device_id"] = "device-fedcba9876543210"
+    reports[1]["gpu_postflight"]["device_id"] = "device-fedcba9876543210"
     reports[0]["gpu_postflight"]["foreign_compute_process_count_at_end"] = 1
     decision = MODULE.evaluate_reports(reports, candidate=CANDIDATE)
     assert decision["status"] == "MORE_DATA"
-    assert any("same physical GPU" in problem for problem in decision["problems"])
+    assert any("same campaign device ID" in problem for problem in decision["problems"])
     assert any("appeared during" in problem for problem in decision["problems"])

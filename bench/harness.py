@@ -50,12 +50,14 @@ class GPUProcessMonitor:
         self,
         device_uuid: str,
         *,
+        report_device_id: str | None = None,
         interval_seconds: float = 0.05,
         abort_on_collision: bool = False,
     ):
         if interval_seconds <= 0:
             raise ValueError("monitor interval must be positive")
-        self.device_uuid = device_uuid
+        self._device_uuid = device_uuid
+        self.report_device_id = report_device_id or device_uuid
         self.interval_seconds = interval_seconds
         self.abort_on_collision = abort_on_collision
         self.own_pid = os.getpid()
@@ -76,7 +78,7 @@ class GPUProcessMonitor:
         pynvml.nvmlInit()
         self._started_at = time.monotonic()
         self._pynvml = pynvml
-        self._handle = pynvml.nvmlDeviceGetHandleByUUID(self.device_uuid)
+        self._handle = pynvml.nvmlDeviceGetHandleByUUID(self._device_uuid)
         self._poll_once()
         self._thread = threading.Thread(target=self._run, name="gpu-process-monitor", daemon=True)
         self._thread.start()
@@ -126,7 +128,7 @@ class GPUProcessMonitor:
                 else 0.0
             )
             report = {
-                "device_uuid": self.device_uuid,
+                "device_id": self.report_device_id,
                 "interval_seconds": self.interval_seconds,
                 "samples": self._samples,
                 "duration_seconds": duration,

@@ -34,10 +34,12 @@ def test_campaign_binds_decisions_and_copies_exact_bytes():
     assert "copied evidence does not match its evaluated bytes" in SCRIPT
 
 
-def test_campaign_preserves_first_guard_attestation_across_retries():
+def test_campaign_preserves_per_attempt_guard_attestations():
     assert 'guard_attestation="$campaign_dir/guard.json"' in SCRIPT
-    assert 'open(path, "x"' in SCRIPT
-    assert '"guard": guard' in SCRIPT
+    assert '"attempts": []' in SCRIPT
+    assert 'document["attempts"].append(attempt)' in SCRIPT
+    assert '"guard_attestations": guards' in SCRIPT
+    assert 'key != "target_gpu_uuid"' in SCRIPT
 
 
 def test_campaign_publishes_only_to_exact_origin_and_recovers_pushes():
@@ -47,3 +49,10 @@ def test_campaign_publishes_only_to_exact_origin_and_recovers_pushes():
     assert "Recover a fully audited local result commit" in SCRIPT
     assert 'check_result_bundle "$result_prefix" :' in SCRIPT
     assert 'check_result_bundle "$result_prefix" HEAD' in SCRIPT
+    assert "exit 74" in SCRIPT
+
+
+def test_campaign_never_publishes_a_physical_gpu_uuid():
+    assert "SWITCHYARD_PUBLIC_DEVICE_ID" in SCRIPT
+    assert '"device_id": os.environ["SWITCHYARD_PUBLIC_DEVICE_ID"]' in SCRIPT
+    assert "GPU-[[:alnum:]-]+" in SCRIPT

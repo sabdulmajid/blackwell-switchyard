@@ -15,6 +15,8 @@ import fcntl
 import hashlib
 import json
 import os
+import re
+import secrets
 import signal
 import subprocess
 import sys
@@ -22,6 +24,9 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+
+CPU_RECOVERY_EXIT = 74
+PUBLIC_DEVICE_ID_PATTERN = re.compile(r"device-[0-9a-f]{16}")
 
 
 def _parse_inventory(text: str) -> dict[int, str]:
@@ -114,6 +119,7 @@ class StateRecorder:
         self.campaign_identity = campaign_identity
         self.events: list[dict] = []
         self._attempts = 0
+        self.public_device_id = f"device-{secrets.token_hex(8)}"
         if path.exists():
             payload = json.loads(path.read_text())
             if payload.get("campaign_identity") != campaign_identity:
@@ -124,6 +130,12 @@ class StateRecorder:
             ):
                 raise ValueError("runner state has an invalid event history")
             self.events = events[-200:]
+            public_device_id = payload.get("public_device_id")
+            if not isinstance(public_device_id, str) or PUBLIC_DEVICE_ID_PATTERN.fullmatch(
+                public_device_id
+            ) is None:
+                raise ValueError("runner state has an invalid public device ID")
+            self.public_device_id = public_device_id
             recorded_attempts = payload.get("attempts", 0)
             if not isinstance(recorded_attempts, int) or recorded_attempts < 0:
                 raise ValueError("runner state has an invalid attempt count")
@@ -154,6 +166,7 @@ class StateRecorder:
         self.events.append(event)
         payload = {
             "campaign_identity": self.campaign_identity,
+            "public_device_id": self.public_device_id,
             "attempts": self._attempts,
             "current": event,
             "events": self.events[-200:],
@@ -211,6 +224,60 @@ def _terminate_group(process: subprocess.Popen, recorder: StateRecorder, reason:
         except ProcessLookupError:
             pass
         process.wait(timeout=2)
+
+
+def _run_cpu_recovery(
+    command: list[str],
+    *,
+    cwd: Path,
+    environment: dict[str, str],
+    log_path: Path,
+    recorder: StateRecorder,
+    attempt: int,
+    deadline: float,
+    finalize_seconds: int,
+    retry_seconds: int,
+) -> int:
+    """Retry post-GPU publication without querying a GPU or spending an attempt."""
+    cpu_environment = environment.copy()
+    cpu_environment["CUDA_VISIBLE_DEVICES"] = ""
+    cpu_environment["SWITCHYARD_CPU_RECOVERY"] = "1"
+    while time.time() < deadline:
+        recorder.write("cpu_recovery_started", attempt=attempt)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a") as log:
+            process = subprocess.Popen(
+                command,
+                cwd=cwd,
+                env=cpu_environment,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                text=True,
+            )
+            try:
+                return_code = process.wait(
+                    timeout=min(finalize_seconds, max(1.0, deadline - time.time()))
+                )
+            except subprocess.TimeoutExpired:
+                _terminate_group(
+                    process,
+                    recorder,
+                    f"CPU recovery exceeded {finalize_seconds} seconds",
+                )
+                return_code = CPU_RECOVERY_EXIT
+        if return_code == 0:
+            recorder.write("complete", attempt=attempt, return_code=0)
+            return 0
+        if return_code == 75:
+            return 75
+        if return_code != CPU_RECOVERY_EXIT:
+            recorder.write("failed", attempt=attempt, return_code=return_code)
+            return return_code or 1
+        recorder.write("cpu_recovery_waiting", attempt=attempt)
+        time.sleep(min(retry_seconds, max(0.0, deadline - time.time())))
+    recorder.write("expired", attempts=attempt)
+    return CPU_RECOVERY_EXIT
 
 
 def _parse_not_before(value: str) -> float:
@@ -361,6 +428,7 @@ def main() -> int:
         environment = os.environ.copy()
         environment["CUDA_VISIBLE_DEVICES"] = target_uuid
         environment["SWITCHYARD_TARGET_GPU_UUID"] = target_uuid
+        environment["SWITCHYARD_PUBLIC_DEVICE_ID"] = recorder.public_device_id
         environment["SWITCHYARD_RUN_ATTEMPT"] = str(attempt)
         environment["SWITCHYARD_GUARD_NOT_BEFORE"] = datetime.fromtimestamp(
             args.not_before
@@ -400,6 +468,7 @@ def main() -> int:
             foreign_apps: list[dict[str, str | int]] = []
             gpu_complete_since: float | None = None
             deadline_reached = False
+            finalization_timed_out = False
             while process.poll() is None:
                 time.sleep(args.watchdog_seconds)
                 if process.poll() is not None:
@@ -421,6 +490,7 @@ def main() -> int:
                             recorder,
                             f"post-GPU finalization exceeded {args.finalize_seconds} seconds",
                         )
+                        finalization_timed_out = True
                         break
                     continue
                 try:
@@ -464,9 +534,54 @@ def main() -> int:
         if deadline_reached:
             recorder.write("expired", attempts=attempt)
             return 75
+        if finalization_timed_out:
+            recovery_code = _run_cpu_recovery(
+                command,
+                cwd=args.cwd,
+                environment=environment,
+                log_path=args.log,
+                recorder=recorder,
+                attempt=attempt,
+                deadline=deadline,
+                finalize_seconds=args.finalize_seconds,
+                retry_seconds=args.wait_poll_seconds,
+            )
+            if recovery_code == 75:
+                recorder.write("cpu_recovery_requires_gpu", attempt=attempt)
+                idle_since = None
+                idle_since_wall = None
+                idle_probe_count = 0
+                continue
+            return recovery_code
         if return_code == 0:
             recorder.write("complete", attempt=attempt, return_code=return_code)
             return 0
+        if return_code == CPU_RECOVERY_EXIT:
+            if args.gpu_complete_marker is None or not args.gpu_complete_marker.exists():
+                recorder.write(
+                    "failed",
+                    attempt=attempt,
+                    reason="CPU recovery was requested before GPU completion",
+                )
+                return 2
+            recovery_code = _run_cpu_recovery(
+                command,
+                cwd=args.cwd,
+                environment=environment,
+                log_path=args.log,
+                recorder=recorder,
+                attempt=attempt,
+                deadline=deadline,
+                finalize_seconds=args.finalize_seconds,
+                retry_seconds=args.wait_poll_seconds,
+            )
+            if recovery_code == 75:
+                recorder.write("cpu_recovery_requires_gpu", attempt=attempt)
+                idle_since = None
+                idle_since_wall = None
+                idle_probe_count = 0
+                continue
+            return recovery_code
         if return_code == 75:
             recorder.write("workload_requested_requeue", attempt=attempt)
             idle_since = None

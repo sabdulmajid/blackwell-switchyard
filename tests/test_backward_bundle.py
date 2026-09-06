@@ -109,11 +109,11 @@ def _valid_bundle(monkeypatch):
     }
     payloads = {
         "offline_compile": {},
-        "smoke_bfloat16": {"run_id": "20260906T033100Z"},
-        "smoke_float16": {"run_id": "20260906T033200Z"},
-        "full_bfloat16": {"run_id": campaign_id},
-        "full_float16": {"run_id": "20260906T034100Z"},
-        "full_float32": {"run_id": "20260906T034200Z"},
+        "smoke_bfloat16": {"run_id": "20260906T033100Z", "campaign_attempt": 1},
+        "smoke_float16": {"run_id": "20260906T033200Z", "campaign_attempt": 1},
+        "full_bfloat16": {"run_id": campaign_id, "campaign_attempt": 1},
+        "full_float16": {"run_id": "20260906T034100Z", "campaign_attempt": 1},
+        "full_float32": {"run_id": "20260906T034200Z", "campaign_attempt": 1},
     }
     monkeypatch.setattr(MODULE, "_compile_problems", lambda *_args: [])
     monkeypatch.setattr(MODULE, "validate_report", lambda *_args, **_kwargs: [])
@@ -154,21 +154,24 @@ def _valid_bundle(monkeypatch):
         "benchmark_branch": "codex/campaign",
         "result_branch": "codex/results",
         "origin": "https://github.com/sabdulmajid/blackwell-switchyard.git",
-        "gpu_uuid": "GPU-test",
+        "device_id": "device-0123456789abcdef",
         "liger_commit": "777799588a89d74c489ed995e3bf006427738e85",
         "attempt": 1,
-        "guard": {
-            "not_before": "2026-09-05T23:00:00-04:00",
-            "idle_started_at": "2026-09-05T23:00:00-04:00",
-            "launch_at": "2026-09-05T23:30:00-04:00",
-            "idle_seconds": 1800,
-            "idle_probe_count": 31,
-            "wait_poll_seconds": 60,
-            "watchdog_seconds": 0.25,
-            "finalize_seconds": 1800,
-            "gpu_count": 2,
-            "target_gpu_uuid": "GPU-test",
-        },
+        "guard_attestations": [
+            {
+                "attempt": 1,
+                "not_before": "2026-09-05T23:00:00-04:00",
+                "idle_started_at": "2026-09-05T23:00:00-04:00",
+                "launch_at": "2026-09-05T23:30:00-04:00",
+                "idle_seconds": 1800,
+                "idle_probe_count": 31,
+                "wait_poll_seconds": 60,
+                "watchdog_seconds": 0.25,
+                "finalize_seconds": 1800,
+                "gpu_count": 2,
+                "device_id": "device-0123456789abcdef",
+            }
+        ],
     }
     raw = {suffix: json.dumps(payload).encode() for suffix, payload in payloads.items()}
     by_path = {paths[suffix]: value for suffix, value in raw.items()}
@@ -180,7 +183,7 @@ def _valid_bundle(monkeypatch):
         "expected_branch": "codex/campaign",
         "result_branch": "codex/results",
         "expected_origin": "https://github.com/sabdulmajid/blackwell-switchyard.git",
-        "expected_gpu_uuid": "GPU-test",
+        "expected_device_id": "device-0123456789abcdef",
     }
     return prefix, by_path, arguments
 
@@ -209,10 +212,10 @@ def test_bundle_rejects_weakened_collision_guards(monkeypatch):
         prefix, by_path, arguments = _valid_bundle(monkeypatch)
         manifest_path = prefix.with_name(f"{prefix.name}_manifest.json")
         manifest = json.loads(by_path[manifest_path])
-        manifest["guard"][field] = value
+        manifest["guard_attestations"][0][field] = value
         by_path[manifest_path] = json.dumps(manifest).encode()
         problems = MODULE.validate_bundle(prefix, **arguments)
-        assert any(f"guard {field}" in problem for problem in problems), field
+        assert any("guard" in problem and field in problem for problem in problems), field
 
 
 def test_bundle_binds_guard_times_and_target_gpu(monkeypatch):
@@ -220,12 +223,34 @@ def test_bundle_binds_guard_times_and_target_gpu(monkeypatch):
         "idle_started_at": "2026-09-05T23:29:00-04:00",
         "launch_at": "2026-09-05T22:59:00-04:00",
         "idle_probe_count": 1,
-        "target_gpu_uuid": "GPU-other",
+        "device_id": "device-fedcba9876543210",
     }
     for field, value in unsafe_values.items():
         prefix, by_path, arguments = _valid_bundle(monkeypatch)
         manifest_path = prefix.with_name(f"{prefix.name}_manifest.json")
         manifest = json.loads(by_path[manifest_path])
-        manifest["guard"][field] = value
+        manifest["guard_attestations"][0][field] = value
         by_path[manifest_path] = json.dumps(manifest).encode()
         assert MODULE.validate_bundle(prefix, **arguments), field
+
+
+def test_bundle_binds_each_phase_to_its_generating_attempt(monkeypatch):
+    prefix, by_path, arguments = _valid_bundle(monkeypatch)
+    manifest_path = prefix.with_name(f"{prefix.name}_manifest.json")
+    manifest = json.loads(by_path[manifest_path])
+    manifest["attempt"] = 2
+    manifest["guard_attestations"].append(
+        {
+            **manifest["guard_attestations"][0],
+            "attempt": 2,
+            "idle_started_at": "2026-09-06T04:00:00+00:00",
+            "launch_at": "2026-09-06T04:30:00+00:00",
+        }
+    )
+    by_path[manifest_path] = json.dumps(manifest).encode()
+    full_bf16 = prefix.with_name(f"{prefix.name}_full_bfloat16.json")
+    report = json.loads(by_path[full_bf16])
+    report["campaign_attempt"] = 2
+    by_path[full_bf16] = json.dumps(report).encode()
+    problems = MODULE.validate_bundle(prefix, **arguments)
+    assert any("predates its guarded launch" in problem for problem in problems)
