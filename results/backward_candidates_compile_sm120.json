@@ -6,12 +6,12 @@
   },
   "gpu_visible": false,
   "provenance": {
-    "repository_commit": "e2c3dc5c84d4aa7d33bf9cc962aeed87a659dd8d",
+    "repository_commit": "9fed27fbf1633e4056fb0d602c9ffbe81bc61fbc",
     "worktree_clean": true,
     "torch": "2.9.0+cu128",
     "triton": "3.5.0",
     "nvcc": "Build cuda_12.8.r12.8/compiler.35583870_0",
-    "cuda_source_sha256": "c00e1eda78393aae847d1b15cf43e8306ee2161c73a1c2531e9edb02a9d2cf50"
+    "cuda_source_sha256": "a89730b2aec5e3e94695754da2ae1e9b9db7f78a8fca91d1b7f68cefb0854ecf"
   },
   "plans": [
     {
@@ -69,6 +69,34 @@
       },
       "production": false,
       "rationale": "persistent feature-sharded cluster at the one-read traffic lower bound"
+    },
+    {
+      "name": "cuda_cluster4",
+      "forward": {
+        "family": "standard",
+        "saved_state": "backward_coefficients"
+      },
+      "backward": {
+        "family": "cuda_cluster4",
+        "tokens_per_cta": 1,
+        "dw_reduction": "persistent_atomics"
+      },
+      "production": false,
+      "rationale": "four-block one-read cluster with lower per-block shared-memory pressure"
+    },
+    {
+      "name": "cuda_register",
+      "forward": {
+        "family": "standard",
+        "saved_state": "backward_coefficients"
+      },
+      "backward": {
+        "family": "cuda_register",
+        "tokens_per_cta": 1,
+        "dw_reduction": "persistent_atomics"
+      },
+      "production": false,
+      "rationale": "fixed-shape persistent CTA with packed register-resident sources"
     }
   ],
   "compilations": [
@@ -88,6 +116,7 @@
       "resources": [
         {
           "kernel": "_bwd_source_serial_grouped",
+          "symbol": "_bwd_source_serial_grouped",
           "registers": 241,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -96,23 +125,48 @@
       ]
     },
     {
-      "name": "serial_saved_partials_t16_n9_d8192",
+      "name": "serial_saved_partials_t16_n9_d4096",
       "kind": "triton",
       "constants": {
         "BLOCK_N": 16,
-        "BLOCK_D": 8192,
+        "BLOCK_D": 4096,
         "TOKENS": 16,
         "USE_SAVED": true,
         "WRITE_PARTIAL": true
       },
-      "num_warps": 16,
+      "num_warps": 8,
       "num_stages": 1,
-      "shared_bytes": 64,
+      "shared_bytes": 32,
       "resources": [
         {
           "kernel": "_bwd_source_serial_grouped",
-          "registers": 128,
-          "stack_bytes": 72,
+          "symbol": "_bwd_source_serial_grouped",
+          "registers": 204,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "serial_saved_partials_t16_n32_d4096",
+      "kind": "triton",
+      "constants": {
+        "BLOCK_N": 32,
+        "BLOCK_D": 4096,
+        "TOKENS": 16,
+        "USE_SAVED": true,
+        "WRITE_PARTIAL": true
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "symbol": "_bwd_source_serial_grouped",
+          "registers": 255,
+          "stack_bytes": 0,
           "static_shared_bytes": 1024,
           "local_bytes": 0
         }
@@ -134,6 +188,7 @@
       "resources": [
         {
           "kernel": "_bwd_source_serial_grouped",
+          "symbol": "_bwd_source_serial_grouped",
           "registers": 255,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -154,6 +209,7 @@
       "resources": [
         {
           "kernel": "_fwd_tiled_saved",
+          "symbol": "_fwd_tiled_saved",
           "registers": 241,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -174,6 +230,7 @@
       "resources": [
         {
           "kernel": "_fwd_tiled",
+          "symbol": "_fwd_tiled",
           "registers": 237,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -194,6 +251,7 @@
       "resources": [
         {
           "kernel": "_fwd_resident_saved",
+          "symbol": "_fwd_resident_saved",
           "registers": 126,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -214,6 +272,7 @@
       "resources": [
         {
           "kernel": "_reduce_dw_partials",
+          "symbol": "_reduce_dw_partials",
           "registers": 35,
           "stack_bytes": 0,
           "static_shared_bytes": 0,
@@ -226,37 +285,77 @@
       "kind": "cuda",
       "required_template_instances": {
         "shared_backward_kernel": 2,
-        "feature_cluster_backward_kernel": 2
+        "feature_cluster_backward_kernel_2block": 2,
+        "feature_cluster_backward_kernel_4block": 2,
+        "register_backward_kernel": 2
       },
       "register_limits": {
         "shared_backward_kernel": 64,
-        "feature_cluster_backward_kernel": 64
+        "feature_cluster_backward_kernel_2block": 64,
+        "feature_cluster_backward_kernel_4block": 80,
+        "register_backward_kernel": 128
       },
       "resources": [
         {
+          "kernel": "register_backward_kernel",
+          "symbol": "_ZN59_GLOBAL__N__a9dfd42e_18_shared_backward_cu_e7c8000b_185330824register_backward_kernelI13__nv_bfloat16Li9ELi4096EEEvPKT_S4_S4_PKfS6_S6_PS2_Pfill",
+          "registers": 128,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        },
+        {
+          "kernel": "register_backward_kernel",
+          "symbol": "_ZN59_GLOBAL__N__a9dfd42e_18_shared_backward_cu_e7c8000b_185330824register_backward_kernelI6__halfLi9ELi4096EEEvPKT_S4_S4_PKfS6_S6_PS2_Pfill",
+          "registers": 128,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        },
+        {
           "kernel": "shared_backward_kernel",
+          "symbol": "_ZN59_GLOBAL__N__a9dfd42e_18_shared_backward_cu_e7c8000b_185330822shared_backward_kernelI13__nv_bfloat16EEvPKT_S4_S4_PS2_Pfiiiflll",
           "registers": 48,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
           "local_bytes": 0
         },
         {
-          "kernel": "feature_cluster_backward_kernel",
-          "registers": 40,
+          "kernel": "feature_cluster_backward_kernel_4block",
+          "symbol": "_ZN59_GLOBAL__N__a9dfd42e_18_shared_backward_cu_e7c8000b_185330831feature_cluster_backward_kernelI13__nv_bfloat16Li4EEEvPKT_S4_S4_PKfS6_S6_PS2_Pfiiilll",
+          "registers": 72,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        },
+        {
+          "kernel": "feature_cluster_backward_kernel_2block",
+          "symbol": "_ZN59_GLOBAL__N__a9dfd42e_18_shared_backward_cu_e7c8000b_185330831feature_cluster_backward_kernelI13__nv_bfloat16Li2EEEvPKT_S4_S4_PKfS6_S6_PS2_Pfiiilll",
+          "registers": 64,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
           "local_bytes": 0
         },
         {
           "kernel": "shared_backward_kernel",
+          "symbol": "_ZN59_GLOBAL__N__a9dfd42e_18_shared_backward_cu_e7c8000b_185330822shared_backward_kernelI6__halfEEvPKT_S4_S4_PS2_Pfiiiflll",
           "registers": 48,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
           "local_bytes": 0
         },
         {
-          "kernel": "feature_cluster_backward_kernel",
-          "registers": 40,
+          "kernel": "feature_cluster_backward_kernel_4block",
+          "symbol": "_ZN59_GLOBAL__N__a9dfd42e_18_shared_backward_cu_e7c8000b_185330831feature_cluster_backward_kernelI6__halfLi4EEEvPKT_S4_S4_PKfS6_S6_PS2_Pfiiilll",
+          "registers": 72,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        },
+        {
+          "kernel": "feature_cluster_backward_kernel_2block",
+          "symbol": "_ZN59_GLOBAL__N__a9dfd42e_18_shared_backward_cu_e7c8000b_185330831feature_cluster_backward_kernelI6__halfLi2EEEvPKT_S4_S4_PKfS6_S6_PS2_Pfiiilll",
+          "registers": 64,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
           "local_bytes": 0
