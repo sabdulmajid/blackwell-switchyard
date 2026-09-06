@@ -61,7 +61,6 @@ MASKED_TAIL_SHAPES = {(9, 1, 129, 4097), (17, 2, 33, 2049)}
 CAMPAIGN_CANDIDATES = (
     "serial_recompute_atomic_t4",
     "serial_saved_partials_t16",
-    "cuda_shared",
     "cuda_cluster",
     "cuda_cluster4",
     "cuda_register",
@@ -745,6 +744,12 @@ def evaluate_reports(
             for seed in (0, 1, 2):
                 accepted = rows.get(("current", seed), {}).get("correctness", {})
                 exact = rows.get(("liger_exact", seed), {}).get("correctness", {})
+                candidate_correctness = rows.get((candidate, seed), {}).get(
+                    "correctness", {}
+                )
+                candidate_supported, _ = plan_supports(
+                    plan, *(_shape(case)), dtype
+                )
                 for value in ("output", "dv", "dw"):
                     accepted_error = accepted.get(value, {}).get("rel_l2")
                     exact_error = exact.get(value, {}).get("rel_l2")
@@ -759,6 +764,23 @@ def evaluate_reports(
                         problems.append(
                             f"{prefix} masked-tail liger_exact seed={seed} {value}: "
                             f"error {exact_error:.3e} exceeds {accepted_error:.3e}"
+                        )
+                    if not candidate_supported:
+                        continue
+                    candidate_error = candidate_correctness.get(value, {}).get(
+                        "rel_l2"
+                    )
+                    if not isinstance(accepted_error, int | float) or not isinstance(
+                        candidate_error, int | float
+                    ):
+                        problems.append(
+                            f"{prefix} masked-tail {candidate} seed={seed} {value}: "
+                            "numerical floor evidence is missing"
+                        )
+                    elif candidate_error > max(1.05 * accepted_error, 1e-7):
+                        numerical_regressions.append(
+                            f"{prefix} masked-tail {candidate} seed={seed} {value}: "
+                            f"error {candidate_error:.3e} exceeds {accepted_error:.3e}"
                         )
 
         execution_order = report.get("execution_order", [])

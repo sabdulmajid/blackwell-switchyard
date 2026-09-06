@@ -3,6 +3,12 @@
 set -euo pipefail
 umask 077
 
+terminate_process_group() {
+  trap - TERM INT
+  kill -TERM -- "-$$" 2>/dev/null || true
+}
+trap terminate_process_group TERM INT
+
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_dir"
 
@@ -30,6 +36,7 @@ cd "$repo_dir"
 : "${SWITCHYARD_GUARD_MAX_NON_TARGET_PCIE_TX_KIB_PER_SECOND:?the runner must attest non-target PCIe TX}"
 : "${SWITCHYARD_GUARD_MAXIMUM_ALLOWED_PCIE_KIB_PER_SECOND:?the runner must attest the PCIe limit}"
 : "${SWITCHYARD_RUNNER_STATE:?the idle runner must provide its external state path}"
+: "${SWITCHYARD_RUNNER_CAMPAIGN_IDENTITY:?the idle runner must provide its campaign identity}"
 : "${SWITCHYARD_GUARD_GPU_COUNT:?the idle runner must attest GPU inventory size}"
 : "${THIRD_PARTY_DIR:?set THIRD_PARTY_DIR to the pinned dependency directory}"
 : "${SWITCHYARD_TOOLCHAIN_DIR:?set SWITCHYARD_TOOLCHAIN_DIR to the local Python headers}"
@@ -43,7 +50,6 @@ portable_impls=current,serial_recompute_atomic_t4,serial_saved_partials_t16,lige
 candidates=(
   serial_recompute_atomic_t4
   serial_saved_partials_t16
-  cuda_shared
   cuda_cluster
   cuda_cluster4
   cuda_register
@@ -60,6 +66,10 @@ if [[ ! "$SWITCHYARD_EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] ||
    ! git check-ref-format --branch "$SWITCHYARD_CAMPAIGN_BRANCH" >/dev/null ||
    ! git check-ref-format --branch "$result_branch" >/dev/null; then
   echo "campaign identity or Git reference is malformed" >&2
+  exit 2
+fi
+if [[ "$result_branch" != codex/backward-architecture ]]; then
+  echo "campaign results must publish to codex/backward-architecture" >&2
   exit 2
 fi
 
@@ -674,6 +684,20 @@ import time
 with open(os.environ["SWITCHYARD_GUARD_ATTESTATION"], encoding="utf-8") as handle:
     private_guard = json.load(handle)
 
+private_attempts = [
+    item
+    for item in private_guard["attempts"]
+    if item.get("attempt") == int(os.environ["SWITCHYARD_RUN_ATTEMPT"])
+]
+if len(private_attempts) != 1:
+    raise SystemExit("private guard has no unique current attempt")
+expected_recovery_context = {
+    key: value
+    for key, value in private_attempts[0].items()
+    if key not in {"device_id", "target_gpu_uuid"}
+}
+expected_recovery_context["target_uuid"] = private_attempts[0]["target_gpu_uuid"]
+
 runner_state = None
 for _ in range(40):
     try:
@@ -681,6 +705,14 @@ for _ in range(40):
             runner_state = json.load(handle)
     except (FileNotFoundError, json.JSONDecodeError):
         runner_state = None
+    if runner_state is not None and (
+        runner_state.get("campaign_identity")
+        != os.environ["SWITCHYARD_RUNNER_CAMPAIGN_IDENTITY"]
+        or runner_state.get("public_device_id")
+        != os.environ["SWITCHYARD_PUBLIC_DEVICE_ID"]
+        or runner_state.get("recovery_context") != expected_recovery_context
+    ):
+        raise SystemExit("runner state does not match this guarded launch")
     matches = [
         event
         for event in (runner_state or {}).get("events", [])

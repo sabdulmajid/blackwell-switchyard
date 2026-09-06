@@ -11,7 +11,9 @@ anywhere, it stops its own process group and waits for a new bounded attempt.
 from __future__ import annotations
 
 import argparse
+import atexit
 import csv
+import ctypes
 import fcntl
 import hashlib
 import json
@@ -35,6 +37,8 @@ IDLE_ACTIVITY_SCOPES = frozenset({"all_gpus", "target_gpu"})
 PROCESS_SCOPE = "all_gpus"
 PUBLIC_DEVICE_ID_PATTERN = re.compile(r"device-[0-9a-f]{16}")
 GPU_UUID_PATTERN = re.compile(r"GPU-[A-Za-z0-9-]+")
+_ACTIVE_PROCESS: subprocess.Popen | None = None
+_ACTIVE_RECORDER: StateRecorder | None = None
 RECOVERY_CONTEXT_FIELDS = {
     "target_uuid",
     "idle_activity_scope",
@@ -134,6 +138,13 @@ def _merge_pcie_throughput(
     return merged
 
 
+def _nvml_kb_to_kib_per_second(value: int) -> int:
+    """Convert NVML's decimal KB/s unit to binary KiB/s, rounding upward."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("NVML returned an invalid PCIe throughput value")
+    return (value * 1000 + 1023) // 1024
+
+
 def _parent_pid(pid: int) -> int | None:
     try:
         # Everything after the final ')' starts with state and parent PID.
@@ -149,6 +160,15 @@ def _record_probe_gap(
     """Include the complete interval since the preceding watchdog boundary."""
     probe_at = time.monotonic() if now is None else now
     return probe_at, max(maximum_gap_seconds, probe_at - previous_probe_at)
+
+
+def _set_parent_death_signal() -> None:
+    """Ask Linux to stop the direct child if this supervisor disappears."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0:
+        os._exit(127)
+    if os.getppid() == 1:
+        os.kill(os.getpid(), signal.SIGTERM)
 
 
 def _is_descendant(
@@ -209,12 +229,12 @@ def _activity() -> dict[int, dict[str, int]]:
             for index in range(pynvml.nvmlDeviceGetCount()):
                 handle = pynvml.nvmlDeviceGetHandleByIndex(index)
                 pcie[index] = (
-                    int(
+                    _nvml_kb_to_kib_per_second(
                         pynvml.nvmlDeviceGetPcieThroughput(
                             handle, pynvml.NVML_PCIE_UTIL_RX_BYTES
                         )
                     ),
-                    int(
+                    _nvml_kb_to_kib_per_second(
                         pynvml.nvmlDeviceGetPcieThroughput(
                             handle, pynvml.NVML_PCIE_UTIL_TX_BYTES
                         )
@@ -347,7 +367,8 @@ class StateRecorder:
             self._attempts = max(self._attempts, attempt)
         self.events.append(event)
         self._save(event)
-        print(json.dumps(event, sort_keys=True), flush=True)
+        public_event = {key: value for key, value in event.items() if key != "target_uuid"}
+        print(json.dumps(public_event, sort_keys=True), flush=True)
 
 
 def _offset_timestamp(value: object) -> bool:
@@ -436,7 +457,10 @@ def _validate_recovery_context(value: object) -> dict:
 
 
 def _recovery_environment(
-    base_environment: dict[str, str], context: dict, public_device_id: str
+    base_environment: dict[str, str],
+    context: dict,
+    public_device_id: str,
+    campaign_identity: str,
 ) -> dict[str, str]:
     context = _validate_recovery_context(context)
     environment = base_environment.copy()
@@ -447,6 +471,7 @@ def _recovery_environment(
             "SWITCHYARD_GUARD_IDLE_ACTIVITY_SCOPE": context["idle_activity_scope"],
             "SWITCHYARD_GUARD_PROCESS_SCOPE": context["process_scope"],
             "SWITCHYARD_PUBLIC_DEVICE_ID": public_device_id,
+            "SWITCHYARD_RUNNER_CAMPAIGN_IDENTITY": campaign_identity,
             "SWITCHYARD_RUN_ATTEMPT": str(context["attempt"]),
             "SWITCHYARD_GUARD_NOT_BEFORE": context["not_before"],
             "SWITCHYARD_GUARD_IDLE_SECONDS": str(context["idle_seconds"]),
@@ -546,6 +571,38 @@ def _terminate_group(process: subprocess.Popen, recorder: StateRecorder, reason:
         process.wait(timeout=2)
 
 
+def _cleanup_active_process() -> None:
+    global _ACTIVE_PROCESS, _ACTIVE_RECORDER
+    process, recorder = _ACTIVE_PROCESS, _ACTIVE_RECORDER
+    _ACTIVE_PROCESS = None
+    _ACTIVE_RECORDER = None
+    if process is not None and recorder is not None and process.poll() is None:
+        _terminate_group(process, recorder, "GPU supervisor exited")
+
+
+def _supervisor_signal(signum: int, _frame) -> None:
+    raise SystemExit(128 + signum)
+
+
+def _install_supervisor_cleanup() -> None:
+    atexit.register(_cleanup_active_process)
+    signal.signal(signal.SIGINT, _supervisor_signal)
+    signal.signal(signal.SIGTERM, _supervisor_signal)
+
+
+def _set_active_process(process: subprocess.Popen, recorder: StateRecorder) -> None:
+    global _ACTIVE_PROCESS, _ACTIVE_RECORDER
+    _ACTIVE_PROCESS = process
+    _ACTIVE_RECORDER = recorder
+
+
+def _clear_active_process(process: subprocess.Popen) -> None:
+    global _ACTIVE_PROCESS, _ACTIVE_RECORDER
+    if _ACTIVE_PROCESS is process:
+        _ACTIVE_PROCESS = None
+        _ACTIVE_RECORDER = None
+
+
 def _run_cpu_recovery(
     command: list[str],
     *,
@@ -577,7 +634,9 @@ def _run_cpu_recovery(
                 start_new_session=True,
                 text=True,
                 pass_fds=inherited_fds,
+                preexec_fn=_set_parent_death_signal,
             )
+            _set_active_process(process, recorder)
             try:
                 return_code = process.wait(
                     timeout=min(finalize_seconds, max(1.0, deadline - time.time()))
@@ -589,6 +648,11 @@ def _run_cpu_recovery(
                     f"CPU recovery exceeded {finalize_seconds} seconds",
                 )
                 return_code = CPU_RECOVERY_EXIT
+            except BaseException:
+                _terminate_group(process, recorder, "GPU supervisor exited")
+                raise
+            finally:
+                _clear_active_process(process)
         if return_code == 0:
             recorder.write("complete", attempt=attempt, return_code=0)
             return 0
@@ -649,6 +713,7 @@ def main() -> int:
         parser.error("--deadline-hours must be positive")
     if args.gpu_index < 0:
         parser.error("--gpu-index must be nonnegative")
+    _install_supervisor_cleanup()
 
     args.lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock_handle = args.lock.open("w")
@@ -673,6 +738,24 @@ def main() -> int:
         args.gpu_complete_marker is not None
         and args.gpu_complete_marker.exists()
         and recorder.recovery_context is not None
+        and sum(
+            event.get("phase") == "gpu_phase_complete"
+            and event.get("attempt") == recorder.recovery_context["attempt"]
+            for event in recorder.events
+        )
+        != 1
+    ):
+        incomplete_attempt = recorder.recovery_context["attempt"]
+        args.gpu_complete_marker.unlink()
+        recorder.set_recovery_context(None)
+        recorder.write(
+            "gpu_completion_requires_new_attempt",
+            attempt=incomplete_attempt,
+        )
+    if (
+        args.gpu_complete_marker is not None
+        and args.gpu_complete_marker.exists()
+        and recorder.recovery_context is not None
     ):
         context = recorder.recovery_context
         recovery_code = _run_cpu_recovery(
@@ -685,6 +768,7 @@ def main() -> int:
                 },
                 context,
                 recorder.public_device_id,
+                recorder.campaign_identity,
             ),
             log_path=args.log,
             recorder=recorder,
@@ -1017,6 +1101,7 @@ def main() -> int:
             },
             context,
             recorder.public_device_id,
+            recorder.campaign_identity,
         )
         if args.gpu_complete_marker is not None:
             args.gpu_complete_marker.unlink(missing_ok=True)
@@ -1034,7 +1119,9 @@ def main() -> int:
                 start_new_session=True,
                 text=True,
                 pass_fds=(lock_handle.fileno(), gpu_lock_handle.fileno()),
+                preexec_fn=_set_parent_death_signal,
             )
+            _set_active_process(process, recorder)
             recorder.write(
                 "workload_started",
                 attempt=attempt,
@@ -1120,6 +1207,7 @@ def main() -> int:
                     )
 
             return_code = process.poll()
+            _clear_active_process(process)
 
         if foreign_apps:
             recorder.write(

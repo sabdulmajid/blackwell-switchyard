@@ -631,6 +631,19 @@ def test_numerically_degraded_exact_comparator_requests_new_data():
     assert any("liger_exact" in problem for problem in decision["problems"])
 
 
+def test_numerically_degraded_masked_tail_candidate_is_rejected():
+    reports = _complete_reports()
+    for report in reports:
+        for case in report["correctness_only"]:
+            for item in case["implementations"]:
+                if item["impl"] == CANDIDATE:
+                    item["correctness"]["dw"]["rel_l2"] = 0.01
+    decision = MODULE.evaluate_reports(reports, candidate=CANDIDATE)
+    assert decision["status"] == "REJECT"
+    assert any("masked-tail" in item for item in decision["numerical_regressions"])
+    assert decision["eligible_dispatches"] == []
+
+
 def test_candidate_without_material_wins_is_dropped():
     decision = MODULE.evaluate_reports(
         _complete_reports(candidate_ms=0.96), candidate=CANDIDATE

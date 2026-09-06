@@ -240,9 +240,9 @@ raw trial order. The benchmark must record the GPU process state before and afte
 must check output, `dv`, and `dw` against the float64 oracle before timing.
 
 `cuda_shared` is a recomputation control. It must pass the fixed float64-oracle bounds, but the
-smoke gate does not require it to match the accepted path's error floor. The promotion evaluator
-still rejects it if recomputation increases the error by more than 5%. All saved-state candidates
-must meet both checks.
+smoke gate does not require it to match the accepted path's error floor. It is not a promotion
+candidate and cannot enter production dispatch. All promotion candidates must also stay within
+1.05 times the accepted path's error on every checked output and gradient.
 
 ## Guarded unattended campaign
 
@@ -255,23 +255,31 @@ global process query and selected-GPU activity query close the launch race. The 
 makes only the selected GPU visible to the campaign.
 
 The runner gets utilization and memory data from `nvidia-smi`. It gets PCIe throughput from
-NVML because this driver does not expose PCIe throughput as a query field. Driver monitoring can
-cause small PCIe transfers on an idle card. The guard allows at most 64 MiB/s in each direction.
-This is less than 0.25% of the measured peer bandwidth on this host. The manifest stores the
-largest observed value and the allowed limit. The global process check remains the primary
-collision guard.
+NVML because this driver does not expose PCIe throughput as a query field. The runner converts
+NVML's KB/s value to KiB/s and rounds upward. Driver monitoring can cause small PCIe transfers on
+an idle card. The guard allows at most 65,536 KiB/s, or 64 MiB/s, in each direction. The manifest
+stores the largest observed value and the allowed limit. The global process check remains the
+primary collision guard.
 
 The benchmark samples the selected GPU every 0.05 seconds while it runs. It exits immediately
 if a sample sees an unrelated process. The outer runner samples the global GPU process table
 every 0.25 seconds. It stops
 its process group within a two-second grace period. It then waits for a new 30-minute sampled idle
-interval. It makes at most three
-attempts. A retry keeps each clean, complete benchmark phase and reruns only the interrupted
-phase and later phases. State and logs stay outside the repository, so they cannot make
-benchmark provenance dirty. The monitor stores a timestamp and a foreign-process count. It
+interval. It makes at most three attempts. A new guarded attempt reruns every GPU phase because
+each report is bound to the attempt that produced it. A CPU-only publication retry reuses all
+completed GPU phases. State and logs stay outside the repository, so they cannot make benchmark
+provenance dirty. The monitor stores a timestamp and a foreign-process count. It
 does not store process names or process identifiers. Committed command arguments redact
 external absolute paths. The runner gives result validation, commit, and push up to 30 minutes
 after GPU work.
+
+An attempt starts when the campaign process starts. A pre-GPU failure, such as a remote-read
+failure, consumes that attempt. The production command checks the branch and dependencies before
+it starts the runner, which reduces this risk.
+
+The supervisor terminates the complete campaign process group when it exits. Linux also sends a
+parent-death signal to the campaign shell if the supervisor crashes. The shell forwards that
+signal to its process group. This prevents GPU work from continuing without the watchdog.
 
 The runner keeps its attempt count across process restarts. A completed GPU phase uses a separate
 CPU-only publication retry. This retry does not wait for another idle GPU interval and does not
@@ -331,9 +339,10 @@ A deterministic smoke, correctness, schema, or provenance failure stops the camp
 not spend another GPU attempt on the same inputs. Only a collision, interrupted phase, or
 measured statistical instability can request a fresh idle interval and another attempt.
 
-This is high-frequency sampled detection, not hardware-enforced exclusive mode. A foreign CUDA
-context that exists for less than one sample interval could escape detection. The reports mean
-that no competing process appeared in any preflight, postflight, or monitor sample.
+This is sampled detection, not hardware-enforced exclusive mode or cryptographic proof. The
+watchdog checks compute processes after launch. A short CUDA context, a graphics context, or
+processless DMA can escape detection. The reports mean that no competing compute process
+appeared in any preflight, postflight, or monitor sample.
 
 The campaign is fail-fast and uses this order:
 

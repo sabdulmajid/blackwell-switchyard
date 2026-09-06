@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import stat
+import subprocess
 import sys
 import time
 from argparse import Namespace
@@ -124,6 +125,15 @@ def test_watchdog_gap_includes_launch_to_first_probe_interval():
     assert maximum == 30.0
 
 
+def test_supervisor_cleanup_terminates_the_active_process_group(tmp_path):
+    recorder = MODULE.StateRecorder(tmp_path / "state.json", "campaign-a")
+    process = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    MODULE._set_active_process(process, recorder)
+    MODULE._cleanup_active_process()
+    assert process.poll() is not None
+    assert recorder.last_phase == "stopping_workload"
+
+
 @pytest.mark.parametrize(
     "text",
     ["", "index, uuid\n", "0\n", "x, GPU-a\n", "0, not-a-uuid\n", "0, GPU-a\n0, GPU-b\n"],
@@ -170,6 +180,14 @@ def test_pcie_merge_fails_closed(pcie):
         MODULE._merge_pcie_throughput(MODULE._parse_activity("0, 0, 2\n"), pcie)
 
 
+def test_nvml_pcie_units_are_converted_conservatively():
+    assert MODULE._nvml_kb_to_kib_per_second(0) == 0
+    assert MODULE._nvml_kb_to_kib_per_second(1024) == 1000
+    assert MODULE._nvml_kb_to_kib_per_second(1) == 1
+    with pytest.raises(ValueError):
+        MODULE._nvml_kb_to_kib_per_second(True)
+
+
 def test_state_recorder_resumes_attempt_count_without_process_data(tmp_path):
     state = tmp_path / "state.json"
     recorder = MODULE.StateRecorder(state, "campaign-a")
@@ -185,6 +203,13 @@ def test_state_recorder_resumes_attempt_count_without_process_data(tmp_path):
     assert stat.S_IMODE(state.stat().st_mode) == 0o600
     with pytest.raises(ValueError, match="different campaign"):
         MODULE.StateRecorder(state, "campaign-b")
+
+
+def test_state_recorder_keeps_gpu_uuid_out_of_terminal_output(tmp_path, capsys):
+    recorder = MODULE.StateRecorder(tmp_path / "state.json", "campaign-a")
+    recorder.write("waiting", target_uuid="GPU-private", target_index=1)
+    assert "GPU-private" not in capsys.readouterr().out
+    assert recorder.events[-1]["target_uuid"] == "GPU-private"
 
 
 def test_state_recorder_rejects_malformed_history(tmp_path):
@@ -226,7 +251,10 @@ def test_recovery_context_fails_closed(change):
 def test_recovery_environment_contains_only_reconstructable_guard_values():
     context = _recovery_context()
     environment = MODULE._recovery_environment(
-        {"PATH": "/bin", "UNRELATED": "kept"}, context, "device-0123456789abcdef"
+        {"PATH": "/bin", "UNRELATED": "kept"},
+        context,
+        "device-0123456789abcdef",
+        "campaign-hash",
     )
     assert environment["CUDA_VISIBLE_DEVICES"] == "GPU-test"
     assert environment["SWITCHYARD_RUN_ATTEMPT"] == "3"
@@ -238,6 +266,7 @@ def test_recovery_environment_contains_only_reconstructable_guard_values():
     assert environment["SWITCHYARD_GUARD_PROCESS_SCOPE"] == "all_gpus"
     assert environment["SWITCHYARD_GUARD_MAX_IDLE_PROBE_GAP_SECONDS"] == "60.1"
     assert environment["SWITCHYARD_PUBLIC_DEVICE_ID"] == "device-0123456789abcdef"
+    assert environment["SWITCHYARD_RUNNER_CAMPAIGN_IDENTITY"] == "campaign-hash"
     assert environment["UNRELATED"] == "kept"
 
 
@@ -343,6 +372,10 @@ def test_runner_source_exports_idle_attestation_without_process_ids():
     assert "pass_fds=(lock_handle.fileno(), gpu_lock_handle.fileno())" in source
     assert "observed_apps = _compute_apps()" in source
     assert "for item in observed_apps" in source
+    assert "preexec_fn=_set_parent_death_signal" in source
+    assert "atexit.register(_cleanup_active_process)" in source
+    assert 'if key != "target_uuid"' in source
+    assert '"gpu_completion_requires_new_attempt"' in source
     assert 'f"blackwell-switchyard-{target_uuid}.lock"' not in source
 
 

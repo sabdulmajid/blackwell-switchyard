@@ -48,13 +48,13 @@ PORTABLE_IMPLEMENTATIONS = [
 CANDIDATES = [
     "serial_recompute_atomic_t4",
     "serial_saved_partials_t16",
-    "cuda_shared",
     "cuda_cluster",
     "cuda_cluster4",
     "cuda_register",
     "cuda_register_cluster",
     "cuda_register_cluster_full",
 ]
+EXPERIMENTAL_PLANS = ALL_IMPLEMENTATIONS[1:-2]
 EXPECTED_CUDA_INSTANCES = {
     "shared_backward_kernel": 2,
     "feature_cluster_backward_kernel_2block": 2,
@@ -311,7 +311,9 @@ def _compile_problems(
         if expected_source_sha256 is not None and source_hash != expected_source_sha256:
             problems.append("offline compile report uses different CUDA source bytes")
 
-    expected_plans = [get_training_plan(name).as_dict() for name in ("auto", *CANDIDATES)]
+    expected_plans = [
+        get_training_plan(name).as_dict() for name in ("auto", *EXPERIMENTAL_PLANS)
+    ]
     if report.get("plans") != expected_plans:
         problems.append("offline compile report does not contain the exact campaign plans")
 

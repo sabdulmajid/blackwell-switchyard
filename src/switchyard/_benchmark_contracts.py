@@ -15,7 +15,8 @@ LIGER_EXACT_WORK_CONTRACT = {
     "forward_source_passes": 2,
     "backward_source_passes": 2,
     "saved_fp32_scalars_per_source_token": 2,
-    "dw_atomic_vectors_per_token": 1,
+    "gradient_atomic_vectors_per_token": 1,
+    "atomic_gradient_roles": ["dw"],
     "extra_work_disclosed": False,
     "role": "promotion comparator",
 }
@@ -23,7 +24,8 @@ LIGER_UPSTREAM_WORK_CONTRACT = {
     **LIGER_EXACT_WORK_CONTRACT,
     "auxiliary_inputs": ["gain"],
     "discarded_gradients": ["d_gain"],
-    "dw_atomic_vectors_per_token": 2,
+    "gradient_atomic_vectors_per_token": 2,
+    "atomic_gradient_roles": ["dw", "discarded_d_gain"],
     "extra_work_disclosed": True,
     "role": "observational upstream comparator",
 }
