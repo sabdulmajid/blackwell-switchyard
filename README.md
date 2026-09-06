@@ -1,16 +1,107 @@
 # blackwell-switchyard
 
-This repository contains a fused Block Attention Residuals operator for NVIDIA Blackwell GPUs.
-It also contains tests, benchmarks, raw results, and a Transformer integration.
+Blackwell Switchyard makes Block Attention Residuals practical to measure and train on
+NVIDIA Blackwell GPUs. The repository contains a paper-faithful reference, strong framework
+baselines, fused GPU operators, raw benchmark data, and a 1.3 billion parameter Transformer
+integration.
 
-The project measures three implementations:
+## What the paper changes
 
-- PyTorch eager mode
-- PyTorch with `torch.compile` and Inductor
-- Custom Triton kernels
+A standard residual connection adds the output of the previous sublayer to its input.
+Attention Residuals replaces this fixed addition with a learned mixture of earlier states.
+The mixture can change for each token and each destination sublayer.
 
-The repository also contains private CUDA candidates for the large training shapes.
-These candidates are not part of production dispatch.
+The full method can keep one source for every earlier sublayer.
+Block Attention Residuals groups the model depth into blocks.
+It keeps block summaries instead of all earlier sublayer outputs.
+This change controls the storage and communication cost as model depth increases.
+
+For one pseudo-query, the exact operator is:
+
+```text
+v: [N, B, T, D]
+w: [D]
+
+k      = v * rsqrt(mean(v * v, axis=D) + eps)
+logits = dot(w, k)
+alpha  = softmax(logits, axis=N)
+out    = sum(alpha * v, axis=N)
+```
+
+`N` is the source count. It is not the block count.
+`B` is the batch size. `T` is the token count. `D` is the hidden dimension.
+
+Only the score calculation uses normalized sources.
+The weighted sum uses the raw sources.
+The softmax uses the source axis.
+The score does not use `1/sqrt(D)` attention scaling.
+
+## The systems problem
+
+This operator does little arithmetic for each byte that it moves.
+At `N=9` with bf16 data, it does approximately 2.7 floating-point operations per byte.
+The measured Blackwell GPU needs approximately 204 operations per byte to become
+compute-bound. Thus, memory traffic and kernel launches control the cost.
+
+The softmax needs all source scores before the weighted sum can start.
+The backward pass must also produce a source gradient and one global query gradient.
+A simple framework implementation launches many kernels and creates large intermediate tensors.
+
+The accepted large-shape backward uses two kernels.
+The first kernel calculates source statistics.
+The second kernel reads the sources again and applies the gradients.
+The three important source stacks are 288 to 576 MiB.
+They do not fit in the 128 MiB L2 cache.
+This second source read can therefore come from device memory.
+
+## What this project contributes
+
+- A float64 oracle pins the exact paper semantics.
+- Two framework formulations measure PyTorch eager mode and max-autotuned Inductor fairly.
+- Two production Triton strategies cover register-resident and L2-tiled shapes.
+- A source arena removes repeated source-stack copies from the Transformer integration.
+- One output-only batched kernel reuses each resident source tile across as many as 16 queries.
+- A private CUDA experiment targets the large-shape training traffic limit.
+- The benchmark records latency, memory, kernel count, raw trials, and correctness evidence.
+
+The private CUDA experiment addresses the source reread directly.
+Thread-block clusters keep each source shard in registers or shared memory.
+The same on-chip value serves both backward equations before the kernel releases it.
+For backward, this changes the large-tensor traffic target from `(3N+2)X` to the exact
+`(2N+1)X` lower bound. Here, `X` is the byte size of one `[B,T,D]` tensor.
+A complete fixed-shape plan also uses a one-read forward kernel.
+
+The new CUDA kernels compile for `sm_120` without stack or local-memory spills.
+They are not part of production dispatch.
+GPU correctness and performance tests must pass before the project can use them.
+
+This project does not claim the first fused AttnRes kernel.
+Liger Kernel, Flash Linear Attention, and other projects also contain fused implementations.
+This project contributes an independent Blackwell comparison, a measured hardware model,
+and a complete Transformer training study.
+
+## Current result and open gap
+
+At the main operator shape, the accepted switchyard path is 1.70x faster in forward and
+3.71x faster in forward plus backward than max-autotuned Inductor.
+In the 1.3 billion parameter decoder, it reduces the residual mechanism share from 39 percent
+to 11 percent. This change increases full-step throughput by 1.46x against the framework
+AttnRes implementation.
+
+Liger Kernel is LinkedIn's open-source Triton kernel library for language-model training.
+Liger remains faster at three important large training shapes:
+
+| Shape | switchyard forward and backward | Liger forward and backward | Gap |
+|---|---:|---:|---:|
+| `N=32 B=1 T=4096 D=2048` | 1.565 ms | **1.502 ms** | 4.2 percent |
+| `N=9 B=1 T=4096 D=4096` | 0.920 ms | **0.774 ms** | 18.9 percent |
+| `N=9 B=1 T=4096 D=8192` | 1.961 ms | **1.435 ms** | 36.7 percent |
+
+Liger keeps its two source passes in one program.
+This design gives the second pass a better chance to use L2.
+The switchyard one-read experiment tries to remove the second source pass instead.
+The guarded GPU campaign will decide if the lower traffic offsets the cost of cluster
+synchronization and limited occupancy.
 
 Correctness has priority over speed.
 Each timed implementation must pass a float64 oracle check.
@@ -125,32 +216,6 @@ The gradients are bit-identical after the all-reduce operation.
 The measured scaling is 1.73x, or 87 percent efficiency.
 
 See [the model report](docs/model.md).
-
-## Operation definition
-
-Attention Residuals replaces a fixed residual connection with attention over earlier states.
-Block AttnRes groups the model depth into blocks.
-The operator attends to block summaries for each token.
-
-For one pseudo-query, the operation is:
-
-```text
-v: [N, B, T, D]
-w: [D]
-
-k      = v * rsqrt(mean(v * v, axis=D) + eps)
-logits = dot(w, k)
-alpha  = softmax(logits, axis=N)
-out    = sum(alpha * v, axis=N)
-```
-
-The weighted sum uses the raw values in `v`.
-Only the keys use root mean square normalization.
-The softmax uses the source axis.
-The operation does not use `1/sqrt(D)` attention scaling.
-
-The operation has low arithmetic intensity.
-Memory traffic and launch overhead control its performance.
 
 ## Python interface
 
@@ -271,7 +336,8 @@ python scripts/summarize_model.py
 ```
 
 The benchmark drivers record the repository revision, command arguments, random seeds,
-software versions, GPU identity, and GPU process state.
+software versions, an opaque campaign device ID, and GPU process state.
+They do not publish the physical GPU UUID.
 They remove external absolute paths from the command arguments.
 They do not record prompts, task links, process names, or process identifiers.
 They check the process state before and after each accepted run.
