@@ -68,6 +68,8 @@ The plans are:
 | `serial_saved_partials_t16` | two | three FP32 source scalars | private rows, then deterministic reduction | portable candidate |
 | `cuda_shared` | one | none | one contribution per token | one-block traffic control |
 | `cuda_cluster` | **one** | three FP32 source scalars | one contribution per persistent cluster | primary candidate |
+| `cuda_cluster4` | **one** | three FP32 source scalars | one contribution per persistent cluster | lower shared-memory pressure |
+| `cuda_register` | **one** | three FP32 source scalars | one contribution per persistent CTA | fixed-shape register candidate |
 
 The saved fields are `alpha`, `rstd`, and:
 
@@ -81,31 +83,53 @@ after only one `g dot v` reduction.
 
 ## Primary one-read design
 
-The `cuda_cluster` plan uses a persistent two-block thread-block cluster.
+The `cuda_cluster` and `cuda_cluster4` plans use persistent two-block and four-block
+thread-block clusters.
 
-1. Each block owns a disjoint half of `D`.
+1. Each block owns a disjoint shard of `D`.
 2. Each block loads its source shard into shared memory once.
 3. Each block calculates its part of `g dot v`.
-4. The blocks combine only the small per-source scalars through distributed shared memory.
-5. Both blocks calculate `dv` and `dw` from the retained source values.
+   Source waves use all eight warps and finish through private warp partials.
+   This needs one block barrier per token instead of two barriers per source.
+4. Rank zero's first warp combines the small per-source scalars through distributed shared
+   memory. One lane owns each source.
+5. All blocks calculate `dv` and `dw` from the retained source values.
 6. The cluster repeats this work for a strided set of tokens.
 7. Each cluster adds one accumulated FP32 `dw` contribution.
 
 This layout has one global reader for each source element and each output-gradient element.
 It reaches the `(2 * N + 1) * X` large-tensor traffic lower bound. Feature sharding also keeps
-the shared-memory need below the measured 99 KiB per-block limit at all three gap shapes.
+the shared-memory need below the measured 99 KiB per-block limit at all gap shapes. The
+four-block plan roughly halves the per-block source tile. It trades two more blocks and wider
+DSM aggregation for higher possible occupancy. The GPU campaign decides that trade by
+measurement.
 
 The CUDA source is in
 [`shared_backward.cu`](../src/switchyard/csrc/shared_backward.cu). The package builds it only
 when a private candidate entry point runs. Public imports and production dispatch do not build
-the extension.
+the extension. The current extension contains `sm_120` code and rejects other GPU architectures
+explicitly. The custom operator supports first-order training gradients. Use the framework
+reference when an application requires second-order gradients.
+
+## Packed-register candidate
+
+The `cuda_register` plan removes the cluster's source-sized shared-memory tile.
+A persistent 512-thread CTA keeps raw bf16 or fp16 source pairs in registers.
+It reduces all `g dot v` values with two block barriers per token, applies both gradients from
+the retained values, and accumulates `dw` in uniquely owned FP32 shared-memory slots across
+its token stream. The retained source pairs stay in registers. The `(N=9, D=4096)`
+specialization is spill-free. The compiler spilled the `(9,8192)` and `(32,2048)` variants, so
+those variants were removed before GPU measurement. The offline compiler gate rejects any
+future specialization that spills retained values to local memory.
 
 The offline `sm_120` compiler gate reports:
 
 | Kernel | Registers per thread | Stack | Local memory | Static shared memory |
 |---|---:|---:|---:|---:|
 | one-block shared, bf16/fp16 | 48 | 0 | 0 | 1024 bytes |
-| feature-sharded cluster, bf16/fp16 | 40 | 0 | 0 | 1024 bytes |
+| two-block feature cluster, bf16/fp16 | 64 | 0 | 0 | 1024 bytes |
+| four-block feature cluster, bf16/fp16 | 72 | 0 | 0 | 1024 bytes |
+| `(9,4096)` register CTA, bf16/fp16 | 128 | 0 | 0 | 1024 bytes |
 
 Dynamic shared memory depends on `N` and `D`. The runtime adds static and dynamic memory before
 it accepts a launch.
@@ -119,7 +143,8 @@ L2 for its second pass. It processes several tokens in sequence and accumulates 
 The hierarchical variant writes one FP32 row per 16-token group. A small feature-tiled kernel
 then reduces these rows in a deterministic order. This removes global atomics from the main
 kernel. It does not remove the second source read, so it is a portability path and an ablation,
-not the expected winner.
+not the expected winner. The source-serial plans stop at `D=4096`. Recompute plans also stop at
+16 sources. Larger full-width Triton programs spill, so those cases are explicitly unsupported.
 
 ## Offline gate
 
@@ -140,8 +165,8 @@ Use exclusive access. Do not start with the full matrix.
 
 1. Run adversarial gradient tests for bf16 and fp16.
 2. Run a short compile and launch smoke test for each supported plan.
-3. Measure the three gap shapes. Compare `current`, Liger, the portable candidate, and both
-   one-read candidates.
+3. Measure the gap shapes. Compare `current`, Liger, the portable candidate, and all one-read
+   candidates.
 4. Drop dominated plans.
 5. Run the bounded crossover matrix only for the survivors.
 6. Run the complete dtype, memory, kernel-count, and Transformer regressions before dispatch.
@@ -155,23 +180,31 @@ against the float64 oracle before timing.
 
 [`run_when_gpu_idle.py`](../scripts/run_when_gpu_idle.py) can wait for the shared host without
 using a GPU. The configured campaign does not trust an estimated finish time. It requires all
-GPUs to have no compute process for 30 continuous minutes. It then makes only one GPU visible
-to the campaign.
+GPUs to have no compute process at every 60-second sample for 30 minutes. It then makes only
+one GPU visible to the campaign.
 
-The runner checks the selected GPU every 30 seconds while GPU work is active. If an unrelated
-process appears, the runner stops its own process group. It then waits for a new 30-minute idle
-interval. It makes at most three attempts. State and logs stay outside the repository, so they
-cannot make benchmark provenance dirty.
+The benchmark checks the selected GPU every 0.25 seconds while it runs. It exits immediately
+if an unrelated process appears. The outer runner also checks every two seconds and stops its
+process group. It then waits for a new 30-minute sampled idle interval. It makes at most three
+attempts. A retry keeps each clean, complete benchmark phase and reruns only the interrupted
+phase and later phases. State and logs stay outside the repository, so they cannot make
+benchmark provenance dirty. The monitor stores a timestamp and a foreign-process count. It
+does not store other process names. Committed command arguments redact external absolute
+paths. The runner gives result validation, commit, and push up to 30 minutes after GPU work.
 
 The campaign is fail-fast and uses this order:
 
 1. Run all adversarial candidate tests.
 2. Run quick bf16 and fp16 gate measurements for all candidate families.
 3. Apply the smoke correctness, numerical-error, kernel-count, and provenance gate.
-4. Run the full 12-shape bf16 and fp16 matrix for `cuda_cluster`, current switchyard, and
-   Liger.
-5. Apply the deterministic promotion evaluator.
-6. Commit and push the raw reports and decision with the configured project identity.
+4. Run the full 12-shape bf16 and fp16 matrix for all candidates and controls.
+5. Run the portable fp32 control matrix.
+6. Apply the deterministic promotion evaluator to each candidate.
+7. Commit and push only the raw reports, manifest, and decisions with the configured project
+   identity.
+
+The campaign stops if an evaluator requests more data. It can save only a terminal `DROP`,
+`REJECT`, or `READY_FOR_DISPATCH_REVIEW` decision.
 
 The campaign never changes production dispatch and never merges `main`. A measured result
 still needs an engineering review before a separate dispatch commit.

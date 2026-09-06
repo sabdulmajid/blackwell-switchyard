@@ -17,7 +17,7 @@
 # volume that is 97% full.
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TOOLCHAIN="$REPO/.local-toolchain"
+TOOLCHAIN="${SWITCHYARD_TOOLCHAIN_DIR:-$REPO/.local-toolchain}"
 
 if [ ! -f "$TOOLCHAIN/usr/include/python3.12/Python.h" ]; then
   echo "note: Python headers missing; run scripts/fetch_python_headers.sh" >&2

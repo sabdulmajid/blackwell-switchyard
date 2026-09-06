@@ -24,24 +24,35 @@ from pathlib import Path
 
 
 def _parse_inventory(text: str) -> dict[int, str]:
-    result = {}
-    for row in csv.reader(line for line in text.splitlines() if line.strip()):
-        if len(row) >= 2:
-            result[int(row[0].strip())] = row[1].strip()
+    rows = list(csv.reader(line for line in text.splitlines() if line.strip()))
+    if not rows:
+        raise ValueError("nvidia-smi returned an empty GPU inventory")
+    result: dict[int, str] = {}
+    for row in rows:
+        if len(row) != 2 or not row[0].strip().isdigit() or not row[1].strip().startswith("GPU-"):
+            raise ValueError(f"malformed GPU inventory row: {row!r}")
+        index = int(row[0].strip())
+        if index in result:
+            raise ValueError(f"duplicate GPU index {index}")
+        result[index] = row[1].strip()
     return result
 
 
 def _parse_compute_apps(text: str) -> list[dict[str, str | int]]:
     result = []
     for row in csv.reader(line for line in text.splitlines() if line.strip()):
-        if len(row) >= 3 and row[1].strip().isdigit():
-            result.append(
-                {
-                    "gpu_uuid": row[0].strip(),
-                    "pid": int(row[1].strip()),
-                    "process_name": row[2].strip(),
-                }
-            )
+        if (
+            len(row) != 2
+            or not row[0].strip().startswith("GPU-")
+            or not row[1].strip().isdigit()
+        ):
+            raise ValueError(f"malformed compute-process row: {row!r}")
+        result.append(
+            {
+                "gpu_uuid": row[0].strip(),
+                "pid": int(row[1].strip()),
+            }
+        )
     return result
 
 
@@ -90,7 +101,7 @@ def _inventory() -> dict[int, str]:
 def _compute_apps() -> list[dict[str, str | int]]:
     return _parse_compute_apps(
         _smi(
-            "--query-compute-apps=gpu_uuid,pid,process_name",
+            "--query-compute-apps=gpu_uuid,pid",
             "--format=csv,noheader,nounits",
         )
     )
@@ -144,13 +155,15 @@ def main() -> int:
     parser.add_argument("--not-before", required=True, type=_parse_not_before)
     parser.add_argument("--gpu-index", type=int, default=0)
     parser.add_argument("--idle-seconds", type=int, default=1800)
-    parser.add_argument("--wait-poll-seconds", type=int, default=300)
-    parser.add_argument("--watchdog-seconds", type=int, default=30)
+    parser.add_argument("--wait-poll-seconds", type=int, default=60)
+    parser.add_argument("--watchdog-seconds", type=int, default=2)
+    parser.add_argument("--finalize-seconds", type=int, default=1800)
     parser.add_argument("--deadline-hours", type=float, default=36.0)
     parser.add_argument("--max-attempts", type=int, default=3)
     parser.add_argument("--state", required=True, type=Path)
     parser.add_argument("--log", required=True, type=Path)
     parser.add_argument("--lock", required=True, type=Path)
+    parser.add_argument("--gpu-lock-dir", default=Path("/tmp"), type=Path)
     parser.add_argument("--gpu-complete-marker", type=Path)
     parser.add_argument("--cwd", required=True, type=Path)
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -162,6 +175,7 @@ def main() -> int:
         args.idle_seconds,
         args.wait_poll_seconds,
         args.watchdog_seconds,
+        args.finalize_seconds,
         args.max_attempts,
     ) <= 0:
         parser.error("all intervals and --max-attempts must be positive")
@@ -189,6 +203,16 @@ def main() -> int:
         recorder.write("failed", reason=f"GPU index {args.gpu_index} does not exist")
         return 2
     target_uuid = inventory[args.gpu_index]
+    args.gpu_lock_dir.mkdir(parents=True, exist_ok=True)
+    gpu_lock_path = args.gpu_lock_dir / f"blackwell-switchyard-{target_uuid}.lock"
+    gpu_lock_handle = gpu_lock_path.open("w")
+    try:
+        fcntl.flock(gpu_lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        recorder.write("failed", reason=f"another switchyard runner owns {gpu_lock_path}")
+        return 75
+    gpu_lock_handle.write(f"{os.getpid()}\n")
+    gpu_lock_handle.flush()
     recorder.write(
         "waiting_for_all_gpus_idle",
         target_index=args.gpu_index,
@@ -202,7 +226,7 @@ def main() -> int:
     while time.time() < deadline and attempt < args.max_attempts:
         try:
             apps = _compute_apps()
-        except (OSError, subprocess.SubprocessError) as exc:
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
             idle_since = None
             recorder.write("wait_probe_failed", error=f"{type(exc).__name__}: {exc}"[:300])
             time.sleep(args.wait_poll_seconds)
@@ -222,7 +246,14 @@ def main() -> int:
 
         # Close the final race before launch. The workload has its own GPU
         # preflight as a second independent check.
-        if _compute_apps():
+        try:
+            final_apps = _compute_apps()
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            idle_since = None
+            recorder.write("final_probe_failed", error=f"{type(exc).__name__}: {exc}"[:300])
+            time.sleep(args.wait_poll_seconds)
+            continue
+        if final_apps:
             idle_since = None
             continue
 
@@ -231,6 +262,15 @@ def main() -> int:
         environment["CUDA_VISIBLE_DEVICES"] = target_uuid
         environment["SWITCHYARD_TARGET_GPU_UUID"] = target_uuid
         environment["SWITCHYARD_RUN_ATTEMPT"] = str(attempt)
+        environment["SWITCHYARD_GUARD_NOT_BEFORE"] = datetime.fromtimestamp(
+            args.not_before
+        ).astimezone().isoformat()
+        environment["SWITCHYARD_GUARD_IDLE_SECONDS"] = str(args.idle_seconds)
+        environment["SWITCHYARD_GUARD_WAIT_POLL_SECONDS"] = str(args.wait_poll_seconds)
+        environment["SWITCHYARD_GUARD_WATCHDOG_SECONDS"] = str(args.watchdog_seconds)
+        environment["SWITCHYARD_GUARD_FINALIZE_SECONDS"] = str(args.finalize_seconds)
+        if args.gpu_complete_marker is not None:
+            args.gpu_complete_marker.unlink(missing_ok=True)
         args.log.parent.mkdir(parents=True, exist_ok=True)
         with args.log.open("a") as log:
             process = subprocess.Popen(
@@ -247,10 +287,10 @@ def main() -> int:
                 attempt=attempt,
                 pid=process.pid,
                 target_uuid=target_uuid,
-                command=command,
             )
             blind_probes = 0
             foreign_apps: list[dict[str, str | int]] = []
+            gpu_complete_since: float | None = None
             while process.poll() is None:
                 time.sleep(args.watchdog_seconds)
                 if process.poll() is not None:
@@ -259,13 +299,23 @@ def main() -> int:
                     args.gpu_complete_marker is not None
                     and args.gpu_complete_marker.exists()
                 ):
+                    if gpu_complete_since is None:
+                        gpu_complete_since = time.monotonic()
+                        recorder.write("gpu_phase_complete", attempt=attempt)
+                    elif time.monotonic() - gpu_complete_since > args.finalize_seconds:
+                        _terminate_group(
+                            process,
+                            recorder,
+                            f"post-GPU finalization exceeded {args.finalize_seconds} seconds",
+                        )
+                        break
                     continue
                 try:
                     target_apps = [
                         item for item in _compute_apps() if item["gpu_uuid"] == target_uuid
                     ]
                     blind_probes = 0
-                except (OSError, subprocess.SubprocessError) as exc:
+                except (OSError, subprocess.SubprocessError, ValueError) as exc:
                     blind_probes += 1
                     if blind_probes >= 3:
                         _terminate_group(
@@ -299,6 +349,10 @@ def main() -> int:
         if return_code == 0:
             recorder.write("complete", attempt=attempt, return_code=return_code)
             return 0
+        if return_code == 75:
+            recorder.write("workload_requested_requeue", attempt=attempt)
+            idle_since = None
+            continue
         recorder.write("failed", attempt=attempt, return_code=return_code)
         return return_code or 1
 

@@ -212,7 +212,8 @@ The tests cover these items:
 - Non-power-of-two shapes
 - Non-contiguous inputs
 - Saturated logits
-- First-order and second-order gradients
+- First-order gradients for all implementations
+- Second-order gradients for the framework reference
 - Online softmax merging
 - Transformer source schedules
 - One-GPU and two-GPU integration
@@ -266,9 +267,12 @@ python bench/bench_ddp.py
 python scripts/summarize_model.py
 ```
 
-The benchmark drivers record the repository revision, command, random seeds, software
-versions, GPU identity, and GPU process state. They check the process state before and after
-each accepted run. Third-party runs also record pinned upstream revisions.
+The benchmark drivers record the repository revision, command arguments, random seeds,
+software versions, GPU identity, and GPU process state.
+They remove external absolute paths from the command arguments.
+They do not record prompts, task links, or process names.
+They check the process state before and after each accepted run.
+Third-party runs also record pinned upstream revisions.
 Some historical machine, model, and DDP result files predate the expanded provenance fields.
 Regenerate those files from a clean revision before a release.
 
@@ -284,9 +288,12 @@ Its two-kernel schedule reloads source data after a grid boundary.
 The source data does not fit in L2 at these shapes.
 
 The private experiment branch now contains complete training plans.
-It includes a grouped Triton path and a persistent feature-sharded CUDA cluster path.
-The CUDA path keeps source values on chip and targets the one-read backward traffic limit.
-It compiles for `sm_120` without local-memory spills.
+It includes a grouped Triton path and two feature-sharded CUDA cluster paths.
+The CUDA clusters use two or four blocks.
+It also includes one fixed-shape register path for `N=9 D=4096`.
+These CUDA paths keep source values on the chip.
+They target the one-read backward traffic limit.
+They compile for `sm_120` without local-memory spills.
 These paths are not in production dispatch.
 They do not have GPU correctness or performance results yet.
 
