@@ -154,7 +154,7 @@ def _report(dtype, *, candidate_ms=0.8, candidate_fwd_bwd=None, ok=True, dirty=F
     return {
         "dtype": dtype,
         "schema_version": 2,
-        "run_id": f"run-{dtype}",
+        "run_id": "20260905T200000Z" if dtype == "bfloat16" else "20260905T200001Z",
         "run_status": "complete",
         "shape_set": "full",
         "selected_implementations": ["current", CANDIDATE, "liger"],

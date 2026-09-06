@@ -19,7 +19,7 @@ IMPLS = ["current", "cuda_cluster", "liger"]
 def _report() -> dict:
     return {
         "schema_version": 2,
-        "run_id": "run-test",
+        "run_id": "20260905T200000Z",
         "run_status": "complete",
         "dtype": "bfloat16",
         "shape_set": "full",
@@ -75,6 +75,7 @@ def _problems(report: dict) -> list[str]:
         quick=False,
         expected_commit="abc123",
         expected_branch="codex/campaign",
+        expected_tree="tree123",
         expected_gpu_uuid="GPU-test",
     )
 

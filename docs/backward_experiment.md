@@ -176,6 +176,11 @@ kernel launch counts, saved-state bytes, workspace, raw samples, and trial order
 record the GPU process state before and after each run. It must check output, `dv`, and `dw`
 against the float64 oracle before timing.
 
+`cuda_shared` is a recomputation control. It must pass the fixed float64-oracle bounds, but the
+smoke gate does not require it to match the accepted path's error floor. The promotion evaluator
+still rejects it if recomputation increases the error by more than 5%. All saved-state candidates
+must meet both checks.
+
 ## Guarded unattended campaign
 
 [`run_when_gpu_idle.py`](../scripts/run_when_gpu_idle.py) can wait for the shared host without
@@ -183,9 +188,10 @@ using a GPU. The configured campaign does not trust an estimated finish time. It
 GPUs to have no compute process at every 60-second sample for 30 minutes. It then makes only
 one GPU visible to the campaign.
 
-The benchmark checks the selected GPU every 0.25 seconds while it runs. It exits immediately
-if an unrelated process appears. The outer runner also checks every two seconds and stops its
-process group. It then waits for a new 30-minute sampled idle interval. It makes at most three
+The benchmark checks the selected GPU every 0.05 seconds while it runs. It exits immediately
+if an unrelated process appears. The outer runner also checks every 0.25 seconds and stops its
+process group within a two-second grace period. It then waits for a new 30-minute sampled idle
+interval. It makes at most three
 attempts. A retry keeps each clean, complete benchmark phase and reruns only the interrupted
 phase and later phases. State and logs stay outside the repository, so they cannot make
 benchmark provenance dirty. The monitor stores a timestamp and a foreign-process count. It

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -23,6 +24,7 @@ def validate_report(
     quick: bool,
     expected_commit: str,
     expected_branch: str,
+    expected_tree: str,
     expected_gpu_uuid: str,
 ) -> list[str]:
     """Return every reason a report cannot be reused."""
@@ -38,8 +40,9 @@ def validate_report(
     for field, value in expected.items():
         if report.get(field) != value:
             problems.append(f"{field} must equal {value!r}")
-    if not report.get("run_id"):
-        problems.append("run_id is missing")
+    run_id = report.get("run_id")
+    if not isinstance(run_id, str) or re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", run_id) is None:
+        problems.append("run_id must use the benchmark UTC timestamp format")
     if report.get("selected_implementations") != implementations:
         problems.append("selected implementation order differs from the requested phase")
 
@@ -48,8 +51,8 @@ def validate_report(
         problems.append("repository commit differs from the campaign commit")
     if provenance.get("repository_branch") != expected_branch:
         problems.append("repository branch differs from the campaign branch")
-    if not provenance.get("repository_tree"):
-        problems.append("repository tree is missing")
+    if provenance.get("repository_tree") != expected_tree:
+        problems.append("repository tree differs from the campaign tree")
     if provenance.get("worktree_dirty") is not False:
         problems.append("benchmark worktree was not fully clean")
     if provenance.get("tracked_worktree_dirty") is not False:
@@ -99,7 +102,7 @@ def validate_report(
         and isinstance(interval, int | float)
         and 0 < interval <= 1
         and isinstance(duration, int | float)
-        and duration >= 0
+        and duration >= interval
         and samples >= max(2, int(duration / (2 * interval)))
     )
     if (
@@ -122,6 +125,7 @@ def main() -> int:
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--expected-commit", required=True)
     parser.add_argument("--expected-branch", required=True)
+    parser.add_argument("--expected-tree", required=True)
     parser.add_argument("--expected-gpu-uuid", required=True)
     args = parser.parse_args()
     if not args.report.is_file():
@@ -138,6 +142,7 @@ def main() -> int:
         quick=args.quick,
         expected_commit=args.expected_commit,
         expected_branch=args.expected_branch,
+        expected_tree=args.expected_tree,
         expected_gpu_uuid=args.expected_gpu_uuid,
     )
     if problems:

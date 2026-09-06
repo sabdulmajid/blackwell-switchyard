@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import random
+import re
 import statistics
 import sys
 from dataclasses import asdict, dataclass
@@ -314,6 +316,7 @@ def evaluate_reports(
     max_cv: float = 0.05,
     expected_commit: str | None = None,
     expected_branch: str | None = None,
+    expected_tree: str | None = None,
 ) -> dict:
     """Return a deterministic promotion decision for one immutable plan."""
     plan = get_training_plan(candidate)
@@ -353,11 +356,17 @@ def evaluate_reports(
         problems.append("every dtype run must record the same nonempty repository tree")
     if expected_commit is not None and commits != {expected_commit}:
         problems.append(f"reports do not match expected commit {expected_commit}")
+    if expected_tree is not None and trees != {expected_tree}:
+        problems.append(f"reports do not match expected tree {expected_tree}")
 
     for dtype in sorted(required_dtypes & set(by_dtype)):
         report = by_dtype[dtype]
         prefix = dtype
-        if report.get("schema_version") != 2 or not report.get("run_id"):
+        if (
+            report.get("schema_version") != 2
+            or not isinstance(report.get("run_id"), str)
+            or re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", report["run_id"]) is None
+        ):
             problems.append(f"{prefix}: schema version 2 or run ID is missing")
         if report.get("run_status") != "complete":
             problems.append(f"{prefix}: report is not a completed run")
@@ -414,7 +423,7 @@ def evaluate_reports(
             and isinstance(interval, int | float)
             and 0 < interval <= 1
             and isinstance(duration, int | float)
-            and duration >= 0
+            and duration >= interval
             and samples >= max(2, int(duration / (2 * interval)))
         )
         if monitor.get("probe_errors") or not monitor_coverage_ok:
@@ -773,8 +782,9 @@ def main() -> int:
     parser.add_argument("--candidate", default="cuda_cluster")
     parser.add_argument("--threshold", type=float, default=0.07)
     parser.add_argument("--max-cv", type=float, default=0.05)
-    parser.add_argument("--expected-commit")
-    parser.add_argument("--expected-branch")
+    parser.add_argument("--expected-commit", required=True)
+    parser.add_argument("--expected-branch", required=True)
+    parser.add_argument("--expected-tree", required=True)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -786,7 +796,14 @@ def main() -> int:
         max_cv=args.max_cv,
         expected_commit=args.expected_commit,
         expected_branch=args.expected_branch,
+        expected_tree=args.expected_tree,
     )
+    decision["input_reports"] = [
+        {
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+        for path in args.results
+    ]
     if args.json:
         print(json.dumps(decision, indent=2, default=str))
     else:
@@ -809,7 +826,9 @@ def main() -> int:
         for failure in decision["performance_regressions"]:
             print(f"  - performance: {failure}")
 
-    return 1 if decision["status"] == "REJECT" else 0
+    return {"READY_FOR_DISPATCH_REVIEW": 0, "DROP": 0, "REJECT": 1, "MORE_DATA": 2}[
+        decision["status"]
+    ]
 
 
 if __name__ == "__main__":

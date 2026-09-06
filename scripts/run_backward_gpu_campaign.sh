@@ -14,6 +14,32 @@ cd "$repo_dir"
 : "${SWITCHYARD_TOOLCHAIN_DIR:?set SWITCHYARD_TOOLCHAIN_DIR to the local Python headers}"
 
 result_branch=${SWITCHYARD_RESULT_BRANCH:-codex/backward-architecture}
+expected_origin=${SWITCHYARD_EXPECTED_ORIGIN:-https://github.com/sabdulmajid/blackwell-switchyard.git}
+forbidden_metadata='co-authored-by|claude|anthropic|wizchem|chatgpt|openai\.com|session[-_/][[:alnum:]]|file://|/(home|tmp|pub[0-9]+)/'
+
+push_result_commit() {
+  local delay
+  local observed
+  for delay in 0 5 15 30 60 120 240 480; do
+    if ((delay > 0)); then
+      sleep "$delay"
+    fi
+    if git push origin "HEAD:refs/heads/$result_branch"; then
+      return 0
+    fi
+    if observed=$(git ls-remote --heads origin "refs/heads/$result_branch" | awk '{print $1}'); then
+      if [[ "$observed" == "$(git rev-parse HEAD)" ]]; then
+        return 0
+      fi
+      if [[ "$observed" != "$SWITCHYARD_EXPECTED_HEAD" ]]; then
+        echo "result branch advanced; refusing to retry a non-fast-forward push" >&2
+        return 1
+      fi
+    fi
+  done
+  return 1
+}
+
 campaign_dir=$(realpath -m -- "$SWITCHYARD_CAMPAIGN_DIR")
 third_party_dir=$(realpath -m -- "$THIRD_PARTY_DIR")
 if [[ "$campaign_dir" == "$repo_dir" || "$campaign_dir" == "$repo_dir/"* ]]; then
@@ -41,12 +67,11 @@ git_branch=$(git branch --show-current)
 git_dir=$(git rev-parse --path-format=absolute --git-dir)
 git_common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
 git_index=$(git rev-parse --path-format=absolute --git-path index)
+expected_tree=$(git rev-parse "$SWITCHYARD_EXPECTED_HEAD^{tree}")
+export SWITCHYARD_EXPECTED_TREE="$expected_tree"
+export SWITCHYARD_EXPECTED_ORIGIN="$expected_origin"
 if [[ "$git_dir" == "$git_common_dir" || "$git_index" != "$git_dir/index" ]]; then
   echo "campaign must run from a dedicated linked worktree and index" >&2
-  exit 2
-fi
-if [[ "$git_head" != "$SWITCHYARD_EXPECTED_HEAD" ]]; then
-  echo "repository HEAD changed while the campaign waited" >&2
   exit 2
 fi
 if [[ "$git_branch" != "$SWITCHYARD_CAMPAIGN_BRANCH" ]]; then
@@ -62,7 +87,50 @@ if [[ $(git config --local user.name) != "Ayman" ]] ||
   echo "refusing to commit with unexpected Git identity" >&2
   exit 2
 fi
-remote_head=$(git ls-remote --heads origin "refs/heads/$result_branch" | awk '{print $1}')
+if [[ $(git remote get-url origin) != "$expected_origin" ]] ||
+   [[ $(git remote get-url --push origin) != "$expected_origin" ]]; then
+  echo "refusing to publish to an unexpected origin" >&2
+  exit 2
+fi
+if ! remote_head=$(git ls-remote --heads origin "refs/heads/$result_branch" | awk '{print $1}'); then
+  echo "cannot read the result branch" >&2
+  exit 75
+fi
+
+# Recover a fully audited local result commit if a prior push or post-push
+# verification was interrupted. No GPU phase needs to run again.
+if [[ "$git_head" != "$SWITCHYARD_EXPECTED_HEAD" ]]; then
+  mapfile -t recovery_files < <(git diff-tree --no-commit-id --name-only -r HEAD)
+  recovery_paths_ok=true
+  if [[ ${#recovery_files[@]} -lt 8 ]]; then
+    recovery_paths_ok=false
+  fi
+  for path in "${recovery_files[@]}"; do
+    if [[ ! "$path" =~ ^results/backward_campaign_[0-9]{8}T[0-9]{6}Z_[a-z0-9_]+\.json$ ]]; then
+      recovery_paths_ok=false
+    fi
+  done
+  if [[ $(git rev-parse HEAD^) != "$SWITCHYARD_EXPECTED_HEAD" ]] ||
+     [[ $(git show -s --format=%an%n%ae%n%cn%n%ce HEAD) != $'Ayman\nayman.hasib@outlook.com\nAyman\nayman.hasib@outlook.com' ]] ||
+     [[ $(git show -s --format=%s HEAD) != "Record guarded backward campaign" ]] ||
+     [[ "$recovery_paths_ok" != true ]] ||
+     git show -s --format=%B HEAD | rg -qi "$forbidden_metadata" ||
+     git grep -IinE "$forbidden_metadata" HEAD -- "${recovery_files[@]}"; then
+    echo "repository HEAD changed and is not a recoverable result commit" >&2
+    exit 2
+  fi
+  if [[ "$remote_head" == "$git_head" ]]; then
+    exit 0
+  fi
+  if [[ "$remote_head" != "$SWITCHYARD_EXPECTED_HEAD" ]] ||
+     ! push_result_commit; then
+    echo "recoverable result commit still needs publication" >&2
+    exit 75
+  fi
+  remote_head=$(git ls-remote --heads origin "refs/heads/$result_branch" | awk '{print $1}')
+  [[ "$remote_head" == "$git_head" ]] && exit 0
+  exit 75
+fi
 if [[ "$remote_head" != "$SWITCHYARD_EXPECTED_HEAD" ]]; then
   echo "result branch changed while the campaign waited" >&2
   exit 2
@@ -117,6 +185,7 @@ report_reusable() {
     --dtype "$dtype" --shape-set "$shape_set" --impls "$impls" \
     --expected-commit "$SWITCHYARD_EXPECTED_HEAD" \
     --expected-branch "$SWITCHYARD_CAMPAIGN_BRANCH" \
+    --expected-tree "$expected_tree" \
     --expected-gpu-uuid "$SWITCHYARD_TARGET_GPU_UUID" $quick_flag
 }
 
@@ -134,11 +203,22 @@ else
   timeout --foreground 2h python bench/bench_backward.py \
     --shape-set gate --dtype float16 --quick --impls "$all_impls" --out "$smoke_fp16"
 fi
+set +e
 python scripts/check_backward_smoke.py \
   "$smoke_bf16" "$smoke_fp16" \
   --expected-commit "$SWITCHYARD_EXPECTED_HEAD" \
   --expected-branch "$SWITCHYARD_CAMPAIGN_BRANCH" \
+  --expected-tree "$expected_tree" \
   --out "$smoke_decision"
+smoke_exit=$?
+set -e
+if [[ $smoke_exit -ne 0 ]] ||
+   ! python scripts/check_evidence_binding.py \
+     "$smoke_decision" "$smoke_bf16" "$smoke_fp16"; then
+  rm -f -- "$smoke_bf16" "$smoke_fp16" "$smoke_decision"
+  echo "smoke evidence did not pass; regenerate it after a new idle interval" >&2
+  exit 75
+fi
 
 if report_reusable "$full_bf16" bfloat16 full "$all_impls"; then
   echo "reusing clean completed bf16 full phase"
@@ -187,22 +267,33 @@ for candidate in "${candidates[@]}"; do
     --candidate "$candidate" --json \
     --expected-commit "$SWITCHYARD_EXPECTED_HEAD" \
     --expected-branch "$SWITCHYARD_CAMPAIGN_BRANCH" \
+    --expected-tree "$expected_tree" \
     "${evaluation_reports[@]}" >"$decision"
   evaluation_exit=$?
   set -e
-  if [[ $evaluation_exit -gt 1 ]] || ! python -m json.tool "$decision" >/dev/null; then
+  if ! python -m json.tool "$decision" >/dev/null; then
     echo "evaluator failed for $candidate" >&2
     exit 3
   fi
   decision_status=$(python -c \
     'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$decision")
-  case "$decision_status" in
-    DROP|REJECT|READY_FOR_DISPATCH_REVIEW) ;;
+  case "$evaluation_exit:$decision_status" in
+    0:DROP|0:READY_FOR_DISPATCH_REVIEW|1:REJECT) ;;
+    2:MORE_DATA)
+      rm -f -- "$full_bf16" "$full_fp16" "$full_fp32" \
+        "$decision" "${decision_files[@]}"
+      echo "evaluator requested fresh full evidence for $candidate" >&2
+      exit 75
+      ;;
     *)
-      echo "evaluator did not reach a terminal decision for $candidate: $decision_status" >&2
+      echo "evaluator exit and status disagree for $candidate: $evaluation_exit:$decision_status" >&2
       exit 3
       ;;
   esac
+  if ! python scripts/check_evidence_binding.py "$decision" "${evaluation_reports[@]}"; then
+    echo "decision is not bound to the reports for $candidate" >&2
+    exit 3
+  fi
   decision_files+=("$decision")
 done
 
@@ -212,13 +303,20 @@ if [[ $(git rev-parse HEAD) != "$SWITCHYARD_EXPECTED_HEAD" ]] ||
   echo "campaign worktree changed during measurement; results remain external" >&2
   exit 2
 fi
-remote_head=$(git ls-remote --heads origin "refs/heads/$result_branch" | awk '{print $1}')
+if ! remote_head=$(git ls-remote --heads origin "refs/heads/$result_branch" | awk '{print $1}'); then
+  echo "cannot recheck the result branch; results remain external" >&2
+  exit 75
+fi
 if [[ "$remote_head" != "$SWITCHYARD_EXPECTED_HEAD" ]]; then
   echo "result branch changed during measurement; results remain external" >&2
   exit 2
 fi
 
 campaign_id=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["run_id"])' "$full_bf16")
+if [[ ! "$campaign_id" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
+  echo "full report has an invalid campaign ID" >&2
+  exit 2
+fi
 result_prefix="results/backward_campaign_${campaign_id}"
 result_files=(
   "${result_prefix}_offline_compile.json"
@@ -238,15 +336,66 @@ sources=(
   "$full_fp16"
   "$full_fp32"
 )
-for index in "${!sources[@]}"; do
-  install -m 0644 "${sources[$index]}" "${result_files[$index]}"
-done
+decision_destinations=()
 for decision in "${decision_files[@]}"; do
   candidate=${decision##*/decision_}
   candidate=${candidate%.json}
   destination="${result_prefix}_decision_${candidate}.json"
-  install -m 0644 "$decision" "$destination"
+  decision_destinations+=("$destination")
   result_files+=("$destination")
+done
+
+evidence_sources=("${sources[@]}" "${decision_files[@]}")
+evidence_destinations=("${result_files[@]}")
+for destination in "${evidence_destinations[@]}"; do
+  if [[ -e "$destination" ]]; then
+    echo "refusing to overwrite existing evidence: $destination" >&2
+    exit 2
+  fi
+done
+
+cleanup_uncommitted_results() {
+  if [[ $(git rev-parse HEAD) == "$SWITCHYARD_EXPECTED_HEAD" ]]; then
+    git reset --quiet HEAD -- "${result_files[@]}" 2>/dev/null || true
+    rm -f -- "${result_files[@]}"
+  fi
+}
+trap cleanup_uncommitted_results EXIT
+
+evidence_hashes=()
+for source in "${evidence_sources[@]}"; do
+  evidence_hashes+=("$(sha256sum -- "$source" | awk '{print $1}')")
+done
+for index in "${!evidence_sources[@]}"; do
+  source=${evidence_sources[$index]}
+  destination=${evidence_destinations[$index]}
+  if [[ $(sha256sum -- "$source" | awk '{print $1}') != "${evidence_hashes[$index]}" ]]; then
+    echo "evidence changed after evaluation: $source" >&2
+    exit 2
+  fi
+  install -m 0644 "$source" "$destination"
+  if [[ $(sha256sum -- "$destination" | awk '{print $1}') != "${evidence_hashes[$index]}" ]]; then
+    echo "copied evidence does not match its evaluated bytes: $destination" >&2
+    exit 2
+  fi
+done
+for index in "${!evidence_sources[@]}"; do
+  if [[ $(sha256sum -- "${evidence_sources[$index]}" | awk '{print $1}') != "${evidence_hashes[$index]}" ]]; then
+    echo "evidence changed while files were copied" >&2
+    exit 2
+  fi
+done
+
+python scripts/check_evidence_binding.py \
+  "${result_files[3]}" "${result_files[1]}" "${result_files[2]}"
+for index in "${!decision_destinations[@]}"; do
+  candidate=${candidates[$index]}
+  copied_reports=("${result_files[4]}" "${result_files[5]}")
+  if [[ "$candidate" == serial_* ]]; then
+    copied_reports+=("${result_files[6]}")
+  fi
+  python scripts/check_evidence_binding.py \
+    "${decision_destinations[$index]}" "${copied_reports[@]}"
 done
 
 python - "$manifest" <<'PY'
@@ -257,15 +406,17 @@ import sys
 payload = {
     "schema_version": 1,
     "repository_commit": os.environ["SWITCHYARD_EXPECTED_HEAD"],
+    "repository_tree": os.environ["SWITCHYARD_EXPECTED_TREE"],
     "benchmark_branch": os.environ["SWITCHYARD_CAMPAIGN_BRANCH"],
     "result_branch": os.environ.get("SWITCHYARD_RESULT_BRANCH", "codex/backward-architecture"),
+    "origin": os.environ["SWITCHYARD_EXPECTED_ORIGIN"],
     "attempt": int(os.environ["SWITCHYARD_RUN_ATTEMPT"]),
     "gpu_uuid": os.environ["SWITCHYARD_TARGET_GPU_UUID"],
     "guard": {
         "not_before": os.environ.get("SWITCHYARD_GUARD_NOT_BEFORE"),
         "idle_seconds": int(os.environ.get("SWITCHYARD_GUARD_IDLE_SECONDS", "0")),
         "wait_poll_seconds": int(os.environ.get("SWITCHYARD_GUARD_WAIT_POLL_SECONDS", "0")),
-        "watchdog_seconds": int(os.environ.get("SWITCHYARD_GUARD_WATCHDOG_SECONDS", "0")),
+        "watchdog_seconds": float(os.environ.get("SWITCHYARD_GUARD_WATCHDOG_SECONDS", "0")),
         "finalize_seconds": int(os.environ.get("SWITCHYARD_GUARD_FINALIZE_SECONDS", "0")),
     },
     "liger_commit": "777799588a89d74c489ed995e3bf006427738e85",
@@ -275,7 +426,16 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
     handle.write("\n")
 PY
 manifest_destination="${result_prefix}_manifest.json"
+if [[ -e "$manifest_destination" ]]; then
+  echo "refusing to overwrite existing evidence: $manifest_destination" >&2
+  exit 2
+fi
 install -m 0644 "$manifest" "$manifest_destination"
+if [[ $(sha256sum -- "$manifest" | awk '{print $1}') != \
+      $(sha256sum -- "$manifest_destination" | awk '{print $1}') ]]; then
+  echo "copied manifest does not match its source" >&2
+  exit 2
+fi
 result_files+=("$manifest_destination")
 
 git add -- "${result_files[@]}"
@@ -287,7 +447,6 @@ if [[ "${actual_files[*]}" != "${expected_files[*]}" ]]; then
   echo "staged result set is not exact" >&2
   exit 2
 fi
-forbidden_metadata='co-authored-by|claude|anthropic|wizchem|chatgpt|openai\.com|session[-_/][[:alnum:]]|file://|/(home|tmp|pub[0-9]+)/'
 if git diff --cached | rg -i "$forbidden_metadata"; then
   echo "forbidden authorship or task metadata found in staged results" >&2
   exit 2
@@ -299,6 +458,7 @@ export GIT_AUTHOR_EMAIL=ayman.hasib@outlook.com
 export GIT_COMMITTER_NAME=Ayman
 export GIT_COMMITTER_EMAIL=ayman.hasib@outlook.com
 git commit -m "Record guarded backward campaign"
+trap - EXIT
 
 result_commit=$(git rev-parse HEAD)
 if [[ $(git rev-parse HEAD^) != "$SWITCHYARD_EXPECTED_HEAD" ]] ||
@@ -317,8 +477,14 @@ if git grep -IinE "$forbidden_metadata" HEAD -- "${result_files[@]}"; then
   exit 2
 fi
 
-git push origin "HEAD:refs/heads/$result_branch"
-remote_head=$(git ls-remote --heads origin "refs/heads/$result_branch" | awk '{print $1}')
+if ! push_result_commit; then
+  echo "result commit is local and will be retried without rerunning GPU work" >&2
+  exit 75
+fi
+if ! remote_head=$(git ls-remote --heads origin "refs/heads/$result_branch" | awk '{print $1}'); then
+  echo "result commit was pushed but remote verification must be retried" >&2
+  exit 75
+fi
 if [[ "$remote_head" != "$result_commit" ]] || [[ -n $(git status --porcelain) ]]; then
   echo "result push verification failed" >&2
   exit 2

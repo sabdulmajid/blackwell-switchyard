@@ -50,7 +50,7 @@ class GPUProcessMonitor:
         self,
         device_uuid: str,
         *,
-        interval_seconds: float = 0.25,
+        interval_seconds: float = 0.05,
         abort_on_collision: bool = False,
     ):
         if interval_seconds <= 0:

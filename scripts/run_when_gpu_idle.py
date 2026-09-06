@@ -128,19 +128,19 @@ class StateRecorder:
 
 
 def _terminate_group(process: subprocess.Popen, recorder: StateRecorder, reason: str) -> None:
-    recorder.write("stopping_workload", pid=process.pid, reason=reason)
+    recorder.write("stopping_workload", reason=reason)
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
         return
     try:
-        process.wait(timeout=30)
+        process.wait(timeout=2)
     except subprocess.TimeoutExpired:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        process.wait(timeout=30)
+        process.wait(timeout=2)
 
 
 def _parse_not_before(value: str) -> float:
@@ -156,7 +156,7 @@ def main() -> int:
     parser.add_argument("--gpu-index", type=int, default=0)
     parser.add_argument("--idle-seconds", type=int, default=1800)
     parser.add_argument("--wait-poll-seconds", type=int, default=60)
-    parser.add_argument("--watchdog-seconds", type=int, default=2)
+    parser.add_argument("--watchdog-seconds", type=float, default=0.25)
     parser.add_argument("--finalize-seconds", type=int, default=1800)
     parser.add_argument("--deadline-hours", type=float, default=36.0)
     parser.add_argument("--max-attempts", type=int, default=3)
@@ -179,6 +179,10 @@ def main() -> int:
         args.max_attempts,
     ) <= 0:
         parser.error("all intervals and --max-attempts must be positive")
+    if args.deadline_hours <= 0:
+        parser.error("--deadline-hours must be positive")
+    if args.gpu_index < 0:
+        parser.error("--gpu-index must be nonnegative")
 
     args.lock.parent.mkdir(parents=True, exist_ok=True)
     lock_handle = args.lock.open("w")
@@ -190,13 +194,13 @@ def main() -> int:
     lock_handle.flush()
 
     recorder = StateRecorder(args.state)
-    deadline = time.time() + args.deadline_hours * 3600
     if time.time() < args.not_before:
         recorder.write(
             "sleeping_until_not_before",
             not_before=datetime.fromtimestamp(args.not_before).astimezone().isoformat(),
         )
         time.sleep(max(0.0, args.not_before - time.time()))
+    deadline = time.time() + args.deadline_hours * 3600
 
     inventory = _inventory()
     if args.gpu_index not in inventory:
@@ -285,7 +289,6 @@ def main() -> int:
             recorder.write(
                 "workload_started",
                 attempt=attempt,
-                pid=process.pid,
                 target_uuid=target_uuid,
             )
             blind_probes = 0
@@ -341,7 +344,7 @@ def main() -> int:
             recorder.write(
                 "workload_requeued",
                 attempt=attempt,
-                foreign_apps=foreign_apps,
+                foreign_process_count=len(foreign_apps),
                 return_code=return_code,
             )
             idle_since = None

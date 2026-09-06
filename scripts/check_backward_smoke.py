@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -36,6 +38,7 @@ EXPECTED = {
     "liger",
 }
 CANDIDATES = EXPECTED - {"current", "liger"}
+NUMERICAL_FLOOR_CANDIDATES = CANDIDATES - {"cuda_shared"}
 GATE_SHAPES = {
     (9, 1, 4096, 4096),
     (9, 1, 4096, 8192),
@@ -49,6 +52,7 @@ def check_reports(
     *,
     expected_commit: str | None = None,
     expected_branch: str | None = None,
+    expected_tree: str | None = None,
 ) -> dict:
     problems: list[str] = []
     if {report.get("dtype") for report in reports} != {"bfloat16", "float16"}:
@@ -64,12 +68,19 @@ def check_reports(
         problems.append("reports do not use one recorded repository tree")
     if expected_commit is not None and commits != {expected_commit}:
         problems.append(f"reports do not match expected commit {expected_commit}")
+    if expected_tree is not None and trees != {expected_tree}:
+        problems.append(f"reports do not match expected tree {expected_tree}")
 
     successful = {name: 0 for name in EXPECTED}
     for report in reports:
         dtype = report.get("dtype", "")
         prefix = dtype or "unknown dtype"
-        if report.get("schema_version") != 2 or report.get("shape_set") != "gate":
+        if (
+            report.get("schema_version") != 2
+            or report.get("shape_set") != "gate"
+            or not isinstance(report.get("run_id"), str)
+            or re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", report["run_id"]) is None
+        ):
             problems.append(f"{prefix}: report is not a schema-2 gate run")
         if report.get("run_status") != "complete":
             problems.append(f"{prefix}: report is not complete")
@@ -117,7 +128,7 @@ def check_reports(
             and isinstance(interval, int | float)
             and 0 < interval <= 1
             and isinstance(duration, int | float)
-            and duration >= 0
+            and duration >= interval
             and samples >= max(2, int(duration / (2 * interval)))
         )
         if (
@@ -196,7 +207,7 @@ def check_reports(
                 item.get("seed"): item.get("report", {})
                 for item in current.get("correctness_by_seed", [])
             }
-            for candidate in CANDIDATES:
+            for candidate in NUMERICAL_FLOOR_CANDIDATES:
                 measured = records.get(candidate, {})
                 if measured.get("skipped"):
                     continue
@@ -263,14 +274,22 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("reports", nargs=2, type=Path)
     parser.add_argument("--out", type=Path)
-    parser.add_argument("--expected-commit")
-    parser.add_argument("--expected-branch")
+    parser.add_argument("--expected-commit", required=True)
+    parser.add_argument("--expected-branch", required=True)
+    parser.add_argument("--expected-tree", required=True)
     args = parser.parse_args()
     decision = check_reports(
         [json.loads(path.read_text()) for path in args.reports],
         expected_commit=args.expected_commit,
         expected_branch=args.expected_branch,
+        expected_tree=args.expected_tree,
     )
+    decision["input_reports"] = [
+        {
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+        for path in args.reports
+    ]
     rendered = json.dumps(decision, indent=2) + "\n"
     if args.out:
         args.out.write_text(rendered)
