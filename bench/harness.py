@@ -25,12 +25,15 @@ from __future__ import annotations
 
 import gc
 import hashlib
+import os
 import statistics
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import torch
@@ -40,19 +43,114 @@ _L2_FLUSH_BYTES = 384 * 2**20
 _flush_buffer: torch.Tensor | None = None
 
 
+class GPUProcessMonitor:
+    """Sample NVML during a benchmark and retain any competing-process event."""
+
+    def __init__(
+        self,
+        device_uuid: str,
+        *,
+        interval_seconds: float = 0.25,
+        abort_on_collision: bool = False,
+    ):
+        if interval_seconds <= 0:
+            raise ValueError("monitor interval must be positive")
+        self.device_uuid = device_uuid
+        self.interval_seconds = interval_seconds
+        self.abort_on_collision = abort_on_collision
+        self.own_pid = os.getpid()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._handle = None
+        self._pynvml = None
+        self._lock = threading.Lock()
+        self._samples = 0
+        self._collision_events: list[dict] = []
+        self._probe_errors: list[str] = []
+        self._foreign_active = False
+        self._started_at: float | None = None
+
+    def start(self) -> None:
+        import pynvml
+
+        pynvml.nvmlInit()
+        self._started_at = time.monotonic()
+        self._pynvml = pynvml
+        self._handle = pynvml.nvmlDeviceGetHandleByUUID(self.device_uuid)
+        self._poll_once()
+        self._thread = threading.Thread(target=self._run, name="gpu-process-monitor", daemon=True)
+        self._thread.start()
+
+    def _poll_once(self) -> None:
+        try:
+            processes = self._pynvml.nvmlDeviceGetComputeRunningProcesses(self._handle)
+            foreign_count = sum(process.pid != self.own_pid for process in processes)
+            new_collision = False
+            with self._lock:
+                self._samples += 1
+                if foreign_count and not self._foreign_active:
+                    new_collision = True
+                    self._collision_events.append(
+                        {
+                            "time": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+                            "foreign_process_count": foreign_count,
+                        }
+                    )
+                self._foreign_active = bool(foreign_count)
+            if new_collision and self.abort_on_collision:
+                os._exit(75)
+        except Exception as exc:  # noqa: BLE001
+            message = f"{type(exc).__name__}: {exc}"[:300]
+            with self._lock:
+                if message not in self._probe_errors:
+                    self._probe_errors.append(message)
+            if self.abort_on_collision:
+                os._exit(75)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval_seconds):
+            self._poll_once()
+
+    def stop(self) -> dict:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=max(5.0, 2 * self.interval_seconds))
+            if self._thread.is_alive():
+                with self._lock:
+                    self._probe_errors.append("monitor thread did not stop")
+        self._poll_once()
+        with self._lock:
+            duration = (
+                time.monotonic() - self._started_at
+                if self._started_at is not None
+                else 0.0
+            )
+            report = {
+                "device_uuid": self.device_uuid,
+                "interval_seconds": self.interval_seconds,
+                "samples": self._samples,
+                "duration_seconds": duration,
+                "collision_detected": bool(self._collision_events),
+                "collision_events": self._collision_events.copy(),
+                "probe_errors": self._probe_errors.copy(),
+            }
+        if self._pynvml is not None:
+            self._pynvml.nvmlShutdown()
+        return report
+
+
 def repository_provenance(
     repo: Path, third_party: Mapping[str, Path] | None = None
 ) -> dict:
     """Record exact source revisions and seeds alongside raw measurements."""
 
-    def git(path: Path, *args: str) -> str | None:
-        result = subprocess.run(
+    def git(path: Path, *args: str) -> str:
+        return subprocess.run(
             ["git", "-C", str(path), *args],
-            check=False,
+            check=True,
             capture_output=True,
             text=True,
-        )
-        return result.stdout.strip() if result.returncode == 0 else None
+        ).stdout.strip()
 
     revisions = {}
     third_party_dirty = {}
@@ -64,12 +162,24 @@ def repository_provenance(
     status = git(repo, "status", "--porcelain") or ""
     diff = subprocess.run(
         ["git", "-C", str(repo), "diff", "--binary", "HEAD"],
-        check=False,
+        check=True,
         capture_output=True,
     ).stdout
 
+    sanitized_argv = []
+    resolved_repo = repo.resolve()
+    for argument in sys.argv:
+        path = Path(argument)
+        if not path.is_absolute():
+            sanitized_argv.append(argument)
+            continue
+        try:
+            sanitized_argv.append(str(path.resolve().relative_to(resolved_repo)))
+        except ValueError:
+            sanitized_argv.append(f"<external>/{path.name}")
+
     return {
-        "argv": sys.argv.copy(),
+        "argv": sanitized_argv,
         "repository_commit": git(repo, "rev-parse", "HEAD"),
         "repository_tree": git(repo, "rev-parse", "HEAD^{tree}"),
         "repository_branch": git(repo, "branch", "--show-current"),

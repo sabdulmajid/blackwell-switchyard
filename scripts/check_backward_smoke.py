@@ -14,10 +14,13 @@ sys.path.insert(0, str(REPO / "scripts"))
 
 from evaluate_backward import (  # noqa: E402
     MASKED_TAIL_SHAPES,
+    PINNED_LIGER_COMMIT,
+    PINNED_LIGER_SOURCE_SHA256,
     _check_current_kernel_contract,
     _check_kernel_contract,
     _correct,
     _shape,
+    _timing_from_raw,
 )
 
 from switchyard.training_plan import get_training_plan  # noqa: E402
@@ -28,21 +31,39 @@ EXPECTED = {
     "serial_saved_partials_t16",
     "cuda_shared",
     "cuda_cluster",
+    "cuda_cluster4",
+    "cuda_register",
     "liger",
 }
 CANDIDATES = EXPECTED - {"current", "liger"}
+GATE_SHAPES = {
+    (9, 1, 4096, 4096),
+    (9, 1, 4096, 8192),
+    (32, 1, 4096, 2048),
+    (32, 1, 4096, 4096),
+}
 
 
-def check_reports(reports: list[dict]) -> dict:
+def check_reports(
+    reports: list[dict],
+    *,
+    expected_commit: str | None = None,
+    expected_branch: str | None = None,
+) -> dict:
     problems: list[str] = []
     if {report.get("dtype") for report in reports} != {"bfloat16", "float16"}:
         problems.append("smoke gate requires exactly one bf16 and one fp16 report")
     commits = {report.get("provenance", {}).get("repository_commit") for report in reports}
+    trees = {report.get("provenance", {}).get("repository_tree") for report in reports}
     uuids = {report.get("gpu_preflight", {}).get("resolved_uuid") for report in reports}
     if len(commits) != 1 or None in commits:
         problems.append("reports do not use one recorded repository commit")
     if len(uuids) != 1 or None in uuids:
         problems.append("reports do not use one physical GPU")
+    if len(trees) != 1 or None in trees:
+        problems.append("reports do not use one recorded repository tree")
+    if expected_commit is not None and commits != {expected_commit}:
+        problems.append(f"reports do not match expected commit {expected_commit}")
 
     successful = {name: 0 for name in EXPECTED}
     for report in reports:
@@ -50,15 +71,31 @@ def check_reports(reports: list[dict]) -> dict:
         prefix = dtype or "unknown dtype"
         if report.get("schema_version") != 2 or report.get("shape_set") != "gate":
             problems.append(f"{prefix}: report is not a schema-2 gate run")
+        if report.get("run_status") != "complete":
+            problems.append(f"{prefix}: report is not complete")
         if report.get("correctness_seeds") != [0, 1, 2]:
             problems.append(f"{prefix}: correctness seeds must be [0, 1, 2]")
         if set(report.get("selected_implementations", [])) != EXPECTED:
             problems.append(f"{prefix}: selected implementation set is incomplete")
         provenance = report.get("provenance", {})
+        if expected_branch is not None and provenance.get("repository_branch") != expected_branch:
+            problems.append(f"{prefix}: wrong benchmark branch")
         if provenance.get("worktree_dirty") is not False:
             problems.append(f"{prefix}: worktree was not clean")
         if "--quick" not in provenance.get("argv", []):
             problems.append(f"{prefix}: report is not marked as a quick smoke run")
+        if provenance.get("third_party_commits", {}).get("Liger-Kernel") != PINNED_LIGER_COMMIT:
+            problems.append(f"{prefix}: pinned Liger commit is missing or wrong")
+        if provenance.get("third_party_dirty", {}).get("Liger-Kernel") is not False:
+            problems.append(f"{prefix}: pinned Liger checkout is not recorded clean")
+        liger = report.get("comparators", {}).get("liger", {})
+        if (
+            liger.get("commit") != PINNED_LIGER_COMMIT
+            or liger.get("under_pinned_checkout") is not True
+            or liger.get("worktree_dirty") is not False
+            or liger.get("source_sha256") != PINNED_LIGER_SOURCE_SHA256
+        ):
+            problems.append(f"{prefix}: imported Liger provenance is incomplete")
         preflight = report.get("gpu_preflight", {})
         postflight = report.get("gpu_postflight", {})
         if preflight.get("compute_processes_at_start") or preflight.get("busy_override"):
@@ -67,6 +104,33 @@ def check_reports(reports: list[dict]) -> dict:
             problems.append(f"{prefix}: postflight was not exclusive")
         if postflight.get("resolved_uuid") != preflight.get("resolved_uuid"):
             problems.append(f"{prefix}: preflight and postflight GPU differ")
+        monitor = report.get("gpu_process_monitor", {})
+        samples = monitor.get("samples")
+        interval = monitor.get("interval_seconds")
+        duration = monitor.get("duration_seconds")
+        monitor_coverage_ok = (
+            isinstance(samples, int)
+            and samples >= 2
+            and isinstance(interval, int | float)
+            and 0 < interval <= 1
+            and isinstance(duration, int | float)
+            and duration >= 0
+            and samples >= max(2, int(duration / (2 * interval)))
+        )
+        if (
+            monitor.get("device_uuid") != preflight.get("resolved_uuid")
+            or monitor.get("collision_detected") is not False
+            or monitor.get("collision_events")
+            or monitor.get("probe_errors")
+            or not monitor_coverage_ok
+        ):
+            problems.append(f"{prefix}: continuous GPU monitor is incomplete or contaminated")
+
+        execution_order = report.get("execution_order", [])
+        schedule_shapes = [_shape(item) for item in execution_order]
+        if len(schedule_shapes) != len(set(schedule_shapes)) or set(schedule_shapes) != GATE_SHAPES:
+            problems.append(f"{prefix}: exact gate execution schedule is missing")
+        schedules = {_shape(item): item.get("metrics", {}) for item in execution_order}
 
         by_shape: dict[tuple[int, int, int, int], dict[str, dict]] = {}
         local_success = {name: 0 for name in EXPECTED}
@@ -87,12 +151,23 @@ def check_reports(reports: list[dict]) -> dict:
             local_success[implementation] += 1
             if not _correct(record):
                 problems.append(f"{prefix} {shape} {implementation}: correctness failed")
+            if [
+                item.get("seed") for item in record.get("correctness_by_seed", [])
+            ] != [0, 1, 2]:
+                problems.append(
+                    f"{prefix} {shape} {implementation}: correctness seed matrix is incomplete"
+                )
             for metric in ("forward", "backward", "fwd_bwd"):
-                timing = record.get(metric, {})
-                if timing.get("trial_count") != 2 or len(timing.get("trials", [])) != 2:
-                    problems.append(
-                        f"{prefix} {shape} {implementation}: incomplete quick {metric} trials"
-                    )
+                _timing_from_raw(
+                    record,
+                    metric,
+                    schedules.get(shape, {}).get(metric, []),
+                    problems,
+                    f"{prefix} {shape}",
+                    trial_count=2,
+                    reps_per_trial=10,
+                    warmup_per_trial=8,
+                )
             kernel_problems: list[str] = []
             label = f"{prefix} {shape}"
             if implementation == "current":
@@ -107,7 +182,12 @@ def check_reports(reports: list[dict]) -> dict:
                     kernel_problems.append(f"{label}: wrong serialized training plan")
             problems.extend(kernel_problems)
 
-        for shape, records in by_shape.items():
+        if set(by_shape) != GATE_SHAPES:
+            problems.append(f"{prefix}: exact four gate shapes are missing")
+        for shape in GATE_SHAPES:
+            records = by_shape.get(shape, {})
+            if set(records) != EXPECTED:
+                problems.append(f"{prefix} {shape}: implementation record matrix is incomplete")
             current = records.get("current", {})
             accepted_by_seed = {
                 item.get("seed"): item.get("report", {})
@@ -180,8 +260,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("reports", nargs=2, type=Path)
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--expected-commit")
+    parser.add_argument("--expected-branch")
     args = parser.parse_args()
-    decision = check_reports([json.loads(path.read_text()) for path in args.reports])
+    decision = check_reports(
+        [json.loads(path.read_text()) for path in args.reports],
+        expected_commit=args.expected_commit,
+        expected_branch=args.expected_branch,
+    )
     rendered = json.dumps(decision, indent=2) + "\n"
     if args.out:
         args.out.write_text(rendered)

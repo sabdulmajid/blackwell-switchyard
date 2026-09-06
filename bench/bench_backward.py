@@ -21,6 +21,7 @@ Run after the target GPU is available::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import statistics
@@ -43,6 +44,7 @@ if liger_src.exists():
     sys.path.insert(0, str(liger_src))
 
 from harness import (  # noqa: E402
+    GPUProcessMonitor,
     check_against,
     count_kernels,
     environment,
@@ -111,6 +113,44 @@ TOLERANCES = {
     torch.float16: {"output": 5e-3, "dv": 1e-2, "dw": 3e-2},
     torch.float32: {"output": 2e-5, "dv": 1e-4, "dw": 1e-3},
 }
+PINNED_LIGER_COMMIT = "777799588a89d74c489ed995e3bf006427738e85"
+PINNED_LIGER_SOURCE_SHA256 = "57da6fed98f794088b2a56223e6c7ef9fc920824f0c483cb0ef0b5a343dab0b1"
+
+
+def _liger_provenance() -> dict:
+    checkout = THIRD_PARTY / "Liger-Kernel"
+    if not checkout.is_dir():
+        raise SystemExit(f"pinned Liger checkout is missing: {checkout}")
+
+    def git(*arguments: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(checkout), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    commit = git("rev-parse", "HEAD")
+    if commit != PINNED_LIGER_COMMIT:
+        raise SystemExit(f"Liger must use pinned commit {PINNED_LIGER_COMMIT}, got {commit}")
+    if git("status", "--porcelain"):
+        raise SystemExit("pinned Liger checkout is dirty")
+
+    import liger_kernel.ops.attn_res as liger_attn_res
+
+    source = Path(liger_attn_res.__file__).resolve()
+    if not source.is_relative_to(liger_src.resolve()):
+        raise SystemExit(f"Liger imported outside the pinned checkout: {source}")
+    source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
+    if source_sha256 != PINNED_LIGER_SOURCE_SHA256:
+        raise SystemExit("pinned Liger attention-residual source hash is wrong")
+    return {
+        "commit": commit,
+        "worktree_dirty": False,
+        "source_path": str(source.relative_to(checkout.resolve())),
+        "source_sha256": source_sha256,
+        "under_pinned_checkout": True,
+    }
 
 
 def _compute_processes(device_uuid: str) -> tuple[list[str], list[str]]:
@@ -118,7 +158,7 @@ def _compute_processes(device_uuid: str) -> tuple[list[str], list[str]]:
     process_query = [
         "nvidia-smi",
         f"--id={device_uuid}",
-        "--query-compute-apps=pid,process_name,used_memory",
+        "--query-compute-apps=pid",
         "--format=csv,noheader,nounits",
     ]
     rows = subprocess.run(
@@ -217,6 +257,14 @@ def _summarize_trials(trials: list[dict], *, warmup: int) -> dict:
     }
 
 
+def _write_checkpoint(report: dict, out: Path) -> None:
+    """Atomically preserve completed shapes without making partial evidence final."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    temporary = out.with_suffix(out.suffix + ".tmp")
+    temporary.write_text(json.dumps(report, indent=2, default=str) + "\n")
+    os.replace(temporary, out)
+
+
 def _measure_paired_trials(
     functions: dict[str, Callable[[], object]],
     *,
@@ -294,6 +342,14 @@ def build_implementations(v: torch.Tensor) -> tuple[dict, list[str]]:
         "cuda_cluster": plan_spec(
             "cuda_cluster",
             "private persistent feature-sharded one-read cluster candidate",
+        ),
+        "cuda_cluster4": plan_spec(
+            "cuda_cluster4",
+            "private four-block feature-sharded one-read cluster candidate",
+        ),
+        "cuda_register": plan_spec(
+            "cuda_register",
+            "private persistent packed-register one-read candidate",
         ),
     }
     notes: list[str] = []
@@ -418,13 +474,24 @@ def bench_one(
     elif plan is not None:
         family = plan.backward.family
         traffic_options = {}
-        if family == "cuda_cluster":
-            from switchyard.cuda_op import cuda_cluster_launch_info
+        if family in {"cuda_cluster", "cuda_cluster4", "cuda_register"}:
+            from switchyard.cuda_op import (
+                cuda_cluster_launch_info,
+                cuda_register_launch_info,
+            )
 
-            launch_info = cuda_cluster_launch_info(v)
-            record["cluster_launch_info"] = launch_info
+            if family in {"cuda_cluster", "cuda_cluster4"}:
+                launch_info = cuda_cluster_launch_info(
+                    v, cluster_blocks=2 if family == "cuda_cluster" else 4
+                )
+                record["cluster_launch_info"] = launch_info
+                active_workers = launch_info["active_clusters"]
+            else:
+                launch_info = cuda_register_launch_info(v)
+                record["register_launch_info"] = launch_info
+                active_workers = launch_info["active_blocks"]
             traffic_options["persistent_clusters"] = min(
-                shape.b * shape.t, launch_info["active_clusters"]
+                shape.b * shape.t, active_workers
             )
         model_name = {
             "source_serial": (
@@ -432,6 +499,8 @@ def bench_one(
             ),
             "cuda_shared": "cuda_shared",
             "cuda_cluster": "cuda_cluster",
+            "cuda_cluster4": "cuda_cluster4",
+            "cuda_register": "cuda_register",
         }[family]
         record["traffic_model"] = backward_traffic_estimate(
             model_name,
@@ -462,7 +531,7 @@ def main() -> None:
         "--impls",
         default=(
             "current,serial_recompute_atomic_t4,serial_saved_partials_t16,"
-            "cuda_shared,cuda_cluster,liger"
+            "cuda_shared,cuda_cluster,cuda_cluster4,cuda_register,liger"
         ),
     )
     parser.add_argument("--quick", action="store_true")
@@ -475,27 +544,35 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
 
+    selected = [name.strip() for name in args.impls.split(",") if name.strip()]
+    comparators = {"liger": _liger_provenance()} if "liger" in selected else {}
     device = torch.device(f"cuda:{args.device}")
     torch.cuda.set_device(device)
     preflight = _gpu_preflight(device, allow_busy=args.allow_busy_gpu)
+    process_monitor = GPUProcessMonitor(
+        preflight["resolved_uuid"], abort_on_collision=True
+    )
+    process_monitor.start()
     dtype = getattr(torch, args.dtype)
-    selected = [name.strip() for name in args.impls.split(",") if name.strip()]
     correctness_seeds = [
         int(value.strip()) for value in args.correctness_seeds.split(",") if value.strip()
     ]
     if not correctness_seeds or correctness_seeds[0] != 0:
         parser.error("--correctness-seeds must start with 0, the timed input seed")
+    out = args.out or REPO / "results" / f"backward_candidates_{args.dtype}.json"
 
     report = {
         "schema_version": 2,
         "run_id": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
         "experiment": "backward architecture selection",
+        "run_status": "running",
         "candidate_reachable_from_production": False,
         "environment": environment(),
         "gpu_preflight": preflight,
         "provenance": repository_provenance(
             REPO, {"Liger-Kernel": THIRD_PARTY / "Liger-Kernel"}
         ),
+        "comparators": comparators,
         "dtype": args.dtype,
         "shape_set": args.shape_set,
         "selected_implementations": selected,
@@ -647,6 +724,7 @@ def main() -> None:
 
         del v, w, g
         torch.cuda.empty_cache()
+        _write_checkpoint(report, out)
 
     for shape in CORRECTNESS_ONLY_SHAPES:
         print(f"correctness-only {shape.key()}", flush=True)
@@ -699,12 +777,19 @@ def main() -> None:
             del oracle, v, w, g
             torch.cuda.empty_cache()
         report["correctness_only"].append(case)
+        _write_checkpoint(report, out)
 
     report["gpu_postflight"] = _gpu_postflight(preflight)
-    out = args.out or REPO / "results" / f"backward_candidates_{args.dtype}.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(report, indent=2, default=str) + "\n")
+    report["gpu_process_monitor"] = process_monitor.stop()
+    report["run_status"] = "complete"
+    _write_checkpoint(report, out)
     print(f"wrote {out}")
+    if (
+        report["gpu_process_monitor"]["collision_detected"]
+        or report["gpu_process_monitor"]["probe_errors"]
+        or report["gpu_postflight"]["compute_processes_at_end"]
+    ):
+        raise SystemExit(75)
 
 
 if __name__ == "__main__":
