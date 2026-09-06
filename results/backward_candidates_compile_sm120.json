@@ -6,7 +6,7 @@
   },
   "gpu_visible": false,
   "provenance": {
-    "repository_commit": "9fed27fbf1633e4056fb0d602c9ffbe81bc61fbc",
+    "repository_commit": "e3be37805d752bdf02aead3b98fe371ab2684575",
     "worktree_clean": true,
     "torch": "2.9.0+cu128",
     "triton": "3.5.0",
@@ -116,7 +116,6 @@
       "resources": [
         {
           "kernel": "_bwd_source_serial_grouped",
-          "symbol": "_bwd_source_serial_grouped",
           "registers": 241,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -140,7 +139,6 @@
       "resources": [
         {
           "kernel": "_bwd_source_serial_grouped",
-          "symbol": "_bwd_source_serial_grouped",
           "registers": 204,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -164,7 +162,6 @@
       "resources": [
         {
           "kernel": "_bwd_source_serial_grouped",
-          "symbol": "_bwd_source_serial_grouped",
           "registers": 255,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -188,7 +185,6 @@
       "resources": [
         {
           "kernel": "_bwd_source_serial_grouped",
-          "symbol": "_bwd_source_serial_grouped",
           "registers": 255,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -209,7 +205,6 @@
       "resources": [
         {
           "kernel": "_fwd_tiled_saved",
-          "symbol": "_fwd_tiled_saved",
           "registers": 241,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -230,7 +225,6 @@
       "resources": [
         {
           "kernel": "_fwd_tiled",
-          "symbol": "_fwd_tiled",
           "registers": 237,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -251,7 +245,6 @@
       "resources": [
         {
           "kernel": "_fwd_resident_saved",
-          "symbol": "_fwd_resident_saved",
           "registers": 126,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -272,7 +265,6 @@
       "resources": [
         {
           "kernel": "_reduce_dw_partials",
-          "symbol": "_reduce_dw_partials",
           "registers": 35,
           "stack_bytes": 0,
           "static_shared_bytes": 0,
@@ -298,7 +290,6 @@
       "resources": [
         {
           "kernel": "register_backward_kernel",
-          "symbol": "_ZN59_GLOBAL__N__a9dfd42e_18_shared_backward_cu_e7c8000b_185330824register_backward_kernelI13__nv_bfloat16Li9ELi4096EEEvPKT_S4_S4_PKfS6_S6_PS2_Pfill",
           "registers": 128,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -306,7 +297,6 @@
         },
         {
           "kernel": "register_backward_kernel",
-          "symbol": "_ZN59_GLOBAL__N__a9dfd42e_18_shared_backward_cu_e7c8000b_185330824register_backward_kernelI6__halfLi9ELi4096EEEvPKT_S4_S4_PKfS6_S6_PS2_Pfill",
           "registers": 128,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -314,7 +304,6 @@
         },
         {
           "kernel": "shared_backward_kernel",
-          "symbol": "_ZN59_GLOBAL__N__a9dfd42e_18_shared_backward_cu_e7c8000b_185330822shared_backward_kernelI13__nv_bfloat16EEvPKT_S4_S4_PS2_Pfiiiflll",
           "registers": 48,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -322,7 +311,6 @@
         },
         {
           "kernel": "feature_cluster_backward_kernel_4block",
-          "symbol": "_ZN59_GLOBAL__N__a9dfd42e_18_shared_backward_cu_e7c8000b_185330831feature_cluster_backward_kernelI13__nv_bfloat16Li4EEEvPKT_S4_S4_PKfS6_S6_PS2_Pfiiilll",
           "registers": 72,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -330,7 +318,6 @@
         },
         {
           "kernel": "feature_cluster_backward_kernel_2block",
-          "symbol": "_ZN59_GLOBAL__N__a9dfd42e_18_shared_backward_cu_e7c8000b_185330831feature_cluster_backward_kernelI13__nv_bfloat16Li2EEEvPKT_S4_S4_PKfS6_S6_PS2_Pfiiilll",
           "registers": 64,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -338,7 +325,6 @@
         },
         {
           "kernel": "shared_backward_kernel",
-          "symbol": "_ZN59_GLOBAL__N__a9dfd42e_18_shared_backward_cu_e7c8000b_185330822shared_backward_kernelI6__halfEEvPKT_S4_S4_PS2_Pfiiiflll",
           "registers": 48,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -346,7 +332,6 @@
         },
         {
           "kernel": "feature_cluster_backward_kernel_4block",
-          "symbol": "_ZN59_GLOBAL__N__a9dfd42e_18_shared_backward_cu_e7c8000b_185330831feature_cluster_backward_kernelI6__halfLi4EEEvPKT_S4_S4_PKfS6_S6_PS2_Pfiiilll",
           "registers": 72,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
@@ -354,7 +339,6 @@
         },
         {
           "kernel": "feature_cluster_backward_kernel_2block",
-          "symbol": "_ZN59_GLOBAL__N__a9dfd42e_18_shared_backward_cu_e7c8000b_185330831feature_cluster_backward_kernelI6__halfLi2EEEvPKT_S4_S4_PKfS6_S6_PS2_Pfiiilll",
           "registers": 64,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
