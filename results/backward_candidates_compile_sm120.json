@@ -6,7 +6,7 @@
   },
   "gpu_visible": false,
   "provenance": {
-    "repository_commit": "5123f861b3e27ab1f0422bc49fbd34b0ed2d25d7",
+    "repository_commit": "ab32e6c3fbd82f31dc62d611801fa22600922a02",
     "worktree_clean": true,
     "torch": "2.9.0+cu128",
     "triton": "3.5.0",
