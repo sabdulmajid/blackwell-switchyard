@@ -52,7 +52,10 @@ from harness import (  # noqa: E402
     measure_memory,
     repository_provenance,
 )
-from switchyard.performance import backward_traffic_estimate  # noqa: E402
+from switchyard.performance import (  # noqa: E402
+    backward_traffic_estimate,
+    forward_traffic_estimate,
+)
 from switchyard.reference import (  # noqa: E402
     DEFAULT_EPS,
     block_attn_res_reference,
@@ -262,6 +265,15 @@ def _write_checkpoint(report: dict, out: Path) -> None:
     os.replace(temporary, out)
 
 
+def _balanced_trial_order(
+    names: list[str], trial_index: int, rotation: int
+) -> list[str]:
+    """Balance which member of every pair runs first across adjacent trials."""
+    offset = (rotation + trial_index // 2) % len(names)
+    order = names[offset:] + names[:offset]
+    return list(reversed(order)) if trial_index % 2 else order
+
+
 def _measure_paired_trials(
     functions: dict[str, Callable[[], object]],
     *,
@@ -275,13 +287,12 @@ def _measure_paired_trials(
     therefore treats the interleaved trial medians, not every repetition, as
     the independent paired observations.
     """
-    trial_count, reps, warmup = (2, 10, 8) if quick else (5, 40, 25)
+    trial_count, reps, warmup = (2, 10, 8) if quick else (15, 13, 10)
     names = list(functions)
     trials = {name: [] for name in names}
     schedule = []
     for trial_index in range(trial_count):
-        offset = (rotation + trial_index) % len(names)
-        order = names[offset:] + names[:offset]
+        order = _balanced_trial_order(names, trial_index, rotation)
         schedule.append({"trial": trial_index, "implementations": order})
         for order_index, name in enumerate(order):
             measured = measure_latency(
@@ -352,6 +363,10 @@ def build_implementations(v: torch.Tensor) -> tuple[dict, list[str]]:
             "cuda_register_cluster",
             "private shape-specialized packed-register cluster candidate",
         ),
+        "cuda_register_cluster_full": plan_spec(
+            "cuda_register_cluster_full",
+            "private one-read register-cluster forward and backward candidate",
+        ),
     }
     notes: list[str] = []
     try:
@@ -402,6 +417,17 @@ def _make_runtime(fn, v: torch.Tensor, w: torch.Tensor, g: torch.Tensor) -> dict
     }
 
 
+def _training_memory_bytes(
+    v: torch.Tensor, w: torch.Tensor, g: torch.Tensor
+) -> tuple[int, int]:
+    """Return resident and mandatory-output bytes for one training call."""
+    if not (v.element_size() == w.element_size() == g.element_size()):
+        raise ValueError("training tensors must use one element size")
+    itemsize = v.element_size()
+    accounted_output = (v.numel() + w.numel() + g.numel()) * itemsize
+    return 2 * accounted_output, accounted_output
+
+
 def bench_one(
     name,
     spec,
@@ -431,6 +457,13 @@ def bench_one(
     record.update(timings)
 
     try:
+        record["forward_kernels"] = count_kernels(
+            runtime["forward"], device=device, iters=3
+        ).as_dict()
+    except Exception as exc:  # noqa: BLE001
+        record["forward_kernels"] = {"error": f"{type(exc).__name__}: {exc}"[:300]}
+
+    try:
         record["backward_kernels"] = count_kernels(
             runtime["backward"], device=device, iters=3
         ).as_dict()
@@ -445,18 +478,12 @@ def bench_one(
         record["fwd_bwd_kernels"] = {"error": f"{type(exc).__name__}: {exc}"[:300]}
 
     itemsize = v.element_size()
-    resident = (
-        v.numel() * itemsize
-        + w.numel() * itemsize
-        + g.numel() * itemsize
-        + v.numel() * itemsize
-        + w.numel() * itemsize
-    )
+    resident, accounted_output = _training_memory_bytes(v, w, g)
     record["fwd_bwd_memory"] = measure_memory(
         runtime["fwd_bwd"],
         device=device,
         resident_bytes=resident,
-        output_bytes=(shape.b * shape.t * shape.d + v.numel() + w.numel()) * itemsize,
+        output_bytes=accounted_output,
         after_warmup=runtime["clear_gradients"],
     ).as_dict()
 
@@ -466,6 +493,19 @@ def bench_one(
         model_name = "resident" if current_is_resident else "tiled"
         record["traffic_model"] = backward_traffic_estimate(
             model_name,
+            shape.n,
+            shape.b,
+            shape.t,
+            shape.d,
+            itemsize=itemsize,
+        ).as_dict()
+        forward_resident = (
+            (1 << (shape.n - 1).bit_length())
+            * (1 << (shape.d - 1).bit_length())
+            <= 32768
+        )
+        record["forward_traffic_model"] = forward_traffic_estimate(
+            "resident" if forward_resident else "tiled",
             shape.n,
             shape.b,
             shape.t,
@@ -483,6 +523,7 @@ def bench_one(
         }:
             from switchyard.cuda_op import (
                 cuda_cluster_launch_info,
+                cuda_register_cluster_forward_launch_info,
                 cuda_register_cluster_launch_info,
                 cuda_register_launch_info,
             )
@@ -501,6 +542,10 @@ def bench_one(
                 launch_info = cuda_register_cluster_launch_info(v)
                 record["register_cluster_launch_info"] = launch_info
                 active_workers = launch_info["active_clusters"]
+                if plan.forward.family == "cuda_register_cluster":
+                    record["register_cluster_forward_launch_info"] = (
+                        cuda_register_cluster_forward_launch_info(v)
+                    )
             traffic_options["persistent_clusters"] = min(
                 shape.b * shape.t, active_workers
             )
@@ -525,6 +570,24 @@ def bench_one(
             source_uses_partials=plan.backward.dw_reduction == "partials",
             **traffic_options,
         ).as_dict()
+        forward_resident = (
+            (1 << (shape.n - 1).bit_length())
+            * (1 << (shape.d - 1).bit_length())
+            <= 32768
+        )
+        record["forward_traffic_model"] = forward_traffic_estimate(
+            (
+                "cuda_register_cluster"
+                if plan.forward.family == "cuda_register_cluster"
+                else "resident" if forward_resident else "tiled"
+            ),
+            shape.n,
+            shape.b,
+            shape.t,
+            shape.d,
+            itemsize=itemsize,
+            saves_backward_coefficients=plan.saves_forward_stats,
+        ).as_dict()
 
     torch.cuda.empty_cache()
     return record
@@ -544,7 +607,7 @@ def main() -> None:
         default=(
             "current,serial_recompute_atomic_t4,serial_saved_partials_t16,"
             "cuda_shared,cuda_cluster,cuda_cluster4,cuda_register,"
-            "cuda_register_cluster,liger"
+            "cuda_register_cluster,cuda_register_cluster_full,liger"
         ),
     )
     parser.add_argument("--quick", action="store_true")
@@ -594,12 +657,17 @@ def main() -> None:
         "methodology": {
             "oracle": "float64 forward and first-order gradients on each timed shape",
             "timing": (
-                "five interleaved trials of 40 CUDA-event samples; all raw samples and "
-                "trial order stored"
+                (
+                    "two interleaved trials of 10 CUDA-event samples"
+                    if args.quick
+                    else "15 interleaved trials of 13 CUDA-event samples"
+                )
+                + "; all raw samples and trial order stored"
             ),
             "statistics": (
                 "paired trial medians are independent observations; individual event "
-                "samples are not treated as independent"
+                "samples are not treated as independent; a dispatch cell must win every "
+                f"one of the {2 if args.quick else 15} trials against current and Liger"
             ),
             "cache": "L2 flushed after graph setup and before every timed region",
             "compilation": "excluded by warmup",

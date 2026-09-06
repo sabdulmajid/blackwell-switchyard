@@ -25,6 +25,18 @@ def _compile_report(*, stack_bytes=0):
                 "registers": MODULE.EXPECTED_CUDA_LIMITS[kernel],
                 "stack_bytes": stack_bytes,
                 "local_bytes": 0,
+                **(
+                    {
+                        "global_load_instructions": (
+                            MODULE.EXPECTED_CUDA_GLOBAL_LOADS[kernel]
+                        ),
+                        "global_load_instruction_roles": (
+                            MODULE.EXPECTED_CUDA_GLOBAL_LOAD_ROLES[kernel]
+                        ),
+                    }
+                    if kernel in MODULE.EXPECTED_CUDA_GLOBAL_LOADS
+                    else {}
+                ),
             }
             for _ in range(count)
         )
@@ -34,6 +46,12 @@ def _compile_report(*, stack_bytes=0):
             "kind": "cuda",
             "required_template_instances": MODULE.EXPECTED_CUDA_INSTANCES,
             "register_limits": MODULE.EXPECTED_CUDA_LIMITS,
+            "required_global_load_instruction_counts": (
+                MODULE.EXPECTED_CUDA_GLOBAL_LOADS
+            ),
+            "required_global_load_role_counts": (
+                MODULE.EXPECTED_CUDA_GLOBAL_LOAD_ROLES
+            ),
             "resources": resources,
         }
     ]
@@ -73,8 +91,17 @@ def test_compile_gate_accepts_only_clean_spill_free_resources():
     assert any("spills" in problem for problem in problems)
 
 
+def test_compile_gate_rejects_unknown_nested_fields():
+    report = _compile_report()
+    report["provenance"]["private_note"] = "must not be published"
+    report["compilations"][0]["resources"][0]["prompt"] = "must not be published"
+    problems = MODULE._compile_problems(report, "abc")
+    assert any("compile provenance contains unexpected fields" in item for item in problems)
+    assert any("resources[0] contains unexpected fields" in item for item in problems)
+
+
 def _valid_bundle(monkeypatch):
-    campaign_id = "20260905T210000Z"
+    campaign_id = "20260906T034000Z"
     prefix = Path("results") / f"backward_campaign_{campaign_id}"
     paths = {
         suffix: prefix.with_name(f"{prefix.name}_{suffix}.json")
@@ -82,11 +109,11 @@ def _valid_bundle(monkeypatch):
     }
     payloads = {
         "offline_compile": {},
-        "smoke_bfloat16": {"run_id": "20260905T205900Z"},
-        "smoke_float16": {"run_id": "20260905T205901Z"},
+        "smoke_bfloat16": {"run_id": "20260906T033100Z"},
+        "smoke_float16": {"run_id": "20260906T033200Z"},
         "full_bfloat16": {"run_id": campaign_id},
-        "full_float16": {"run_id": "20260905T210001Z"},
-        "full_float32": {"run_id": "20260905T210002Z"},
+        "full_float16": {"run_id": "20260906T034100Z"},
+        "full_float32": {"run_id": "20260906T034200Z"},
     }
     monkeypatch.setattr(MODULE, "_compile_problems", lambda *_args: [])
     monkeypatch.setattr(MODULE, "validate_report", lambda *_args, **_kwargs: [])
@@ -132,10 +159,15 @@ def _valid_bundle(monkeypatch):
         "attempt": 1,
         "guard": {
             "not_before": "2026-09-05T23:00:00-04:00",
+            "idle_started_at": "2026-09-05T23:00:00-04:00",
+            "launch_at": "2026-09-05T23:30:00-04:00",
             "idle_seconds": 1800,
+            "idle_probe_count": 31,
             "wait_poll_seconds": 60,
             "watchdog_seconds": 0.25,
             "finalize_seconds": 1800,
+            "gpu_count": 2,
+            "target_gpu_uuid": "GPU-test",
         },
     }
     raw = {suffix: json.dumps(payload).encode() for suffix, payload in payloads.items()}
@@ -164,3 +196,36 @@ def test_bundle_rejects_report_bytes_changed_after_decision(monkeypatch):
     by_path[full_bf16] += b" "
     problems = MODULE.validate_bundle(prefix, **arguments)
     assert any("does not reconstruct exactly" in problem for problem in problems)
+
+
+def test_bundle_rejects_weakened_collision_guards(monkeypatch):
+    unsafe_values = {
+        "idle_seconds": MODULE.MIN_IDLE_SECONDS - 1,
+        "wait_poll_seconds": MODULE.MIN_WAIT_POLL_SECONDS - 1,
+        "watchdog_seconds": MODULE.MAX_WATCHDOG_SECONDS + 0.01,
+        "finalize_seconds": MODULE.MIN_FINALIZE_SECONDS - 1,
+    }
+    for field, value in unsafe_values.items():
+        prefix, by_path, arguments = _valid_bundle(monkeypatch)
+        manifest_path = prefix.with_name(f"{prefix.name}_manifest.json")
+        manifest = json.loads(by_path[manifest_path])
+        manifest["guard"][field] = value
+        by_path[manifest_path] = json.dumps(manifest).encode()
+        problems = MODULE.validate_bundle(prefix, **arguments)
+        assert any(f"guard {field}" in problem for problem in problems), field
+
+
+def test_bundle_binds_guard_times_and_target_gpu(monkeypatch):
+    unsafe_values = {
+        "idle_started_at": "2026-09-05T23:29:00-04:00",
+        "launch_at": "2026-09-05T22:59:00-04:00",
+        "idle_probe_count": 1,
+        "target_gpu_uuid": "GPU-other",
+    }
+    for field, value in unsafe_values.items():
+        prefix, by_path, arguments = _valid_bundle(monkeypatch)
+        manifest_path = prefix.with_name(f"{prefix.name}_manifest.json")
+        manifest = json.loads(by_path[manifest_path])
+        manifest["guard"][field] = value
+        by_path[manifest_path] = json.dumps(manifest).encode()
+        assert MODULE.validate_bundle(prefix, **arguments), field

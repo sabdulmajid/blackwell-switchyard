@@ -97,6 +97,30 @@ def test_register_cluster_covers_the_two_remaining_gap_shapes():
     assert "clusters" in reason
 
 
+def test_complete_register_cluster_plan_pairs_one_read_forward_and_backward():
+    candidate = get_training_plan("cuda_register_cluster_full")
+    assert candidate.forward.family == "cuda_register_cluster"
+    assert candidate.forward.saved_fields == ("alpha", "rstd", "norm_coefficient")
+    assert candidate.backward.family == "cuda_register_cluster"
+    assert plan_supports(candidate, 9, 1, 4096, 8192, "bfloat16")[0]
+    assert plan_supports(candidate, 32, 1, 4096, 2048, "float16")[0]
+
+
+def test_complete_register_cluster_support_includes_forward_shared_memory():
+    candidate = get_training_plan("cuda_register_cluster_full")
+    supported, reason = plan_supports(
+        candidate,
+        32,
+        1,
+        4096,
+        2048,
+        "bfloat16",
+        optin_shared_bytes=10_000,
+    )
+    assert not supported
+    assert "13440 shared bytes" in reason
+
+
 def test_one_block_shared_memory_has_honest_boundary():
     shared = get_training_plan("cuda_shared")
     assert plan_supports(shared, 9, 1, 4096, 4096, "bfloat16")[0]
@@ -111,6 +135,7 @@ def test_shared_memory_plans_do_not_claim_float32_support():
         "cuda_cluster4",
         "cuda_register",
         "cuda_register_cluster",
+        "cuda_register_cluster_full",
     ):
         supported, reason = plan_supports(
             get_training_plan(name), 9, 1, 4096, 4096, "float32"

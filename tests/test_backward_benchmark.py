@@ -42,3 +42,22 @@ def test_trial_summary_preserves_independent_trial_medians():
     assert summary["trial_medians_ms"] == [2.0, 3.0, 4.0, 5.0, 6.0]
     assert summary["trial_count"] == 5
     assert summary["reps"] == 10
+
+
+def test_trial_order_balances_every_pair():
+    names = ["current", "candidate-a", "candidate-b", "liger"]
+    orders = [MODULE._balanced_trial_order(names, trial, 1) for trial in range(15)]
+    for left_index, left in enumerate(names):
+        for right in names[left_index + 1 :]:
+            left_first = sum(order.index(left) < order.index(right) for order in orders)
+            assert left_first in {7, 8}
+
+
+def test_training_memory_contract_includes_forward_output():
+    values = torch.empty(9, 1, 4, 8, dtype=torch.bfloat16)
+    query = torch.empty(8, dtype=torch.bfloat16)
+    grad = torch.empty(1, 4, 8, dtype=torch.bfloat16)
+    resident, output = MODULE._training_memory_bytes(values, query, grad)
+    expected_output = (values.numel() + query.numel() + grad.numel()) * 2
+    assert output == expected_output
+    assert resident == 2 * expected_output

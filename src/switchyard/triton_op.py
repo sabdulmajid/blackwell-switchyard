@@ -51,10 +51,17 @@ from .training_plan import RESIDENT_TILE_MAX, TrainingPlan, get_training_plan
 __all__ = ["block_attn_res_triton", "block_attn_res_batched", "BlockAttnResTriton"]
 
 _SUPPORTED_DTYPES = {torch.float16, torch.bfloat16, torch.float32}
+_FLOAT32_MIN_SUBNORMAL = 2.0**-149
+_FLOAT32_MAX = float.fromhex("0x1.fffffep+127")
 
 
 def _validate_eps(eps: float) -> None:
-    if not isinstance(eps, float | int) or not math.isfinite(eps) or eps <= 0:
+    if (
+        isinstance(eps, bool)
+        or not isinstance(eps, float | int)
+        or not math.isfinite(eps)
+        or not (_FLOAT32_MIN_SUBNORMAL <= eps <= _FLOAT32_MAX)
+    ):
         raise ValueError(f"eps must be a finite positive number, got {eps!r}")
 
 
@@ -544,6 +551,11 @@ def _launch_training_forward(
     plan: TrainingPlan,
 ) -> tuple[torch.Tensor, ...]:
     """Launch the accepted forward and optionally save exact FP32 coefficients."""
+    if plan.forward.family == "cuda_register_cluster":
+        from .cuda_op import cuda_register_cluster_forward
+
+        return cuda_register_cluster_forward(v, w, out, eps)
+
     n, b, t, d = v.shape
     n_tokens = b * t
     n_pow2 = triton.next_power_of_2(n)

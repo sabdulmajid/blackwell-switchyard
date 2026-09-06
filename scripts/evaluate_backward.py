@@ -17,13 +17,19 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
+from switchyard.performance import (  # noqa: E402
+    backward_traffic_estimate,
+    forward_traffic_estimate,
+)
 from switchyard.training_plan import get_training_plan, plan_supports  # noqa: E402
 
 ALL_DTYPES = {"bfloat16", "float16", "float32"}
 PINNED_LIGER_COMMIT = "777799588a89d74c489ed995e3bf006427738e85"
 PINNED_LIGER_SOURCE_SHA256 = "57da6fed98f794088b2a56223e6c7ef9fc920824f0c483cb0ef0b5a343dab0b1"
-FULL_TRIAL_COUNT = 5
-FULL_REPS_PER_TRIAL = 40
+FULL_TRIAL_COUNT = 15
+FULL_REPS_PER_TRIAL = 13
+FULL_WARMUP_PER_TRIAL = 10
+MAX_CAMPAIGN_ATTEMPTS = 3
 PRACTICAL_TRAINING_MARGIN = 1.05
 MAX_TRAINING_REGRESSION = 0.03
 EXPECTED_FULL_SHAPES = {
@@ -46,6 +52,31 @@ ANCHOR_SHAPES = {
     (32, 1, 4096, 2048),
 }
 MASKED_TAIL_SHAPES = {(9, 1, 129, 4097), (17, 2, 33, 2049)}
+CAMPAIGN_CANDIDATES = (
+    "serial_recompute_atomic_t4",
+    "serial_saved_partials_t16",
+    "cuda_shared",
+    "cuda_cluster",
+    "cuda_cluster4",
+    "cuda_register",
+    "cuda_register_cluster",
+    "cuda_register_cluster_full",
+)
+CAMPAIGN_DISPATCH_HYPOTHESES = 2 * sum(
+    plan_supports(get_training_plan(candidate), *shape, dtype)[0]
+    for candidate in CAMPAIGN_CANDIDATES
+    for dtype in (
+        ("bfloat16", "float16")
+        if get_training_plan(candidate).backward.family.startswith("cuda")
+        else tuple(ALL_DTYPES)
+    )
+    for shape in EXPECTED_FULL_SHAPES
+)
+FAMILYWISE_SIGN_ERROR_BOUND = (
+    CAMPAIGN_DISPATCH_HYPOTHESES
+    * MAX_CAMPAIGN_ATTEMPTS
+    * 0.5**FULL_TRIAL_COUNT
+)
 
 
 @dataclass(frozen=True)
@@ -87,7 +118,7 @@ def _timing_from_raw(
     *,
     trial_count: int = FULL_TRIAL_COUNT,
     reps_per_trial: int = FULL_REPS_PER_TRIAL,
-    warmup_per_trial: int = 25,
+    warmup_per_trial: int = FULL_WARMUP_PER_TRIAL,
 ) -> dict | None:
     """Validate one timing record and rebuild every statistic from raw samples."""
     timing = record.get(metric, {})
@@ -206,7 +237,7 @@ def _timing_from_raw(
 def _paired_speedup_lower_bound(numerator: dict[int, float], denominator: dict[int, float]) -> float | None:
     """Bootstrap paired trial ratios, never correlated event-level samples."""
     trial_ids = sorted(set(numerator) & set(denominator))
-    if len(trial_ids) < 5:
+    if len(trial_ids) < FULL_TRIAL_COUNT:
         return None
     ratios = [numerator[index] / denominator[index] for index in trial_ids]
     rng = random.Random(0)
@@ -282,6 +313,18 @@ def _check_kernel_contract(
         for name in names:
             if name not in observed:
                 problems.append(f"{label}: {field} did not contain {name}")
+    plan = get_training_plan(candidate)
+    if plan.forward.family == "cuda_register_cluster":
+        forward = record.get("forward_kernels", {})
+        if forward.get("total_kernels") != 1:
+            problems.append(f"{label}: custom forward must launch exactly one kernel")
+        forward_observed = " ".join(forward.get("by_name", {}))
+        step_observed = " ".join(record.get("fwd_bwd_kernels", {}).get("by_name", {}))
+        required = "register_cluster_forward_kernel"
+        if required not in forward_observed:
+            problems.append(f"{label}: forward profile did not contain {required}")
+        if required not in step_observed:
+            problems.append(f"{label}: training profile did not contain {required}")
 
 
 def _check_current_kernel_contract(
@@ -347,6 +390,166 @@ def _check_register_cluster_launch_info(
         problems.append(f"{label}: register-cluster shared memory exceeds the device limit")
 
 
+def _check_register_cluster_forward_launch_info(
+    shape: tuple[int, int, int, int],
+    dtype: str,
+    launch_info: dict,
+    problems: list[str],
+    label: str,
+) -> None:
+    """Require the exact resource contract of the complete one-read forward."""
+    if launch_info.get("active_clusters", 0) <= 0:
+        problems.append(f"{label}: active forward register-cluster count is missing")
+    n, _, _, d = shape
+    expected_blocks = 4 if (n, d) == (9, 8192) else 2
+    if launch_info.get("cluster_blocks") != expected_blocks:
+        problems.append(
+            f"{label}: expected a {expected_blocks}-block forward register cluster"
+        )
+    register_sources = 0 if n == 9 else 28
+    local_width = d // expected_blocks
+    expected_dynamic = 4 * n * (2 * 16 + 1) + 2 * (n - register_sources) * local_width
+    if launch_info.get("dynamic_shared_bytes") != expected_dynamic:
+        problems.append(f"{label}: forward register-cluster dynamic memory is wrong")
+    if launch_info.get("static_shared_bytes") != 1024:
+        problems.append(f"{label}: forward register-cluster static memory is wrong")
+    expected_registers = {
+        (9, 8192, "bfloat16"): 96,
+        (9, 8192, "float16"): 96,
+        (32, 2048, "bfloat16"): 103,
+        (32, 2048, "float16"): 109,
+    }[(n, d, dtype)]
+    if launch_info.get("registers_per_thread") != expected_registers:
+        problems.append(f"{label}: forward register-cluster register count is wrong")
+    if launch_info.get("threads_per_block") != 512:
+        problems.append(f"{label}: forward register cluster must use 512 threads")
+    if launch_info.get("multiprocessors", 0) <= 0:
+        problems.append(f"{label}: forward GPU multiprocessor count is missing")
+    if (
+        launch_info.get("dynamic_shared_bytes", 0)
+        + launch_info.get("static_shared_bytes", 0)
+        > launch_info.get("max_shared_bytes", 0)
+    ):
+        problems.append(
+            f"{label}: forward register-cluster shared memory exceeds the device limit"
+        )
+
+
+def _canonical_model(model) -> dict:
+    return json.loads(json.dumps(model.as_dict()))
+
+
+def _check_memory_contract(
+    dtype: str,
+    shape: tuple[int, int, int, int],
+    record: dict,
+    problems: list[str],
+    label: str,
+) -> int | None:
+    """Validate the normalized peak-memory record and return workspace bytes."""
+    memory = record.get("fwd_bwd_memory")
+    fields = {
+        "peak_allocated_bytes",
+        "workspace_bytes",
+        "resident_bytes",
+        "incremental_peak_bytes",
+        "returned_bytes",
+        "accounted_output_bytes",
+        "allocation_count",
+    }
+    if not isinstance(memory, dict) or set(memory) != fields or any(
+        not isinstance(memory[field], int) or memory[field] < 0 for field in fields
+    ):
+        problems.append(f"{label}: complete nonnegative memory record is required")
+        return None
+
+    itemsize = 4 if dtype == "float32" else 2
+    n, b, t, d = shape
+    values_bytes = n * b * t * d * itemsize
+    token_bytes = b * t * d * itemsize
+    query_bytes = d * itemsize
+    expected_accounted = values_bytes + token_bytes + query_bytes
+    expected_resident = 2 * expected_accounted
+    if memory["accounted_output_bytes"] != expected_accounted:
+        problems.append(f"{label}: accounted output bytes are wrong")
+    if memory["resident_bytes"] != expected_resident:
+        problems.append(f"{label}: resident bytes omit an input or mandatory output")
+    if memory["returned_bytes"] != 0:
+        problems.append(f"{label}: training callable must not retain a returned tensor")
+    if memory["peak_allocated_bytes"] != expected_resident + memory["workspace_bytes"]:
+        problems.append(f"{label}: normalized peak memory is inconsistent")
+    rebuilt_workspace = max(
+        0,
+        memory["incremental_peak_bytes"] - memory["accounted_output_bytes"],
+    )
+    if memory["workspace_bytes"] != rebuilt_workspace:
+        problems.append(f"{label}: workspace does not reconstruct from allocator evidence")
+    return memory["workspace_bytes"]
+
+
+def _check_traffic_contract(
+    candidate: str,
+    dtype: str,
+    shape: tuple[int, int, int, int],
+    record: dict,
+    problems: list[str],
+    label: str,
+) -> None:
+    """Reconstruct both traffic models instead of trusting stored summaries."""
+    plan = get_training_plan(candidate)
+    itemsize = 4 if dtype == "float32" else 2
+    family = plan.backward.family
+    options = {
+        "source_tokens_per_cta": plan.backward.tokens_per_cta,
+        "source_uses_partials": plan.backward.dw_reduction == "partials",
+    }
+    if family in {"cuda_cluster", "cuda_cluster4"}:
+        active_workers = record.get("cluster_launch_info", {}).get("active_clusters")
+    elif family == "cuda_register":
+        active_workers = record.get("register_launch_info", {}).get("active_blocks")
+    elif family == "cuda_register_cluster":
+        active_workers = record.get("register_cluster_launch_info", {}).get(
+            "active_clusters"
+        )
+    else:
+        active_workers = None
+    if isinstance(active_workers, int) and active_workers > 0:
+        options["persistent_clusters"] = min(shape[1] * shape[2], active_workers)
+    model_name = {
+        "source_serial": (
+            "source_serial_saved" if plan.saves_forward_stats else "source_serial"
+        ),
+        "cuda_shared": "cuda_shared",
+        "cuda_cluster": "cuda_cluster",
+        "cuda_cluster4": "cuda_cluster4",
+        "cuda_register": "cuda_register",
+        "cuda_register_cluster": "cuda_register_cluster",
+    }[family]
+    expected_backward = _canonical_model(
+        backward_traffic_estimate(model_name, *shape, itemsize=itemsize, **options)
+    )
+    if record.get("traffic_model") != expected_backward:
+        problems.append(f"{label}: backward traffic model does not reconstruct exactly")
+
+    n, _, _, d = shape
+    resident = (1 << (n - 1).bit_length()) * (1 << (d - 1).bit_length()) <= 32768
+    forward_name = (
+        "cuda_register_cluster"
+        if plan.forward.family == "cuda_register_cluster"
+        else "resident" if resident else "tiled"
+    )
+    expected_forward = _canonical_model(
+        forward_traffic_estimate(
+            forward_name,
+            *shape,
+            itemsize=itemsize,
+            saves_backward_coefficients=plan.saves_forward_stats,
+        )
+    )
+    if record.get("forward_traffic_model") != expected_forward:
+        problems.append(f"{label}: forward traffic model does not reconstruct exactly")
+
+
 def evaluate_reports(
     reports: list[dict],
     *,
@@ -368,6 +571,7 @@ def evaluate_reports(
     training_confidence_failures: list[str] = []
     performance_regressions: list[str] = []
     comparisons: list[Comparison] = []
+    dispatch_cells: list[dict] = []
     anchor_speedups: list[float] = []
     anchor_current_training_speedups: list[float] = []
     anchor_liger_training_speedups: list[float] = []
@@ -486,12 +690,12 @@ def evaluate_reports(
                 for implementation in ("current", candidate, "liger")
                 for seed in (0, 1, 2)
             }
-            observed = {
+            observed_rows = [
                 (item.get("impl"), item.get("seed"))
                 for item in case.get("implementations", [])
                 if item.get("impl") in {"current", candidate, "liger"}
-            }
-            if observed != expected:
+            ]
+            if len(observed_rows) != len(expected) or set(observed_rows) != expected:
                 problems.append(f"{prefix}: masked-tail implementation/seed matrix is incomplete")
             for item in case.get("implementations", []):
                 implementation = item.get("impl")
@@ -553,8 +757,11 @@ def evaluate_reports(
             shape_schedule = schedules.get(shape, {}).get("metrics", {})
             for metric in ("forward", "backward", "fwd_bwd"):
                 trial_schedule = shape_schedule.get(metric, [])
-                if len(trial_schedule) < 5:
-                    problems.append(f"{label}: five interleaved {metric} schedules are required")
+                if len(trial_schedule) != FULL_TRIAL_COUNT:
+                    problems.append(
+                        f"{label}: {FULL_TRIAL_COUNT} interleaved {metric} "
+                        "schedules are required"
+                    )
                     continue
                 required = {"current", candidate, "liger"}
                 if any(
@@ -569,8 +776,26 @@ def evaluate_reports(
                 }
                 if len(candidate_positions) < 2:
                     problems.append(f"{label}: {metric} order was not rotated")
+                for comparator in ("current", "liger"):
+                    candidate_first = sum(
+                        trial["implementations"].index(candidate)
+                        < trial["implementations"].index(comparator)
+                        for trial in trial_schedule
+                        if candidate in trial.get("implementations", [])
+                        and comparator in trial.get("implementations", [])
+                    )
+                    balanced_counts = {
+                        FULL_TRIAL_COUNT // 2,
+                        (FULL_TRIAL_COUNT + 1) // 2,
+                    }
+                    if candidate_first not in balanced_counts:
+                        problems.append(
+                            f"{label}: {metric} order does not balance "
+                            f"{candidate} against {comparator}"
+                        )
 
             raw_timings: dict[tuple[str, str], dict] = {}
+            workspaces: dict[str, int | None] = {}
             for implementation, record in (
                 ("current", current),
                 (candidate, measured),
@@ -582,6 +807,13 @@ def evaluate_reports(
                         correctness_failures.append(failure)
                     else:
                         problems.append(f"{failure}: comparator correctness is incomplete")
+                workspaces[implementation] = _check_memory_contract(
+                    dtype,
+                    shape,
+                    record,
+                    problems,
+                    f"{label} {implementation}",
+                )
                 seed_ids = [
                     item.get("seed") for item in record.get("correctness_by_seed", [])
                 ]
@@ -661,8 +893,7 @@ def evaluate_reports(
 
             _check_kernel_contract(candidate, dtype, measured, problems, label)
             _check_current_kernel_contract(shape, dtype, current, problems, label)
-            if "traffic_model" not in measured or "fwd_bwd_memory" not in measured:
-                problems.append(f"{label}: traffic or memory record is missing")
+            _check_traffic_contract(candidate, dtype, shape, measured, problems, label)
             current_forward = raw_timings[("current", "forward")]["median_ms"]
             candidate_forward = raw_timings[(candidate, "forward")]["median_ms"]
             if candidate_forward > 1.15 * current_forward:
@@ -675,8 +906,8 @@ def evaluate_reports(
                     f"{label}: complete training regressed by "
                     f"{candidate_fwd_bwd / current_fwd_bwd:.2f}x"
                 )
-            current_workspace = current.get("fwd_bwd_memory", {}).get("workspace_bytes")
-            candidate_workspace = measured.get("fwd_bwd_memory", {}).get("workspace_bytes")
+            current_workspace = workspaces["current"]
+            candidate_workspace = workspaces[candidate]
             traffic = measured.get("traffic_model", {})
             modeled_extra = traffic.get("saved_state_bytes", 0) + traffic.get(
                 "workspace_bytes", 0
@@ -715,23 +946,109 @@ def evaluate_reports(
                     problems,
                     label,
                 )
+                if plan.forward.family == "cuda_register_cluster":
+                    _check_register_cluster_forward_launch_info(
+                        shape,
+                        dtype,
+                        measured.get("register_cluster_forward_launch_info", {}),
+                        problems,
+                        label,
+                    )
+
+            current_training_speedup = current_fwd_bwd / candidate_fwd_bwd
+            liger_training_speedup = liger_fwd_bwd / candidate_fwd_bwd
+            current_lower = _paired_speedup_lower_bound(
+                raw_timings[("current", "fwd_bwd")]["trial_medians"],
+                raw_timings[(candidate, "fwd_bwd")]["trial_medians"],
+            )
+            liger_lower = _paired_speedup_lower_bound(
+                raw_timings[("liger", "fwd_bwd")]["trial_medians"],
+                raw_timings[(candidate, "fwd_bwd")]["trial_medians"],
+            )
+            current_trial_ratios = [
+                raw_timings[("current", "fwd_bwd")]["trial_medians"][trial]
+                / raw_timings[(candidate, "fwd_bwd")]["trial_medians"][trial]
+                for trial in range(FULL_TRIAL_COUNT)
+            ]
+            liger_trial_ratios = [
+                raw_timings[("liger", "fwd_bwd")]["trial_medians"][trial]
+                / raw_timings[(candidate, "fwd_bwd")]["trial_medians"][trial]
+                for trial in range(FULL_TRIAL_COUNT)
+            ]
+            cell_reasons = []
+            if classification != "WIN" or speedup < 1.10:
+                cell_reasons.append(
+                    f"backward speedup {speedup:.3f} does not clear the 1.10x cell gate"
+                )
+            if candidate_forward > 1.15 * current_forward:
+                cell_reasons.append(
+                    f"forward latency is {candidate_forward / current_forward:.3f}x current"
+                )
+            if current_training_speedup < PRACTICAL_TRAINING_MARGIN:
+                cell_reasons.append(
+                    f"current/candidate training speedup is {current_training_speedup:.3f}"
+                )
+            if liger_training_speedup < PRACTICAL_TRAINING_MARGIN:
+                cell_reasons.append(
+                    f"Liger/candidate training speedup is {liger_training_speedup:.3f}"
+                )
+            if current_lower is None or current_lower <= 1.0:
+                cell_reasons.append(
+                    "paired current training lower bound does not exceed 1.0"
+                )
+            if liger_lower is None or liger_lower <= 1.0:
+                cell_reasons.append(
+                    "paired Liger training lower bound does not exceed 1.0"
+                )
+            if not all(ratio > 1.0 for ratio in current_trial_ratios):
+                cell_reasons.append(
+                    f"candidate did not beat current in all {FULL_TRIAL_COUNT} trials"
+                )
+            if not all(ratio > 1.0 for ratio in liger_trial_ratios):
+                cell_reasons.append(
+                    f"candidate did not beat Liger in all {FULL_TRIAL_COUNT} trials"
+                )
+            if (
+                isinstance(current_workspace, int)
+                and isinstance(candidate_workspace, int)
+                and candidate_workspace
+                > current_workspace + modeled_extra + 2 * 2**20
+            ):
+                cell_reasons.append("workspace exceeds the modeled allowance")
+            dispatch_cells.append(
+                {
+                    "dtype": dtype,
+                    "shape": dict(
+                        zip(("n", "b", "t", "d"), shape, strict=True)
+                    ),
+                    "status": (
+                        "READY_FOR_DISPATCH_REVIEW"
+                        if not cell_reasons
+                        else "FALLBACK"
+                    ),
+                    "reasons": cell_reasons,
+                    "backward_speedup_vs_current": speedup,
+                    "training_speedup_vs_current": current_training_speedup,
+                    "training_speedup_vs_liger": liger_training_speedup,
+                    "paired_current_lower_bound": current_lower,
+                    "paired_liger_lower_bound": liger_lower,
+                    "all_current_trials_win": all(
+                        ratio > 1.0 for ratio in current_trial_ratios
+                    ),
+                    "all_liger_trials_win": all(
+                        ratio > 1.0 for ratio in liger_trial_ratios
+                    ),
+                }
+            )
 
             if shape in ANCHOR_SHAPES:
                 anchor_speedups.append(speedup)
-                current_training_speedup = current_fwd_bwd / candidate_fwd_bwd
-                liger_training_speedup = liger_fwd_bwd / candidate_fwd_bwd
                 anchor_current_training_speedups.append(current_training_speedup)
                 anchor_liger_training_speedups.append(liger_training_speedup)
-                current_lower = _paired_speedup_lower_bound(
-                    raw_timings[("current", "fwd_bwd")]["trial_medians"],
-                    raw_timings[(candidate, "fwd_bwd")]["trial_medians"],
-                )
-                liger_lower = _paired_speedup_lower_bound(
-                    raw_timings[("liger", "fwd_bwd")]["trial_medians"],
-                    raw_timings[(candidate, "fwd_bwd")]["trial_medians"],
-                )
                 if current_lower is None or liger_lower is None:
-                    problems.append(f"{label}: five paired training trials are required")
+                    problems.append(
+                        f"{label}: {FULL_TRIAL_COUNT} paired training trials are required"
+                    )
                 else:
                     if current_training_speedup < PRACTICAL_TRAINING_MARGIN or current_lower <= 1.0:
                         training_confidence_failures.append(
@@ -763,26 +1080,39 @@ def evaluate_reports(
         status = "MORE_DATA"
         rationale = "the evidence matrix or measurement-quality gate is incomplete"
     else:
-        wins = [comparison for comparison in comparisons if comparison.classification == "WIN"]
-        anchor_floor = min(anchor_speedups) if anchor_speedups else 0.0
-        anchor_geomean = (
-            math.exp(sum(math.log(value) for value in anchor_speedups) / len(anchor_speedups))
-            if anchor_speedups
-            else 0.0
-        )
-        if (
-            len(wins) < 2
-            or anchor_floor < 1.10
-            or anchor_geomean < 1.15
-            or confidence_failures
-            or training_confidence_failures
-            or performance_regressions
-        ):
-            status = "DROP"
-            rationale = "candidate did not clear the anchor or paired Liger requirement"
-        else:
+        eligible = [
+            cell
+            for cell in dispatch_cells
+            if cell["status"] == "READY_FOR_DISPATCH_REVIEW"
+        ]
+        if eligible:
             status = "READY_FOR_DISPATCH_REVIEW"
-            rationale = "candidate has repeatable wins; dispatch only the measured shape and dtype cases"
+            rationale = (
+                "candidate has repeatable cell-level wins; dispatch only the listed "
+                "shape and dtype cases"
+            )
+        else:
+            status = "DROP"
+            rationale = (
+                "candidate has no measured shape and dtype cell that clears every gate"
+            )
+
+    if status in {"REJECT", "MORE_DATA"}:
+        for cell in dispatch_cells:
+            if cell["status"] == "READY_FOR_DISPATCH_REVIEW":
+                cell["status"] = "INVALID_REPORT"
+                cell["reasons"].append(
+                    "global correctness or evidence-quality gate did not pass"
+                )
+    eligible_dispatches = (
+        [
+            cell
+            for cell in dispatch_cells
+            if cell["status"] == "READY_FOR_DISPATCH_REVIEW"
+        ]
+        if status == "READY_FOR_DISPATCH_REVIEW"
+        else []
+    )
 
     return {
         "status": status,
@@ -793,6 +1123,9 @@ def evaluate_reports(
         "max_cv": max_cv,
         "practical_training_margin": PRACTICAL_TRAINING_MARGIN,
         "max_training_regression": MAX_TRAINING_REGRESSION,
+        "campaign_dispatch_hypotheses": CAMPAIGN_DISPATCH_HYPOTHESES,
+        "max_campaign_attempts": MAX_CAMPAIGN_ATTEMPTS,
+        "familywise_sign_error_bound": FAMILYWISE_SIGN_ERROR_BOUND,
         "commits": sorted(commits),
         "trees": sorted(trees),
         "problems": problems,
@@ -802,6 +1135,8 @@ def evaluate_reports(
         "confidence_failures": confidence_failures,
         "training_confidence_failures": training_confidence_failures,
         "performance_regressions": performance_regressions,
+        "dispatch_cells": dispatch_cells,
+        "eligible_dispatches": eligible_dispatches,
         "anchor_speedup_floor": min(anchor_speedups) if anchor_speedups else None,
         "anchor_speedup_geomean": (
             math.exp(sum(math.log(value) for value in anchor_speedups) / len(anchor_speedups))

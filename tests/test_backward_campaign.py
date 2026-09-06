@@ -34,6 +34,12 @@ def test_campaign_binds_decisions_and_copies_exact_bytes():
     assert "copied evidence does not match its evaluated bytes" in SCRIPT
 
 
+def test_campaign_preserves_first_guard_attestation_across_retries():
+    assert 'guard_attestation="$campaign_dir/guard.json"' in SCRIPT
+    assert 'open(path, "x"' in SCRIPT
+    assert '"guard": guard' in SCRIPT
+
+
 def test_campaign_publishes_only_to_exact_origin_and_recovers_pushes():
     assert "https://github.com/sabdulmajid/blackwell-switchyard.git" in SCRIPT
     assert "git remote get-url --push --all origin" in SCRIPT

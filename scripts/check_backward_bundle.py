@@ -6,12 +6,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import subprocess
 import sys
 from collections import Counter
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -31,6 +32,7 @@ ALL_IMPLEMENTATIONS = [
     "cuda_cluster4",
     "cuda_register",
     "cuda_register_cluster",
+    "cuda_register_cluster_full",
     "liger",
 ]
 PORTABLE_IMPLEMENTATIONS = [
@@ -47,6 +49,7 @@ CANDIDATES = [
     "cuda_cluster4",
     "cuda_register",
     "cuda_register_cluster",
+    "cuda_register_cluster_full",
 ]
 EXPECTED_CUDA_INSTANCES = {
     "shared_backward_kernel": 2,
@@ -57,6 +60,10 @@ EXPECTED_CUDA_INSTANCES = {
     "register_cluster_backward_kernel_bfloat16_n32_d2048_c2": 1,
     "register_cluster_backward_kernel_float16_n9_d8192_c4": 1,
     "register_cluster_backward_kernel_float16_n32_d2048_c2": 1,
+    "register_cluster_forward_kernel_bfloat16_n9_d8192_c4": 1,
+    "register_cluster_forward_kernel_bfloat16_n32_d2048_c2": 1,
+    "register_cluster_forward_kernel_float16_n9_d8192_c4": 1,
+    "register_cluster_forward_kernel_float16_n32_d2048_c2": 1,
 }
 EXPECTED_CUDA_LIMITS = {
     "shared_backward_kernel": 64,
@@ -67,6 +74,55 @@ EXPECTED_CUDA_LIMITS = {
         name: 128
         for name in EXPECTED_CUDA_INSTANCES
         if name.startswith("register_cluster_backward_kernel_")
+        or name.startswith("register_cluster_forward_kernel_")
+    },
+}
+EXPECTED_CUDA_GLOBAL_LOADS = {
+    "register_cluster_backward_kernel_bfloat16_n9_d8192_c4": 25,
+    "register_cluster_backward_kernel_bfloat16_n32_d2048_c2": 37,
+    "register_cluster_backward_kernel_float16_n9_d8192_c4": 25,
+    "register_cluster_backward_kernel_float16_n32_d2048_c2": 37,
+    "register_cluster_forward_kernel_bfloat16_n9_d8192_c4": 20,
+    "register_cluster_forward_kernel_bfloat16_n32_d2048_c2": 33,
+    "register_cluster_forward_kernel_float16_n9_d8192_c4": 20,
+    "register_cluster_forward_kernel_float16_n32_d2048_c2": 33,
+}
+EXPECTED_CUDA_GLOBAL_LOAD_ROLES = {
+    **{
+        f"register_cluster_backward_kernel_{dtype}_n9_d8192_c4": {
+            "grad_output_pairs": 2,
+            "source_pairs": 18,
+            "saved_alpha": 1,
+            "saved_rstd": 1,
+            "saved_norm": 1,
+            "query_pairs": 2,
+        }
+        for dtype in ("bfloat16", "float16")
+    },
+    **{
+        f"register_cluster_backward_kernel_{dtype}_n32_d2048_c2": {
+            "grad_output_pairs": 1,
+            "source_pairs": 32,
+            "saved_alpha": 1,
+            "saved_rstd": 1,
+            "saved_norm": 1,
+            "query_pairs": 1,
+        }
+        for dtype in ("bfloat16", "float16")
+    },
+    **{
+        f"register_cluster_forward_kernel_{dtype}_n9_d8192_c4": {
+            "query_pairs": 2,
+            "source_pairs": 18,
+        }
+        for dtype in ("bfloat16", "float16")
+    },
+    **{
+        f"register_cluster_forward_kernel_{dtype}_n32_d2048_c2": {
+            "query_pairs": 1,
+            "source_pairs": 32,
+        }
+        for dtype in ("bfloat16", "float16")
     },
 }
 EXPECTED_COMPILATIONS = {
@@ -80,6 +136,12 @@ EXPECTED_COMPILATIONS = {
     "dw_partial_reduction",
     "one_read_cuda",
 }
+MIN_IDLE_SECONDS = 1800
+MIN_WAIT_POLL_SECONDS = 30
+MAX_WAIT_POLL_SECONDS = 300
+MAX_WATCHDOG_SECONDS = 0.25
+MIN_FINALIZE_SECONDS = 1800
+MAX_CAMPAIGN_ATTEMPTS = 3
 
 
 def _suffixes() -> list[str]:
@@ -104,10 +166,115 @@ def _inputs(raw_reports: list[bytes]) -> list[dict[str, str]]:
     return [{"sha256": hashlib.sha256(raw).hexdigest()} for raw in raw_reports]
 
 
+def _unexpected_fields(value: object, allowed: set[str], label: str) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    unexpected = sorted(set(value) - allowed)
+    return [f"{label} contains unexpected fields: {unexpected}"] if unexpected else []
+
+
 def _compile_problems(
     report: dict, expected_commit: str, expected_source_sha256: str | None = None
 ) -> list[str]:
     problems = []
+    problems.extend(
+        _unexpected_fields(
+            report,
+            {"target", "gpu_visible", "provenance", "plans", "compilations"},
+            "offline compile report",
+        )
+    )
+    problems.extend(
+        _unexpected_fields(
+            report.get("target"), {"backend", "arch", "warp_size"}, "compile target"
+        )
+    )
+    problems.extend(
+        _unexpected_fields(
+            report.get("provenance"),
+            {
+                "repository_commit",
+                "worktree_clean",
+                "torch",
+                "triton",
+                "nvcc",
+                "cuda_source_sha256",
+            },
+            "compile provenance",
+        )
+    )
+    for index, plan in enumerate(report.get("plans", [])):
+        label = f"compile plans[{index}]"
+        problems.extend(
+            _unexpected_fields(
+                plan,
+                {"name", "forward", "backward", "production", "rationale"},
+                label,
+            )
+        )
+        problems.extend(
+            _unexpected_fields(
+                plan.get("forward") if isinstance(plan, dict) else None,
+                {"family", "saved_state"},
+                f"{label}.forward",
+            )
+        )
+        problems.extend(
+            _unexpected_fields(
+                plan.get("backward") if isinstance(plan, dict) else None,
+                {"family", "tokens_per_cta", "dw_reduction"},
+                f"{label}.backward",
+            )
+        )
+    for index, compilation in enumerate(report.get("compilations", [])):
+        if not isinstance(compilation, dict):
+            continue
+        label = f"compilations[{index}]"
+        allowed = (
+            {
+                "name",
+                "kind",
+                "required_template_instances",
+                "register_limits",
+                "required_global_load_instruction_counts",
+                "required_global_load_role_counts",
+                "resources",
+            }
+            if compilation.get("kind") == "cuda"
+            else {
+                "name",
+                "kind",
+                "constants",
+                "num_warps",
+                "num_stages",
+                "shared_bytes",
+                "resources",
+            }
+        )
+        problems.extend(_unexpected_fields(compilation, allowed, label))
+        problems.extend(
+            _unexpected_fields(
+                compilation.get("constants"),
+                {"BLOCK_N", "BLOCK_D", "TOKENS", "USE_SAVED", "WRITE_PARTIAL", "BLOCK_P"},
+                f"{label}.constants",
+            )
+        )
+        for resource_index, resource in enumerate(compilation.get("resources", [])):
+            problems.extend(
+                _unexpected_fields(
+                    resource,
+                    {
+                        "kernel",
+                        "registers",
+                        "stack_bytes",
+                        "static_shared_bytes",
+                        "local_bytes",
+                        "global_load_instructions",
+                        "global_load_instruction_roles",
+                    },
+                    f"{label}.resources[{resource_index}]",
+                )
+            )
     if report.get("target", {}).get("arch") != 120 or report.get("gpu_visible") is not False:
         problems.append("offline compile report does not target sm_120 without a GPU")
     provenance = report.get("provenance", {})
@@ -135,11 +302,18 @@ def _compile_problems(
     cuda = cuda_records[0]
     expected_counts = cuda.get("required_template_instances", {})
     limits = cuda.get("register_limits", {})
+    required_loads = cuda.get("required_global_load_instruction_counts", {})
+    required_load_roles = cuda.get("required_global_load_role_counts", {})
     resources = cuda.get("resources", [])
     if not isinstance(expected_counts, dict) or not isinstance(limits, dict):
         problems.append("offline CUDA resource contracts are malformed")
         return problems
-    if expected_counts != EXPECTED_CUDA_INSTANCES or limits != EXPECTED_CUDA_LIMITS:
+    if (
+        expected_counts != EXPECTED_CUDA_INSTANCES
+        or limits != EXPECTED_CUDA_LIMITS
+        or required_loads != EXPECTED_CUDA_GLOBAL_LOADS
+        or required_load_roles != EXPECTED_CUDA_GLOBAL_LOAD_ROLES
+    ):
         problems.append("offline CUDA resource contracts differ from the source gate")
     if Counter(item.get("kernel") for item in resources) != Counter(expected_counts):
         problems.append("offline CUDA template-instance counts are incomplete")
@@ -149,6 +323,17 @@ def _compile_problems(
             problems.append(f"offline CUDA resource record spills: {kernel}")
         if not isinstance(limits.get(kernel), int) or item.get("registers", 10**9) > limits[kernel]:
             problems.append(f"offline CUDA register budget failed: {kernel}")
+        if (
+            kernel in required_loads
+            and item.get("global_load_instructions") != required_loads[kernel]
+        ):
+            problems.append(f"offline CUDA global-load contract failed: {kernel}")
+        if (
+            kernel in required_load_roles
+            and item.get("global_load_instruction_roles")
+            != required_load_roles[kernel]
+        ):
+            problems.append(f"offline CUDA load-role contract failed: {kernel}")
     for compilation in report.get("compilations", []):
         if not compilation.get("resources"):
             problems.append(f"offline compilation has no resource record: {compilation.get('name')}")
@@ -269,32 +454,111 @@ def validate_bundle(
     for field, expected in exact_manifest.items():
         if manifest.get(field) != expected:
             problems.append(f"manifest {field} differs from the campaign contract")
-    if not isinstance(manifest.get("attempt"), int) or manifest["attempt"] <= 0:
-        problems.append("manifest attempt must be a positive integer")
+    if (
+        not isinstance(manifest.get("attempt"), int)
+        or not 1 <= manifest["attempt"] <= MAX_CAMPAIGN_ATTEMPTS
+    ):
+        problems.append(
+            f"manifest attempt must be between 1 and {MAX_CAMPAIGN_ATTEMPTS}"
+        )
     guard = manifest.get("guard", {})
     expected_manifest_fields = set(exact_manifest) | {"attempt", "guard"}
     if set(manifest) != expected_manifest_fields:
         problems.append("manifest field set is not exact")
     guard_fields = {
         "not_before",
+        "idle_started_at",
+        "launch_at",
         "idle_seconds",
+        "idle_probe_count",
         "wait_poll_seconds",
         "watchdog_seconds",
         "finalize_seconds",
+        "gpu_count",
+        "target_gpu_uuid",
     }
     if not isinstance(guard, dict) or set(guard) != guard_fields:
         problems.append("manifest guard field set is not exact")
     else:
+        moments = {}
         try:
-            not_before = datetime.fromisoformat(guard["not_before"])
-            if not_before.tzinfo is None:
-                raise ValueError("missing UTC offset")
+            for field in ("not_before", "idle_started_at", "launch_at"):
+                moments[field] = datetime.fromisoformat(guard[field])
+                if moments[field].tzinfo is None:
+                    raise ValueError("missing UTC offset")
         except (TypeError, ValueError):
-            problems.append("manifest guard not_before is not an offset timestamp")
-        for field in guard_fields - {"not_before"}:
+            problems.append("manifest guard timestamps must include UTC offsets")
+        numeric_guard_fields = {
+            "idle_seconds",
+            "idle_probe_count",
+            "wait_poll_seconds",
+            "watchdog_seconds",
+            "finalize_seconds",
+            "gpu_count",
+        }
+        numeric_guard_valid = True
+        for field in numeric_guard_fields:
             value = guard[field]
-            if not isinstance(value, int | float) or value <= 0:
+            if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
                 problems.append(f"manifest guard {field} must be positive")
+                numeric_guard_valid = False
+        if guard["target_gpu_uuid"] != expected_gpu_uuid:
+            problems.append("manifest guard target GPU differs from the campaign GPU")
+        if isinstance(guard["idle_seconds"], int | float) and (
+            guard["idle_seconds"] < MIN_IDLE_SECONDS
+        ):
+            problems.append(
+                f"manifest guard idle_seconds must be at least {MIN_IDLE_SECONDS}"
+            )
+        wait_poll = guard["wait_poll_seconds"]
+        if isinstance(wait_poll, int | float) and not (
+            MIN_WAIT_POLL_SECONDS <= wait_poll <= MAX_WAIT_POLL_SECONDS
+        ):
+            problems.append(
+                "manifest guard wait_poll_seconds must be between "
+                f"{MIN_WAIT_POLL_SECONDS} and {MAX_WAIT_POLL_SECONDS}"
+            )
+        watchdog = guard["watchdog_seconds"]
+        if isinstance(watchdog, int | float) and watchdog > MAX_WATCHDOG_SECONDS:
+            problems.append(
+                "manifest guard watchdog_seconds must be no more than "
+                f"{MAX_WATCHDOG_SECONDS}"
+            )
+        if isinstance(guard["finalize_seconds"], int | float) and (
+            guard["finalize_seconds"] < MIN_FINALIZE_SECONDS
+        ):
+            problems.append(
+                f"manifest guard finalize_seconds must be at least {MIN_FINALIZE_SECONDS}"
+            )
+        if len(moments) == 3 and numeric_guard_valid:
+            observed_idle = (
+                moments["launch_at"] - moments["idle_started_at"]
+            ).total_seconds()
+            if moments["launch_at"] < moments["not_before"]:
+                problems.append("manifest guard launch precedes not_before")
+            if observed_idle < guard["idle_seconds"]:
+                problems.append("manifest guard does not attest the required idle interval")
+            minimum_probes = max(
+                2,
+                math.floor(guard["idle_seconds"] / guard["wait_poll_seconds"]),
+            )
+            if guard["idle_probe_count"] < minimum_probes:
+                problems.append("manifest guard has too few idle probes")
+            phase_times = []
+            for suffix in phase_specs:
+                try:
+                    phase_times.append(
+                        datetime.strptime(
+                            payloads[suffix]["run_id"], "%Y%m%dT%H%M%SZ"
+                        ).replace(tzinfo=timezone.utc)
+                    )
+                except (KeyError, TypeError, ValueError):
+                    pass
+            if len(phase_times) == len(phase_specs) and any(
+                (phase_time - moments["launch_at"]).total_seconds() < -1.0
+                for phase_time in phase_times
+            ):
+                problems.append("a benchmark phase predates the guarded launch")
     return problems
 
 

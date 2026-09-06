@@ -143,6 +143,43 @@ def cuda_register_cluster_backward(
     return dv, dw
 
 
+def cuda_register_cluster_forward(
+    values: torch.Tensor,
+    query: torch.Tensor,
+    output: torch.Tensor,
+    eps: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Fill ``output`` and return exact FP32 coefficients for backward."""
+    saved = _load_extension().register_cluster_forward(values, query, output, eps)
+    if len(saved) != 3:
+        raise RuntimeError("register-cluster forward returned incomplete saved state")
+    return tuple(saved)
+
+
+def cuda_register_cluster_forward_launch_info(
+    values: torch.Tensor,
+) -> dict[str, int]:
+    """Return occupancy inputs for the one-read register-cluster forward."""
+    fields = (
+        "active_clusters",
+        "dynamic_shared_bytes",
+        "static_shared_bytes",
+        "registers_per_thread",
+        "max_shared_bytes",
+        "multiprocessors",
+        "threads_per_block",
+        "cluster_blocks",
+    )
+    values = values.contiguous()
+    return dict(
+        zip(
+            fields,
+            _load_extension().register_cluster_forward_launch_info(values),
+            strict=True,
+        )
+    )
+
+
 def cuda_register_cluster_launch_info(values: torch.Tensor) -> dict[str, int]:
     """Return occupancy inputs for a packed-register cluster specialization."""
     fields = (

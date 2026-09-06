@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from switchyard.performance import backward_traffic_estimate
+from switchyard.performance import backward_traffic_estimate, forward_traffic_estimate
 
 
 def test_source_serial_exposes_traffic_for_atomic_tradeoff():
@@ -34,6 +34,20 @@ def test_grouped_hierarchical_and_cluster_models_expose_architectural_savings():
     assert cluster.logical_large_tensor_bytes == cluster.minimum_large_tensor_bytes
     assert cluster.dw_atomic_updates == 94 * shape[3]
     assert cluster.saved_state_bytes == 3 * shape[0] * shape[2] * 4
+
+
+def test_register_cluster_forward_removes_the_second_source_pass():
+    shape = (9, 1, 4096, 8192)
+    tiled = forward_traffic_estimate(
+        "tiled", *shape, saves_backward_coefficients=True
+    )
+    cluster = forward_traffic_estimate(
+        "cuda_register_cluster", *shape, saves_backward_coefficients=True
+    )
+    source_bytes = shape[0] * shape[1] * shape[2] * shape[3] * 2
+    assert tiled.logical_large_tensor_bytes - cluster.logical_large_tensor_bytes == source_bytes
+    assert cluster.logical_large_tensor_bytes == cluster.minimum_large_tensor_bytes
+    assert cluster.saved_state_bytes == tiled.saved_state_bytes
 
 
 def test_minimum_and_estimates_scale_linearly_with_tokens():
@@ -72,3 +86,10 @@ def test_estimate_never_beats_the_information_minimum(strategy):
 def test_invalid_model_inputs_fail_loudly(strategy, shape, kwargs):
     with pytest.raises(ValueError):
         backward_traffic_estimate(strategy, *shape, **kwargs)
+
+
+@pytest.mark.parametrize("strategy", ["invalid", "tiled"])
+def test_invalid_forward_model_inputs_fail_loudly(strategy):
+    shape = (0, 1, 1, 64) if strategy == "tiled" else (9, 1, 1, 64)
+    with pytest.raises(ValueError):
+        forward_traffic_estimate(strategy, *shape)

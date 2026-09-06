@@ -10,13 +10,18 @@ cd "$repo_dir"
 : "${SWITCHYARD_CAMPAIGN_DIR:?set SWITCHYARD_CAMPAIGN_DIR outside the repository}"
 : "${SWITCHYARD_TARGET_GPU_UUID:?the idle runner must select one GPU UUID}"
 : "${SWITCHYARD_RUN_ATTEMPT:?the idle runner must number each attempt}"
+: "${SWITCHYARD_GUARD_NOT_BEFORE:?the idle runner must attest not-before time}"
+: "${SWITCHYARD_GUARD_IDLE_STARTED_AT:?the idle runner must attest idle start}"
+: "${SWITCHYARD_GUARD_LAUNCH_AT:?the idle runner must attest launch time}"
+: "${SWITCHYARD_GUARD_IDLE_PROBE_COUNT:?the idle runner must attest idle probes}"
+: "${SWITCHYARD_GUARD_GPU_COUNT:?the idle runner must attest GPU inventory size}"
 : "${THIRD_PARTY_DIR:?set THIRD_PARTY_DIR to the pinned dependency directory}"
 : "${SWITCHYARD_TOOLCHAIN_DIR:?set SWITCHYARD_TOOLCHAIN_DIR to the local Python headers}"
 
 result_branch=${SWITCHYARD_RESULT_BRANCH:-codex/backward-architecture}
 expected_origin=https://github.com/sabdulmajid/blackwell-switchyard.git
 forbidden_metadata='co-authored-by|claude|anthropic|wizchem|chatgpt|openai\.com|session[-_/][[:alnum:]]|file://|/(home|tmp|pub[0-9]+)/'
-all_impls=current,serial_recompute_atomic_t4,serial_saved_partials_t16,cuda_shared,cuda_cluster,cuda_cluster4,cuda_register,cuda_register_cluster,liger
+all_impls=current,serial_recompute_atomic_t4,serial_saved_partials_t16,cuda_shared,cuda_cluster,cuda_cluster4,cuda_register,cuda_register_cluster,cuda_register_cluster_full,liger
 portable_impls=current,serial_recompute_atomic_t4,serial_saved_partials_t16,liger
 candidates=(
   serial_recompute_atomic_t4
@@ -26,6 +31,7 @@ candidates=(
   cuda_cluster4
   cuda_register
   cuda_register_cluster
+  cuda_register_cluster_full
 )
 if [[ ! "$SWITCHYARD_EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] ||
    [[ ! "$SWITCHYARD_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] ||
@@ -200,6 +206,69 @@ if [[ ! -d "$liger_dir/.git" ]] ||
   echo "Liger must be a clean checkout at $pinned_liger" >&2
   exit 2
 fi
+
+guard_attestation="$campaign_dir/guard.json"
+export SWITCHYARD_GUARD_ATTESTATION="$guard_attestation"
+python - "$guard_attestation" <<'PY'
+import json
+import math
+import os
+import sys
+from datetime import datetime
+
+path = sys.argv[1]
+payload = {
+    "not_before": os.environ["SWITCHYARD_GUARD_NOT_BEFORE"],
+    "idle_started_at": os.environ["SWITCHYARD_GUARD_IDLE_STARTED_AT"],
+    "launch_at": os.environ["SWITCHYARD_GUARD_LAUNCH_AT"],
+    "idle_seconds": int(os.environ["SWITCHYARD_GUARD_IDLE_SECONDS"]),
+    "idle_probe_count": int(os.environ["SWITCHYARD_GUARD_IDLE_PROBE_COUNT"]),
+    "wait_poll_seconds": int(os.environ["SWITCHYARD_GUARD_WAIT_POLL_SECONDS"]),
+    "watchdog_seconds": float(os.environ["SWITCHYARD_GUARD_WATCHDOG_SECONDS"]),
+    "finalize_seconds": int(os.environ["SWITCHYARD_GUARD_FINALIZE_SECONDS"]),
+    "gpu_count": int(os.environ["SWITCHYARD_GUARD_GPU_COUNT"]),
+    "target_gpu_uuid": os.environ["SWITCHYARD_TARGET_GPU_UUID"],
+}
+if os.path.exists(path):
+    with open(path, encoding="utf-8") as handle:
+        existing = json.load(handle)
+    stable = {
+        "not_before",
+        "idle_seconds",
+        "wait_poll_seconds",
+        "watchdog_seconds",
+        "finalize_seconds",
+        "gpu_count",
+        "target_gpu_uuid",
+    }
+    if set(existing) != set(payload) or any(existing[key] != payload[key] for key in stable):
+        raise SystemExit("existing guard attestation differs from this runner")
+    attestation = existing
+else:
+    with open(path, "x", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    attestation = payload
+
+not_before = datetime.fromisoformat(attestation["not_before"])
+idle_started = datetime.fromisoformat(attestation["idle_started_at"])
+launch = datetime.fromisoformat(attestation["launch_at"])
+if any(moment.tzinfo is None for moment in (not_before, idle_started, launch)):
+    raise SystemExit("guard timestamps must include UTC offsets")
+if (
+    attestation["idle_seconds"] < 1800
+    or not 30 <= attestation["wait_poll_seconds"] <= 300
+    or not 0 < attestation["watchdog_seconds"] <= 0.25
+    or attestation["finalize_seconds"] < 1800
+    or attestation["gpu_count"] < 1
+    or attestation["target_gpu_uuid"] != os.environ["SWITCHYARD_TARGET_GPU_UUID"]
+    or launch < not_before
+    or (launch - idle_started).total_seconds() < attestation["idle_seconds"]
+    or attestation["idle_probe_count"]
+    < max(2, math.floor(attestation["idle_seconds"] / attestation["wait_poll_seconds"]))
+):
+    raise SystemExit("guard attestation does not meet the campaign safety contract")
+PY
 
 attempt_dir="$campaign_dir/attempt-$SWITCHYARD_RUN_ATTEMPT"
 if ! mkdir "$attempt_dir"; then
@@ -454,6 +523,9 @@ import json
 import os
 import sys
 
+with open(os.environ["SWITCHYARD_GUARD_ATTESTATION"], encoding="utf-8") as handle:
+    guard = json.load(handle)
+
 payload = {
     "schema_version": 1,
     "repository_commit": os.environ["SWITCHYARD_EXPECTED_HEAD"],
@@ -463,13 +535,7 @@ payload = {
     "origin": os.environ["SWITCHYARD_EXPECTED_ORIGIN"],
     "attempt": int(os.environ["SWITCHYARD_RUN_ATTEMPT"]),
     "gpu_uuid": os.environ["SWITCHYARD_TARGET_GPU_UUID"],
-    "guard": {
-        "not_before": os.environ.get("SWITCHYARD_GUARD_NOT_BEFORE"),
-        "idle_seconds": int(os.environ.get("SWITCHYARD_GUARD_IDLE_SECONDS", "0")),
-        "wait_poll_seconds": int(os.environ.get("SWITCHYARD_GUARD_WAIT_POLL_SECONDS", "0")),
-        "watchdog_seconds": float(os.environ.get("SWITCHYARD_GUARD_WATCHDOG_SECONDS", "0")),
-        "finalize_seconds": int(os.environ.get("SWITCHYARD_GUARD_FINALIZE_SECONDS", "0")),
-    },
+    "guard": guard,
     "liger_commit": "777799588a89d74c489ed995e3bf006427738e85",
 }
 with open(sys.argv[1], "w", encoding="utf-8") as handle:

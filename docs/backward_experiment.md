@@ -59,7 +59,7 @@ saved state, token ownership, and `dw` reduction.
 
 The plans are:
 
-| Plan | Source reads | Forward state | `dw` reduction | Purpose |
+| Plan | Backward source reads | Forward state | `dw` reduction | Purpose |
 |---|---:|---:|---|---|
 | `auto` | accepted behavior | none | measured production strategy | production control |
 | `serial_recompute_atomic_t1` | two | none | one atomic contribution per token | Liger-like diagnostic |
@@ -71,6 +71,7 @@ The plans are:
 | `cuda_cluster4` | **one** | three FP32 source scalars | one contribution per persistent cluster | lower shared-memory pressure |
 | `cuda_register` | **one** | three FP32 source scalars | one contribution per persistent CTA | fixed-shape register candidate |
 | `cuda_register_cluster` | **one** | three FP32 source scalars | one contribution per persistent cluster | register candidate for wide gaps |
+| `cuda_register_cluster_full` | **one** | three FP32 source scalars | one contribution per persistent cluster | one-read forward and backward candidate |
 
 The saved fields are `alpha`, `rstd`, and:
 
@@ -131,6 +132,23 @@ keeps each source value in registers across both gradient equations without exce
 128-register limit. It also avoids the source-sized shared-memory tile used by the general
 feature-cluster plans.
 
+The `cuda_register_cluster_full` plan pairs that backward with a complete one-read forward.
+The accepted saved-state forward reads the source stack twice at these shapes. This extra read
+makes the full-training target physically too tight at `(N=9, D=8192)`, even if the backward
+reaches its traffic floor. The custom forward removes that read. It calculates the RMS and query
+dot products in FP32, applies the softmax over sources, saves the three exact backward
+coefficients, and produces a weighted sum of raw source values. It does not use attention
+scaling.
+
+The first register-only `(N=9, D=8192)` forward passed the spill check, but disassembly showed
+that the compiler reloaded eight sources from global memory. That version was rejected. The
+current specialization keeps all nine sources in a 36,864-byte shared-memory tile and uses 38,052
+dynamic shared-memory bytes per block. The `(N=32, D=2048)` forward keeps 28 sources in registers
+and keeps four sources in an 8,192-byte shared-memory tile. It uses 12,416 dynamic shared-memory
+bytes per block. Both layouts avoid compiler spills and read each source from global memory one
+time. The query shard stays in registers across the persistent token loop. Only source reduction
+scalars and the final softmax weights cross distributed shared memory.
+
 The packed kernels load two low-precision values at a time. They require four-byte base
 alignment. A valid contiguous tensor can start at an odd two-byte storage offset, so the Python
 operator makes an aligned copy only in that case. The CUDA entry point also rejects a misaligned
@@ -147,6 +165,8 @@ The offline `sm_120` compiler gate reports:
 | `(9,4096)` register CTA, bf16/fp16 | 128 | 0 | 0 | 1024 bytes |
 | `(9,8192)` four-block register cluster, bf16/fp16 | 128 | 0 | 0 | 1024 bytes |
 | `(32,2048)` two-block register cluster, bf16/fp16 | 128 | 0 | 0 | 1024 bytes |
+| `(9,8192)` one-read forward, bf16/fp16 | 96 | 0 | 0 | 1024 bytes |
+| `(32,2048)` one-read forward, bf16/fp16 | 103 / 109 | 0 | 0 | 1024 bytes |
 
 Dynamic shared memory depends on `N` and `D`. The runtime adds static and dynamic memory before
 it accepts a launch.
@@ -173,8 +193,10 @@ CUDA_VISIBLE_DEVICES="" python scripts/compile_candidates.py
 ```
 
 The gate compiles the target Triton specializations and the CUDA extension for `sm_120`. It
-uses `cuobjdump` to record registers, stack, local memory, and static shared memory. It fails on
-compiler-reported local storage. The command does not initialize or query a GPU.
+uses `cuobjdump` to record registers, stack, local memory, static shared memory, and static global
+load instructions. It fails on compiler-reported local storage. It also fails if the generated
+register-cluster kernels do not have the exact global load count from the audited one-read
+schedule. The command does not initialize or query a GPU.
 
 ## GPU experiment order
 
@@ -187,6 +209,17 @@ Use exclusive access. Do not start with the full matrix.
 4. Drop dominated plans.
 5. Run the bounded crossover matrix only for the survivors.
 6. Run the complete dtype, memory, kernel-count, and Transformer regressions before dispatch.
+
+The evaluator makes the final decision for each measured shape and dtype. A failure in
+correctness, provenance, traffic accounting, kernel structure, or measurement quality invalidates
+the complete report. A valid performance loss at one shape does not erase a valid win at another
+shape. Production dispatch can use only the exact shape and dtype cells that clear all gates.
+
+The benchmark uses 15 interleaved trials with 13 samples per trial. Reversed adjacent orders
+balance which implementation in each pair runs first. A dispatch cell must beat both the current
+path and Liger in all 15 independent trial medians. Across the 264 candidate, shape, dtype, and
+comparator hypotheses and three permitted campaign attempts, the conservative Bonferroni
+sign-error bound is less than 0.05.
 
 The benchmark must store the exact training plan, device UUID, kernel names, main and auxiliary
 kernel launch counts, saved-state bytes, workspace, raw samples, and trial order. It must
@@ -219,9 +252,13 @@ after GPU work.
 The runner keeps its attempt count across process restarts. Each decision hashes the exact byte
 buffers that it parsed. Before commit, the campaign reconstructs every decision from the staged
 Git blobs. It repeats that check against the committed blobs before it pushes. Recovery accepts
-only the exact 15-file bundle for one campaign ID. It reconstructs every gate and decision before
+only the exact 16-file bundle for one campaign ID. It reconstructs every gate and decision before
 it retries a push. Publication uses the literal canonical repository URL after checking that the
 configured remote has one matching fetch URL and one matching push URL.
+
+The manifest records the start and end of the idle interval, the idle probe count, the selected
+GPU, and the guarded launch time. Bundle validation checks these fields against the report times
+and the selected GPU. It rejects a report that predates the guarded launch.
 
 A deterministic smoke, correctness, schema, or provenance failure stops the campaign. It does
 not spend another GPU attempt on the same inputs. Only a collision, interrupted phase, or

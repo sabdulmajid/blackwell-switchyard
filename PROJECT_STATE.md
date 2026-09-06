@@ -75,16 +75,23 @@ Ordered by how much the measurements say they are worth.
    complete immutable training plans. It contains grouped Triton paths, saved FP32 forward
    coefficients, hierarchical `dw` reduction, a one-block CUDA traffic control, two-block and
    four-block feature-sharded CUDA clusters, and one fixed-shape packed-register CTA. It also
-   contains packed-register clusters for the two remaining gap shapes. The CUDA
-   paths target the one-read source traffic lower bound. Source reductions now use balanced
+   contains packed-register clusters for the two remaining gap shapes. A new complete plan
+   uses a one-read CUDA forward with the one-read backward. The CUDA paths target the minimum
+   source traffic for the full training operation. Source reductions now use balanced
    warp waves instead of two full-block barriers per source. The four-block cluster lowers
    per-block shared-memory pressure and parallelizes the DSM scalar reduction. The offline
    `sm_120` gate reports 64 registers for the two-block cluster, 72 for the four-block cluster,
-   and 128 for each packed-register specialization. All CUDA candidates have zero stack and zero
-   local-memory use. The register clusters use four blocks for `(N=9,D=8192)` and two blocks for
-   `(N=32,D=2048)`. Larger source-serial tiles were removed because the compiler spilled them.
-   The benchmark stores raw paired trials and uses a 50 ms sampled process monitor. Production
-   dispatch is unchanged. GPU correctness, occupancy, and latency are still pending.
+   and at most 128 registers for each packed-register specialization. All CUDA candidates have
+   zero stack and zero local-memory use. At `(N=9,D=8192)`, the complete forward keeps all nine
+   sources in shared memory and uses 38,052 bytes of dynamic shared memory per block. At
+   `(N=32,D=2048)`, it keeps 28 sources in registers and four sources in shared memory. It uses
+   12,416 bytes of dynamic shared memory per block.
+   The register clusters use four blocks for `(N=9,D=8192)` and two
+   blocks for `(N=32,D=2048)`. The evaluator now preserves a valid win for an exact shape and
+   dtype instead of requiring one plan to win every supported case. Larger source-serial tiles
+   were removed because the compiler spilled them. The benchmark stores raw paired trials and
+   uses a 50 ms sampled process monitor. Production dispatch is unchanged. GPU correctness,
+   occupancy, and latency are still pending.
 2. **Complete the batched training contract.** The current batched API does not return
    merge statistics and does not implement backward. The resident forward is useful, but
    it is not the complete paper schedule.

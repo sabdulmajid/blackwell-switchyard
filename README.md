@@ -9,6 +9,9 @@ The project measures three implementations:
 - PyTorch with `torch.compile` and Inductor
 - Custom Triton kernels
 
+The repository also contains private CUDA candidates for the large training shapes.
+These candidates are not part of production dispatch.
+
 Correctness has priority over speed.
 Each timed implementation must pass a float64 oracle check.
 
@@ -188,7 +191,7 @@ with torch.no_grad():
 | [`baselines.py`](src/switchyard/baselines.py) | Defines framework baseline formulations. |
 | [`triton_op.py`](src/switchyard/triton_op.py) | Defines the accepted Triton operator and private experiment paths. |
 | [`training_plan.py`](src/switchyard/training_plan.py) | Defines complete forward and backward experiment contracts. |
-| [`shared_backward.cu`](src/switchyard/csrc/shared_backward.cu) | Defines private one-read CUDA backward candidates. |
+| [`shared_backward.cu`](src/switchyard/csrc/shared_backward.cu) | Defines private one-read CUDA forward and backward candidates. |
 | [`model.py`](src/switchyard/model.py) | Defines the Transformer integration and source arena. |
 | [`harness.py`](bench/harness.py) | Defines common timing, memory, accuracy, and kernel-count methods. |
 
@@ -292,8 +295,10 @@ It includes a grouped Triton path and two feature-sharded CUDA cluster paths.
 The CUDA clusters use two or four blocks.
 It also includes one fixed-shape register path for `N=9 D=4096`.
 Register-cluster paths cover `N=9 D=8192` and `N=32 D=2048`.
-These CUDA paths keep source values on the chip.
-They target the one-read backward traffic limit.
+One additional training plan uses custom register-cluster kernels in both directions.
+Its forward and backward kernels each read every source value one time.
+The other register-cluster plan uses the accepted two-pass forward as a control.
+The complete plan targets the minimum source traffic for the full training operation.
 They compile for `sm_120` without local-memory spills.
 These paths are not in production dispatch.
 They do not have GPU correctness or performance results yet.

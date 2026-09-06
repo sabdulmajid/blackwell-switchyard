@@ -306,22 +306,30 @@ def main() -> int:
     )
 
     idle_since: float | None = None
+    idle_since_wall: float | None = None
+    idle_probe_count = 0
     while time.time() < deadline and attempt < args.max_attempts:
         try:
             apps = _compute_apps()
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             idle_since = None
+            idle_since_wall = None
+            idle_probe_count = 0
             recorder.write("wait_probe_failed", error=f"{type(exc).__name__}: {exc}"[:300])
             time.sleep(args.wait_poll_seconds)
             continue
 
         if apps:
             idle_since = None
+            idle_since_wall = None
+            idle_probe_count = 0
             time.sleep(args.wait_poll_seconds)
             continue
         if idle_since is None:
             idle_since = time.monotonic()
+            idle_since_wall = time.time()
             recorder.write("idle_grace_started")
+        idle_probe_count += 1
         elapsed = time.monotonic() - idle_since
         if elapsed < args.idle_seconds:
             time.sleep(min(args.wait_poll_seconds, args.idle_seconds - elapsed))
@@ -333,14 +341,23 @@ def main() -> int:
             final_apps = _compute_apps()
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             idle_since = None
+            idle_since_wall = None
+            idle_probe_count = 0
             recorder.write("final_probe_failed", error=f"{type(exc).__name__}: {exc}"[:300])
             time.sleep(args.wait_poll_seconds)
             continue
         if final_apps:
             idle_since = None
+            idle_since_wall = None
+            idle_probe_count = 0
             continue
 
         attempt += 1
+        idle_probe_count += 1
+        launch_time = time.time()
+        if idle_since_wall is None:
+            recorder.write("failed", reason="idle wall-clock evidence is missing")
+            return 2
         environment = os.environ.copy()
         environment["CUDA_VISIBLE_DEVICES"] = target_uuid
         environment["SWITCHYARD_TARGET_GPU_UUID"] = target_uuid
@@ -352,6 +369,14 @@ def main() -> int:
         environment["SWITCHYARD_GUARD_WAIT_POLL_SECONDS"] = str(args.wait_poll_seconds)
         environment["SWITCHYARD_GUARD_WATCHDOG_SECONDS"] = str(args.watchdog_seconds)
         environment["SWITCHYARD_GUARD_FINALIZE_SECONDS"] = str(args.finalize_seconds)
+        environment["SWITCHYARD_GUARD_IDLE_STARTED_AT"] = datetime.fromtimestamp(
+            idle_since_wall
+        ).astimezone().isoformat()
+        environment["SWITCHYARD_GUARD_LAUNCH_AT"] = datetime.fromtimestamp(
+            launch_time
+        ).astimezone().isoformat()
+        environment["SWITCHYARD_GUARD_IDLE_PROBE_COUNT"] = str(idle_probe_count)
+        environment["SWITCHYARD_GUARD_GPU_COUNT"] = str(len(inventory))
         if args.gpu_complete_marker is not None:
             args.gpu_complete_marker.unlink(missing_ok=True)
         recorder.write("launching_workload", attempt=attempt, target_uuid=target_uuid)
@@ -433,6 +458,8 @@ def main() -> int:
                 return_code=return_code,
             )
             idle_since = None
+            idle_since_wall = None
+            idle_probe_count = 0
             continue
         if deadline_reached:
             recorder.write("expired", attempts=attempt)
@@ -443,6 +470,8 @@ def main() -> int:
         if return_code == 75:
             recorder.write("workload_requested_requeue", attempt=attempt)
             idle_since = None
+            idle_since_wall = None
+            idle_probe_count = 0
             continue
         recorder.write("failed", attempt=attempt, return_code=return_code)
         return return_code or 1

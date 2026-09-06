@@ -20,12 +20,14 @@ def _report() -> dict:
     return {
         "schema_version": 2,
         "run_id": "20260905T200000Z",
+        "experiment": "backward architecture selection",
         "run_status": "complete",
         "dtype": "bfloat16",
         "shape_set": "full",
         "candidate_reachable_from_production": False,
         "correctness_seeds": [0, 1, 2],
         "selected_implementations": IMPLS,
+        "notes": [],
         "gpu_preflight": {
             "resolved_uuid": "GPU-test",
             "foreign_compute_process_count_at_start": 0,
@@ -102,3 +104,12 @@ def test_quick_report_cannot_be_reused_as_full():
     report = _report()
     report["provenance"]["argv"].append("--quick")
     assert _problems(report)
+
+
+def test_unknown_top_level_or_nested_fields_cannot_be_published():
+    report = _report()
+    report["private_note"] = "must not leave the runner"
+    report["provenance"]["prompt"] = "must not leave the runner"
+    problems = _problems(report)
+    assert any("report contains unexpected fields" in problem for problem in problems)
+    assert any("provenance contains unexpected fields" in problem for problem in problems)

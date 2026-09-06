@@ -47,6 +47,7 @@ from switchyard.triton_op import _fwd_tiled  # noqa: E402
 
 TARGET = GPUTarget("cuda", 120, 32)
 CUOBJDUMP = Path(os.environ.get("CUDA_HOME", "/usr/local/cuda-12.8")) / "bin/cuobjdump"
+NVDISASM = CUOBJDUMP.with_name("nvdisasm")
 CUDA_INSTANCE_COUNTS = {
     "shared_backward_kernel": 2,
     "feature_cluster_backward_kernel_2block": 2,
@@ -56,6 +57,10 @@ CUDA_INSTANCE_COUNTS = {
     "register_cluster_backward_kernel_bfloat16_n32_d2048_c2": 1,
     "register_cluster_backward_kernel_float16_n9_d8192_c4": 1,
     "register_cluster_backward_kernel_float16_n32_d2048_c2": 1,
+    "register_cluster_forward_kernel_bfloat16_n9_d8192_c4": 1,
+    "register_cluster_forward_kernel_bfloat16_n32_d2048_c2": 1,
+    "register_cluster_forward_kernel_float16_n9_d8192_c4": 1,
+    "register_cluster_forward_kernel_float16_n32_d2048_c2": 1,
 }
 CUDA_REGISTER_LIMITS = {
     "shared_backward_kernel": 64,
@@ -69,6 +74,58 @@ CUDA_REGISTER_LIMITS = {
     "register_cluster_backward_kernel_bfloat16_n32_d2048_c2": 128,
     "register_cluster_backward_kernel_float16_n9_d8192_c4": 128,
     "register_cluster_backward_kernel_float16_n32_d2048_c2": 128,
+    "register_cluster_forward_kernel_bfloat16_n9_d8192_c4": 128,
+    "register_cluster_forward_kernel_bfloat16_n32_d2048_c2": 128,
+    "register_cluster_forward_kernel_float16_n9_d8192_c4": 128,
+    "register_cluster_forward_kernel_float16_n32_d2048_c2": 128,
+}
+CUDA_GLOBAL_LOAD_INSTRUCTION_COUNTS = {
+    "register_cluster_backward_kernel_bfloat16_n9_d8192_c4": 25,
+    "register_cluster_backward_kernel_bfloat16_n32_d2048_c2": 37,
+    "register_cluster_backward_kernel_float16_n9_d8192_c4": 25,
+    "register_cluster_backward_kernel_float16_n32_d2048_c2": 37,
+    "register_cluster_forward_kernel_bfloat16_n9_d8192_c4": 20,
+    "register_cluster_forward_kernel_bfloat16_n32_d2048_c2": 33,
+    "register_cluster_forward_kernel_float16_n9_d8192_c4": 20,
+    "register_cluster_forward_kernel_float16_n32_d2048_c2": 33,
+}
+CUDA_GLOBAL_LOAD_ROLE_COUNTS = {
+    **{
+        f"register_cluster_backward_kernel_{dtype}_n9_d8192_c4": {
+            "grad_output_pairs": 2,
+            "source_pairs": 18,
+            "saved_alpha": 1,
+            "saved_rstd": 1,
+            "saved_norm": 1,
+            "query_pairs": 2,
+        }
+        for dtype in ("bfloat16", "float16")
+    },
+    **{
+        f"register_cluster_backward_kernel_{dtype}_n32_d2048_c2": {
+            "grad_output_pairs": 1,
+            "source_pairs": 32,
+            "saved_alpha": 1,
+            "saved_rstd": 1,
+            "saved_norm": 1,
+            "query_pairs": 1,
+        }
+        for dtype in ("bfloat16", "float16")
+    },
+    **{
+        f"register_cluster_forward_kernel_{dtype}_n9_d8192_c4": {
+            "query_pairs": 2,
+            "source_pairs": 18,
+        }
+        for dtype in ("bfloat16", "float16")
+    },
+    **{
+        f"register_cluster_forward_kernel_{dtype}_n32_d2048_c2": {
+            "query_pairs": 1,
+            "source_pairs": 32,
+        }
+        for dtype in ("bfloat16", "float16")
+    },
 }
 
 POINTER_SIGNATURE = {
@@ -118,6 +175,189 @@ ACCEPTED_FORWARD_SIGNATURE = {
 }
 
 
+def _normalize_kernel_name(name: str) -> str:
+    normalized_name = name
+    for known_name in (
+        "feature_cluster_backward_kernel",
+        "register_cluster_backward_kernel",
+        "register_cluster_forward_kernel",
+        "register_backward_kernel",
+        "shared_backward_kernel",
+        "_bwd_source_serial_grouped",
+        "_reduce_dw_partials",
+        "_fwd_resident_saved",
+        "_fwd_tiled_saved",
+        "_fwd_resident",
+        "_fwd_tiled",
+    ):
+        if known_name not in name:
+            continue
+        normalized_name = known_name
+        if known_name == "feature_cluster_backward_kernel":
+            cluster_blocks = 4 if "Li4E" in name else 2
+            normalized_name = f"{known_name}_{cluster_blocks}block"
+        elif known_name in {
+            "register_cluster_backward_kernel",
+            "register_cluster_forward_kernel",
+        }:
+            shape = re.search(r"Li(\d+)ELi(\d+)ELi(\d+)E", name)
+            dtype = (
+                "bfloat16"
+                if "__nv_bfloat16" in name
+                else "float16" if "__half" in name else "unknown"
+            )
+            if shape is not None:
+                n, d, cluster_blocks = shape.groups()
+                normalized_name = (
+                    f"{known_name}_{dtype}_n{n}_d{d}_c{cluster_blocks}"
+                )
+        break
+    return normalized_name
+
+
+def _sass_global_load_counts(binary: Path) -> dict[str, int]:
+    output = subprocess.run(
+        [str(CUOBJDUMP), "--dump-sass", str(binary)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    counts: dict[str, int] = {}
+    for section in re.split(r"(?=\n\s*Function : )", output):
+        match = re.search(r"Function : (\S+)", section)
+        if match is None:
+            continue
+        counts[match.group(1)] = len(re.findall(r"\bLDG(?:\.[A-Z0-9_]+)*\s", section))
+    return counts
+
+
+def _unique_source_line(
+    lines: list[str], start: int, end: int, needle: str
+) -> int:
+    matches = [
+        index + 1
+        for index in range(start, end)
+        if needle in lines[index]
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(f"expected one CUDA source anchor for {needle!r}, got {matches}")
+    return matches[0]
+
+
+def _cuda_load_role_lines(source: Path) -> dict[int, str]:
+    """Map audited source statements to stable logical load roles."""
+    lines = source.read_text().splitlines()
+    backward_start = next(
+        index
+        for index, line in enumerate(lines)
+        if "void register_cluster_backward_kernel(" in line
+    )
+    forward_start = next(
+        index
+        for index, line in enumerate(lines)
+        if "void register_cluster_forward_kernel(" in line
+    )
+    forward_end = next(
+        index
+        for index in range(forward_start + 1, len(lines))
+        if lines[index].startswith("size_t shared_bytes(")
+    )
+    anchors = {
+        "grad_output_pairs": (
+            backward_start,
+            forward_start,
+            "grad_out + static_cast<int64_t>(token) * Width + feature)[0]",
+        ),
+        "source_pairs_backward": (
+            backward_start,
+            forward_start,
+            "const uint32_t raw = reinterpret_cast<const uint32_t*>(values + value_offset)[0]",
+        ),
+        "saved_alpha": (backward_start, forward_start, "alpha = saved_alpha[saved_offset]"),
+        "saved_rstd": (
+            backward_start,
+            forward_start,
+            "const float rstd = saved_rstd[saved_offset]",
+        ),
+        "saved_norm": (
+            backward_start,
+            forward_start,
+            "const float norm = saved_norm[saved_offset]",
+        ),
+        "query_pairs_backward": (
+            backward_start,
+            forward_start,
+            "reinterpret_cast<const uint32_t*>(query + feature)[0]",
+        ),
+        "query_pairs_forward": (
+            forward_start,
+            forward_end,
+            "held_query[slot] = reinterpret_cast<const uint32_t*>(query + feature)[0]",
+        ),
+        "source_pairs_forward": (
+            forward_start,
+            forward_end,
+            "reinterpret_cast<const uint32_t*>(values + value_offset)[0]",
+        ),
+    }
+    role_lines = {}
+    for anchor, (start, end, needle) in anchors.items():
+        role = anchor.removesuffix("_backward").removesuffix("_forward")
+        line = _unique_source_line(lines, start, end, needle)
+        if line in role_lines:
+            raise RuntimeError(f"CUDA load roles share source line {line}")
+        role_lines[line] = role
+    return role_lines
+
+
+def _sass_global_load_roles(binary: Path, source: Path) -> dict[str, dict[str, int]]:
+    """Attribute each static LDG to an audited source statement via line info."""
+    role_lines = _cuda_load_role_lines(source)
+    with tempfile.TemporaryDirectory(prefix="switchyard-cubin-") as directory:
+        extracted = Path(directory)
+        subprocess.run(
+            [str(CUOBJDUMP), "--extract-elf", "all", str(binary)],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=extracted,
+        )
+        cubins = sorted(extracted.glob("*.cubin"))
+        if len(cubins) != 1:
+            raise RuntimeError(f"expected one embedded cubin, got {len(cubins)}")
+        output = subprocess.run(
+            [str(NVDISASM), "--print-line-info", str(cubins[0])],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    result: dict[str, dict[str, int]] = {}
+    for section in re.split(r"(?=//-+ \.text\.)", output):
+        symbol = re.search(r"\.text\.(\S+)", section)
+        if symbol is None:
+            continue
+        kernel = _normalize_kernel_name(symbol.group(1))
+        if kernel not in CUDA_GLOBAL_LOAD_ROLE_COUNTS:
+            continue
+        if kernel in result:
+            raise RuntimeError(f"duplicate line-info SASS section for {kernel}")
+        current_line: int | None = None
+        counts: Counter[str] = Counter()
+        for line in section.splitlines():
+            location = re.search(r'File "([^"]+)", line (\d+)', line)
+            if location is not None:
+                current_line = (
+                    int(location.group(2))
+                    if Path(location.group(1)).name == source.name
+                    else None
+                )
+            if re.search(r"\bLDG(?:\.[A-Z0-9_]+)*\s", line):
+                counts[role_lines.get(current_line, "unmapped")] += 1
+        result[kernel] = dict(counts)
+    return result
+
+
 def _resource_usage(binary: Path) -> list[dict[str, int | str]]:
     output = subprocess.run(
         [str(CUOBJDUMP), "--dump-resource-usage", str(binary)],
@@ -125,49 +365,20 @@ def _resource_usage(binary: Path) -> list[dict[str, int | str]]:
         capture_output=True,
         text=True,
     ).stdout
+    sass_global_loads = _sass_global_load_counts(binary)
     records = []
     for name, registers, stack, shared, local in re.findall(
         r"Function ([^:]+):\n\s+REG:(\d+) STACK:(\d+) SHARED:(\d+) LOCAL:(\d+)",
         output,
     ):
-        normalized_name = name
-        for known_name in (
-            "feature_cluster_backward_kernel",
-            "register_cluster_backward_kernel",
-            "register_backward_kernel",
-            "shared_backward_kernel",
-            "_bwd_source_serial_grouped",
-            "_reduce_dw_partials",
-            "_fwd_resident_saved",
-            "_fwd_tiled_saved",
-            "_fwd_resident",
-            "_fwd_tiled",
-        ):
-            if known_name in name:
-                normalized_name = known_name
-                if known_name == "feature_cluster_backward_kernel":
-                    cluster_blocks = 4 if "Li4E" in name else 2
-                    normalized_name = f"{known_name}_{cluster_blocks}block"
-                elif known_name == "register_cluster_backward_kernel":
-                    shape = re.search(r"Li(\d+)ELi(\d+)ELi(\d+)E", name)
-                    dtype = (
-                        "bfloat16"
-                        if "__nv_bfloat16" in name
-                        else "float16" if "__half" in name else "unknown"
-                    )
-                    if shape is not None:
-                        n, d, cluster_blocks = shape.groups()
-                        normalized_name = (
-                            f"{known_name}_{dtype}_n{n}_d{d}_c{cluster_blocks}"
-                        )
-                break
         records.append(
             {
-                "kernel": normalized_name,
+                "kernel": _normalize_kernel_name(name),
                 "registers": int(registers),
                 "stack_bytes": int(stack),
                 "static_shared_bytes": int(shared),
                 "local_bytes": int(local),
+                "global_load_instructions": sass_global_loads.get(name),
             }
         )
     if not records:
@@ -274,10 +485,13 @@ def compile_all() -> dict:
         )
     )
 
+    cuda_source = REPO / "src/switchyard/csrc/shared_backward.cu"
     with tempfile.TemporaryDirectory(prefix="switchyard-cuda-build-") as build_dir:
         os.environ["TORCH_EXTENSIONS_DIR"] = build_dir
         extension = _load_extension()
-        cuda_resources = _resource_usage(Path(extension.__file__))
+        binary = Path(extension.__file__)
+        cuda_resources = _resource_usage(binary)
+        cuda_load_roles = _sass_global_load_roles(binary, cuda_source)
     if any(item["local_bytes"] or item["stack_bytes"] for item in cuda_resources):
         raise RuntimeError(f"CUDA candidate spills to local memory: {cuda_resources}")
     instance_counts = Counter(item["kernel"] for item in cuda_resources)
@@ -292,17 +506,38 @@ def compile_all() -> dict:
             raise RuntimeError(
                 f"{item['kernel']} uses {item['registers']} registers; budget is {limit}: {item}"
             )
+    observed_loads = {
+        item["kernel"]: item["global_load_instructions"]
+        for item in cuda_resources
+        if item["kernel"] in CUDA_GLOBAL_LOAD_INSTRUCTION_COUNTS
+    }
+    if observed_loads != CUDA_GLOBAL_LOAD_INSTRUCTION_COUNTS:
+        raise RuntimeError(
+            "CUDA generated code does not preserve the one-read load contract: "
+            f"{observed_loads}"
+        )
+    if cuda_load_roles != CUDA_GLOBAL_LOAD_ROLE_COUNTS:
+        raise RuntimeError(
+            "CUDA generated code does not preserve the role-specific one-read contract: "
+            f"{cuda_load_roles}"
+        )
+    for item in cuda_resources:
+        if item["kernel"] in cuda_load_roles:
+            item["global_load_instruction_roles"] = cuda_load_roles[item["kernel"]]
     records.append(
         {
             "name": "one_read_cuda",
             "kind": "cuda",
             "required_template_instances": CUDA_INSTANCE_COUNTS,
             "register_limits": CUDA_REGISTER_LIMITS,
+            "required_global_load_instruction_counts": (
+                CUDA_GLOBAL_LOAD_INSTRUCTION_COUNTS
+            ),
+            "required_global_load_role_counts": CUDA_GLOBAL_LOAD_ROLE_COUNTS,
             "resources": cuda_resources,
         }
     )
 
-    cuda_source = REPO / "src/switchyard/csrc/shared_backward.cu"
     git_commit = subprocess.run(
         ["git", "-C", str(REPO), "rev-parse", "HEAD"],
         check=True,
@@ -342,6 +577,7 @@ def compile_all() -> dict:
                 "cuda_cluster4",
                 "cuda_register",
                 "cuda_register_cluster",
+                "cuda_register_cluster_full",
             )
         ],
         "compilations": records,

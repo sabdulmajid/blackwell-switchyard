@@ -14,7 +14,7 @@ from typing import Literal
 RESIDENT_TILE_MAX = 32768
 TARGET_OPTIN_SHARED_BYTES = 101_376
 
-ForwardFamily = Literal["standard"]
+ForwardFamily = Literal["standard", "cuda_register_cluster"]
 BackwardFamily = Literal[
     "auto",
     "source_serial",
@@ -81,6 +81,15 @@ class TrainingPlan:
     backward: BackwardPlan
     production: bool
     rationale: str
+
+    def __post_init__(self) -> None:
+        if self.forward.family == "cuda_register_cluster" and (
+            self.forward.saved_state != "backward_coefficients"
+            or self.backward.family != "cuda_register_cluster"
+        ):
+            raise ValueError(
+                "cuda_register_cluster forward requires its saved-state backward"
+            )
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -162,6 +171,16 @@ EXPERIMENTAL_PLANS = (
         production=False,
         rationale="shape-specialized register residency with only scalar DSM exchange",
     ),
+    TrainingPlan(
+        name="cuda_register_cluster_full",
+        forward=ForwardPlan(
+            family="cuda_register_cluster",
+            saved_state="backward_coefficients",
+        ),
+        backward=BackwardPlan("cuda_register_cluster", 1, "persistent_atomics"),
+        production=False,
+        rationale="one-read register-cluster forward and backward for fixed gap shapes",
+    ),
 )
 
 _PLANS = {plan.name: plan for plan in (AUTO_PLAN, *EXPERIMENTAL_PLANS)}
@@ -203,6 +222,16 @@ def _register_cluster_shared_bytes(
     query_gradient = 4 * local_width
     output_gradient = itemsize * local_width
     return warp_partials_and_stats + query_gradient + output_gradient
+
+
+def _register_cluster_forward_shared_bytes(
+    n: int, d: int, itemsize: int, cluster_blocks: int
+) -> int:
+    local_width = d // cluster_blocks
+    register_sources = 0 if n == 9 else 28
+    source_tile = itemsize * (n - register_sources) * local_width
+    warp_partials_and_alphas = 4 * n * (2 * 16 + 1)
+    return source_tile + warp_partials_and_alphas
 
 
 def plan_supports(
@@ -253,7 +282,13 @@ def plan_supports(
         cluster_blocks = {(9, 8192): 4, (32, 2048): 2}.get((n, d))
         if cluster_blocks is None:
             return False, "register-cluster plan has no compiled specialization for this (N,D)"
-        required = _register_cluster_shared_bytes(n, d, 2, cluster_blocks) + 1024
+        dynamic = _register_cluster_shared_bytes(n, d, 2, cluster_blocks)
+        if plan.forward.family == "cuda_register_cluster":
+            dynamic = max(
+                dynamic,
+                _register_cluster_forward_shared_bytes(n, d, 2, cluster_blocks),
+            )
+        required = dynamic + 1024
         if required > optin_shared_bytes:
             return False, f"needs {required} shared bytes, limit is {optin_shared_bytes}"
         return True, f"needs {required} shared bytes in a {cluster_blocks}-block cluster"

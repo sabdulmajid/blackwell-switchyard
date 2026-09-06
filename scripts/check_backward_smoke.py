@@ -36,6 +36,7 @@ EXPECTED = {
     "cuda_cluster4",
     "cuda_register",
     "cuda_register_cluster",
+    "cuda_register_cluster_full",
     "liger",
 }
 CANDIDATES = EXPECTED - {"current", "liger"}

@@ -29,6 +29,67 @@ class BackwardTrafficEstimate:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class ForwardTrafficEstimate:
+    """Large-tensor traffic for one complete forward contract."""
+
+    strategy: str
+    minimum_large_tensor_bytes: int
+    logical_large_tensor_bytes: int
+    estimated_dram_bytes: int
+    saved_state_bytes: int
+    assumptions: tuple[str, ...]
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+def forward_traffic_estimate(
+    strategy: str,
+    n: int,
+    b: int,
+    t: int,
+    d: int,
+    *,
+    itemsize: int = 2,
+    saves_backward_coefficients: bool = False,
+    l2_to_dram_ratio: float = 4.15,
+) -> ForwardTrafficEstimate:
+    """Model the source passes of a forward implementation explicitly."""
+    if strategy not in {"resident", "tiled", "cuda_register_cluster"}:
+        raise ValueError(f"unknown forward strategy: {strategy}")
+    if min(n, b, t, d, itemsize) <= 0:
+        raise ValueError("shape and item size must be positive")
+    if l2_to_dram_ratio <= 0:
+        raise ValueError("l2_to_dram_ratio must be positive")
+    token_slab = b * t * d * itemsize
+    source_stack = n * token_slab
+    minimum = source_stack + token_slab
+    saved_state = 3 * n * b * t * 4 if saves_backward_coefficients else 0
+    if strategy in {"resident", "cuda_register_cluster"}:
+        logical = minimum
+        dram = minimum
+        assumptions = (
+            "every raw source and output element has one global transfer",
+            "query-vector traffic is cache-resident and excluded",
+        )
+    else:
+        logical = 2 * source_stack + token_slab
+        dram = round(source_stack + source_stack / l2_to_dram_ratio + token_slab)
+        assumptions = (
+            f"the immediate second source pass is served by L2 at {l2_to_dram_ratio:.2f}x DRAM",
+            "query-vector traffic is cache-resident and excluded",
+        )
+    return ForwardTrafficEstimate(
+        strategy=strategy,
+        minimum_large_tensor_bytes=minimum,
+        logical_large_tensor_bytes=logical,
+        estimated_dram_bytes=dram,
+        saved_state_bytes=saved_state,
+        assumptions=assumptions,
+    )
+
+
 def backward_traffic_estimate(
     strategy: str,
     n: int,

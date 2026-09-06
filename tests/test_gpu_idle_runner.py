@@ -72,3 +72,11 @@ def test_state_recorder_rejects_malformed_history(tmp_path):
     )
     with pytest.raises(ValueError, match="event history"):
         MODULE.StateRecorder(state, "campaign-a")
+
+
+def test_runner_source_exports_idle_attestation_without_process_ids():
+    source = SCRIPT.read_text()
+    assert "SWITCHYARD_GUARD_IDLE_STARTED_AT" in source
+    assert "SWITCHYARD_GUARD_LAUNCH_AT" in source
+    assert "SWITCHYARD_GUARD_IDLE_PROBE_COUNT" in source
+    assert "SWITCHYARD_GUARD_GPU_COUNT" in source
