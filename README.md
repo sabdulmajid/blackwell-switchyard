@@ -349,7 +349,8 @@ python -m pytest tests/ -q
 CUDA_VISIBLE_DEVICES="" python -m pytest tests/ -q
 CUDA_VISIBLE_DEVICES="" python scripts/compile_candidates.py
 
-python bench/bench_operator.py --set representative --dtype bfloat16
+python bench/bench_operator.py --set default --dtype bfloat16
+python scripts/check_regression.py --current results/operator_default_bfloat16.json
 python bench/bench_third_party.py --batched-only --dtype bfloat16
 python scripts/summarize_batched.py
 
@@ -368,7 +369,8 @@ publish the physical GPU UUID. It removes external absolute paths from command a
 does not record prompts, task links, process names, or process identifiers. It also records
 the pinned upstream revision. The historical operator, machine, model, and DDP result files
 predate this expanded provenance format. Regenerate these files from a clean revision before
-a release.
+a release. The stored performance baseline is also a legacy file. The regression gate rejects
+it until a clean full-profile operator run is reviewed and accepted.
 
 See the [backward campaign procedure](docs/backward_experiment.md#guarded-unattended-campaign)
 for the exact guarded command.

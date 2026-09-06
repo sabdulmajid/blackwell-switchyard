@@ -119,6 +119,10 @@ Ordered by how much the measurements say they are worth.
 - **Pushing CI.** The token lacks the `workflow` scope, so `.github/workflows/` cannot be
   pushed. A trackable copy is in `ci/github-actions-ci.yml`. Move it to
   `.github/workflows/ci.yml` with a token that has workflow permission.
+- **Release performance baseline.** The stored baseline predates clean report provenance. The
+  regression gate now rejects mixed, dirty, quick, duplicate, and profile-skipped reports. Run
+  the full default operator sweep on the final revision, review it, and then replace the legacy
+  baseline.
 
 ## OPEN QUESTIONS FOR THE OWNER
 

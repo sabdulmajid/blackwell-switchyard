@@ -4,10 +4,10 @@ Block AttnRes is a *local* tensor operation. Nothing about it needs cross-device
 communication, and inventing some so the README could say "multi-GPU" would be
 contrived. So this asks the two questions that are actually worth asking:
 
-1. **Does it still train correctly under DDP?** Gradients are all-reduced across
-   ranks, and a custom autograd Function that returns the wrong gradient for one
-   of its inputs can pass single-GPU tests and still corrupt a distributed run.
-   Rank gradients are compared explicitly after synchronization.
+1. **Does DDP reduce the local gradients correctly?** The benchmark computes
+   local gradients with synchronization disabled. It averages those gradients
+   explicitly and compares the result with a normal synchronized backward pass.
+   The operator's float64-oracle tests validate the local gradient mathematics.
 2. **How does it scale on this machine, and what limits it?** These two cards
    have peer access but only over PCIe at a measured 25.8 GB/s -- there is no
    NVLink. A 1.3B model gradient all-reduce moves about 2.6 GB per step in bf16,
@@ -83,22 +83,34 @@ def _worker(rank: int, world: int, args, out_path: str) -> None:
         warmup, reps = (3, 6) if args.quick else (5, 15)
         t = measure_latency(step, device=device, warmup=warmup, reps=reps, flush_l2=False)
 
-        # Correctness under DDP: after a synchronized backward every rank must
-        # hold identical gradients. If our custom autograd returned a wrong or
-        # rank-dependent gradient, this is where it shows.
+        # Integration correctness under DDP: construct the expected average from
+        # unsynchronized local gradients, then compare it with DDP's reduction.
         grad_check = None
         if world > 1:
             opt.zero_grad(set_to_none=True)
-            model(idx, tgt)[1].backward()
-            flat = torch.cat([
+            with model.no_sync():
+                model(idx, tgt)[1].backward()
+            expected = torch.cat([
                 p.grad.flatten() for _, p in sorted(model.module.named_parameters())
                 if p.grad is not None
             ])
-            other = flat.clone()
-            dist.broadcast(other, src=0)
+            local_grad_norm = expected.norm().item()
+            dist.all_reduce(expected, op=dist.ReduceOp.SUM)
+            expected.div_(world)
+
+            opt.zero_grad(set_to_none=True)
+            model(idx, tgt)[1].backward()
+            reduced = torch.cat([
+                p.grad.flatten() for _, p in sorted(model.module.named_parameters())
+                if p.grad is not None
+            ])
+            maximum_deviation = (reduced - expected).abs().max()
+            dist.all_reduce(maximum_deviation, op=dist.ReduceOp.MAX)
             grad_check = {
-                "max_abs_deviation_from_rank0": (flat - other).abs().max().item(),
-                "grad_norm": flat.norm().item(),
+                "max_abs_deviation_from_manual_average": maximum_deviation.item(),
+                "local_grad_norm": local_grad_norm,
+                "reduced_grad_norm": reduced.norm().item(),
+                "validated_rank_count": world,
             }
             opt.zero_grad(set_to_none=True)
 
@@ -161,7 +173,11 @@ def main() -> None:
             print(f"  {r['residual']:11} step {r['step']['median_ms']:8.2f} ms  "
                   f"{r['tokens_per_second_global']:8.0f} tok/s  "
                   f"peak {r['peak_memory_bytes'] / 2**30:5.2f} GiB"
-                  + (f"  grad dev {gc['max_abs_deviation_from_rank0']:.2e}" if gc else ""))
+                  + (
+                      f"  reduce dev {gc['max_abs_deviation_from_manual_average']:.2e}"
+                      if gc
+                      else ""
+                  ))
 
     scratch.unlink(missing_ok=True)
 

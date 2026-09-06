@@ -22,6 +22,7 @@ a shape to the wrong kernel costs 2x, not 8%.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -49,16 +50,62 @@ def _key(impl: str, s: dict, dtype: str | None) -> str:
     return f"{impl}|N{s['n']}|B{s['b']}|T{s['t']}|D{s['d']}|{dtype}"
 
 
-def load_current() -> dict:
+def load_current(paths: list[Path]) -> tuple[dict[str, dict], dict]:
     out: dict[str, dict] = {}
-    for path in sorted(RESULTS.glob("operator_*.json")):
+    repository_commit = None
+    environment_fields = None
+    source_reports = []
+    for path in paths:
+        if not path.is_file():
+            raise ValueError(f"current report does not exist: {path}")
         data = json.loads(path.read_text())
+        provenance = data.get("provenance", {})
+        commit = provenance.get("repository_commit")
+        argv = provenance.get("argv", [])
+        if (
+            not isinstance(commit, str)
+            or len(commit) != 40
+            or provenance.get("tracked_worktree_dirty") is not False
+            or data.get("quick") is not False
+            or not isinstance(argv, list)
+            or "--skip-kernel-profile" in argv
+        ):
+            raise ValueError(
+                f"current report is not a clean, full-profile release run: {path}"
+            )
+        if repository_commit is None:
+            repository_commit = commit
+        elif repository_commit != commit:
+            raise ValueError("current reports do not use one repository commit")
+        fields = {
+            name: data.get("environment", {}).get(name)
+            for name in ("device_name", "device_cc", "torch", "triton")
+        }
+        if environment_fields is None:
+            environment_fields = fields
+        elif environment_fields != fields:
+            raise ValueError("current reports do not use one software and GPU environment")
         for r in data["results"]:
             s = r.get("shape")
             if not s or r.get("skipped"):
                 continue
-            out[_key(r["impl"], s, data.get("dtype"))] = r
-    return out
+            key = _key(r["impl"], s, data.get("dtype"))
+            if key in out:
+                raise ValueError(f"duplicate current measurement: {key}")
+            out[key] = r
+        source_reports.append(
+            {
+                "name": path.name,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    if not out:
+        raise ValueError("current reports contain no benchmark measurements")
+    return out, {
+        "repository_commit": repository_commit,
+        "environment": environment_fields,
+        "reports": source_reports,
+    }
 
 
 def compact(records: dict) -> dict:
@@ -94,20 +141,36 @@ def main() -> int:
     ap.add_argument("--accept", action="store_true", help="bless the current run as the baseline")
     ap.add_argument("--threshold", type=float, default=0.07, help="fractional regression allowed")
     ap.add_argument("--all-impls", action="store_true", help="gate on every implementation")
+    ap.add_argument(
+        "--current",
+        nargs="+",
+        type=Path,
+        default=[RESULTS / "operator_default_bfloat16.json"],
+        help="one or more clean, full-profile operator reports",
+    )
     args = ap.parse_args()
 
-    current_files = sorted(RESULTS.glob("operator_*.json"))
-    if not current_files:
-        print("no results/operator_*.json; run bench/bench_operator.py first", file=sys.stderr)
+    current_files = args.current
+    try:
+        cur, current_provenance = load_current(current_files)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        print(f"invalid current regression evidence: {exc}", file=sys.stderr)
         return 2
-
-    cur = load_current()
 
     if args.accept:
         BASELINE.mkdir(parents=True, exist_ok=True)
         env = json.loads(current_files[0].read_text()).get("environment", {})
         BASELINE_FILE.write_text(
-            json.dumps({"environment": env, "metrics": compact(cur)}, indent=2, default=str)
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "environment": env,
+                    "provenance": current_provenance,
+                    "metrics": compact(cur),
+                },
+                indent=2,
+                default=str,
+            )
         )
         print(f"blessed {len(cur)} measurements into {BASELINE_FILE}")
         return 0
@@ -117,6 +180,15 @@ def main() -> int:
         return 2
 
     stored = json.loads(BASELINE_FILE.read_text())
+    if stored.get("schema_version") != 2 or not isinstance(
+        stored.get("provenance"), dict
+    ):
+        print(
+            "stored baseline is legacy evidence; regenerate a clean operator run and "
+            "review it before using --accept",
+            file=sys.stderr,
+        )
+        return 2
     base = stored["metrics"]
     base_env = stored.get("environment", {})
     cur_env = json.loads(current_files[0].read_text()).get("environment", {})

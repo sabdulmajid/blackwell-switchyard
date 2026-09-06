@@ -77,8 +77,13 @@ SHAPE_SETS: dict[str, list[Shape]] = {
     # Small shapes, where launch overhead rather than bandwidth should dominate.
     "small": [Shape(9, 1, 128, 1024), Shape(9, 1, 512, 1024), Shape(4, 1, 256, 512)],
 }
-SHAPE_SETS["default"] = (
-    SHAPE_SETS["n-sweep"] + SHAPE_SETS["d-sweep"] + SHAPE_SETS["t-sweep"] + SHAPE_SETS["small"]
+SHAPE_SETS["default"] = list(
+    dict.fromkeys(
+        SHAPE_SETS["n-sweep"]
+        + SHAPE_SETS["d-sweep"]
+        + SHAPE_SETS["t-sweep"]
+        + SHAPE_SETS["small"]
+    )
 )
 
 

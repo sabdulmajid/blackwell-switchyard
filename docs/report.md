@@ -78,8 +78,8 @@ mixing, hyper-connections).
 
 So the honest framing of what this repository adds is:
 
-1. An independent head-to-head of the existing implementations **on Blackwell
-   `sm_120`**, which nobody has published.
+1. A reproducible head-to-head of existing implementations **on Blackwell
+   `sm_120`**.
 2. An implementation tuned for this part, measured against a **speed-of-light
    kernel** rather than only against other implementations, so the answer to
    "how much is left" is quantitative.
@@ -177,9 +177,9 @@ in three modes:
 - `folded_form` — uses `dot(w, v/rms(v)) == dot(w, v)/rms(v)` so the normalized
   tensor never exists. Both reductions over `D` are then computable in one pass.
 
-At `N=9, B=1, T=4096, D=2048`, bf16, the best framework result was
-`torch.compile` on `paper_form`: **0.432 ms in 6 kernels**, sustaining 388 GB/s
-against a 1462 GB/s ceiling — about **27% of achievable bandwidth**.
+At `N=9, B=1, T=4096, D=2048`, bf16, the best stored framework result was
+max-autotuned `torch.compile` on `folded_form`: **0.209 ms in 3 kernels**.
+Switchyard took **0.123 ms in 1 kernel** in the same stored run.
 
 Three observations from the baseline sweep were unexpected enough to record:
 
@@ -344,8 +344,8 @@ lands at 1.6–3.3×. It accumulates every reduction in fp32 and rounds once; th
 eager chain rounds at each step. This is worth stating because fusion is usually
 assumed to trade accuracy for speed, and here it does the opposite.
 
-99 tests cover both dispatch strategies, three dtypes, non-power-of-two `N`, `D`
-and `T`, `gradcheck` and `gradgradcheck` in float64, exactness of the
+The test suite covers both dispatch strategies, three dtypes, non-power-of-two
+`N`, `D` and `T`, `gradcheck` and `gradgradcheck` in float64, exactness of the
 online-softmax merge used by the paper's two-phase schedule, overflow behaviour
 at saturated logits, non-contiguous inputs, and the invariants above.
 

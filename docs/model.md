@@ -100,12 +100,13 @@ NVLink.
 | standard | 17555 | 29799 | 1.70x | 85% |
 | switchyard | 16238 | 28138 | 1.73x | 87% |
 
-**Gradients are identical across ranks after all-reduce** -- maximum
-deviation 0.0e+00. That is the check that matters here: a custom
-autograd Function returning a wrong or rank-dependent gradient for one of its
-inputs can pass every single-GPU test and still corrupt a distributed run.
-The fused operator's backward, and the arena's in-place staging, both survive
-it.
+The stored DDP file reports that gradients are identical after all-reduce. That
+check is too weak because DDP makes the rank gradients identical by design. The
+revised benchmark first computes each rank's local gradients without DDP
+synchronization. It then averages them explicitly and compares that average with
+a normal DDP backward pass. Regenerate the DDP file before release. The
+float64-oracle operator tests remain the source of truth for local gradient
+mathematics.
 
 Scaling holds up better than the interconnect would suggest -- 85-87% rather
 than the collapse a 25.8 GB/s link and a ~2.6 GB bf16 gradient all-reduce might
