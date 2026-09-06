@@ -12,8 +12,8 @@ in the branch descriptions on issue #1; this file is the index.
 Three numbers, in decreasing order of how much they matter.
 
 **End to end**, 1.3B decoder, batch 4 × seq 2048, bf16, RTX PRO 6000 Blackwell:
-the residual mechanism costs **39% of a training step** framework-implemented and **11%**
-fused — a 3.4× reduction in its overhead, worth **1.46× on the whole step**
+the residual mechanism is **39.1% of the framework step** and **11.4% of the fused step**.
+This is a 3.4× reduction in its share and gives **1.46× training throughput**
 (704.5 → 484.2 ms, 11627 → 16918 tokens/s).
 
 **Operator**, `N=9 B=1 T=4096 D=2048`, with L2 flushed between measurements:
@@ -54,7 +54,8 @@ production dispatch.
   *slower* than the baseline.
 - **Benchmark and profiling infrastructure.** Oracle check before timing, L2 flush, order
   statistics, kernel counting, workspace memory, speed-of-light ceiling.
-- **Third-party head-to-head on Blackwell** — the comparison nobody had published.
+- **Third-party comparison on Blackwell.** The report uses each implementation's native input
+  format and records the pinned source revision.
 - **Transformer integration**, 1.3B, three residual modes, parameter-matched, with a
   training smoke test.
 - **Two-GPU DDP validation.** 87% scaling efficiency; gradients bit-identical across ranks.
@@ -96,11 +97,15 @@ Ordered by how much the measurements say they are worth.
    GPU model, method status, training-plan body, compiler resources, and sanitized command.
    Public evidence uses an opaque campaign device ID. It binds each reused phase to its guarded
    attempt. The launch guard
-   requires empty process tables, zero utilization, and at most 64 MiB of background memory
-   on every GPU for 30 minutes. The runner can resume CPU-only validation and publication after
+   requires an empty global process table for 30 minutes. It also requires zero utilization and
+   at most 64 MiB of background memory on the selected GPU. During GPU work, it stops the
+   campaign if a foreign process appears on any GPU. The runner can resume CPU-only validation and publication after
    a restart. Its locks remain active while a child campaign is alive. Production dispatch is
-   unchanged. The revised GPU campaign has not started. GPU correctness, occupancy, and latency
-   are still pending.
+   unchanged. A BSD-attributed local Liger-style comparator now performs the exact two-input
+   functional work. The pinned upstream Liger path remains an observational comparator because
+   it calculates an extra gain gradient. Kernel profiles now separate compute kernels from
+   memory-copy and memory-set operations. The revised GPU campaign has not started. GPU
+   correctness, occupancy, and latency are still pending.
 2. **Complete the batched training contract.** The current batched API does not return
    merge statistics and does not implement backward. The resident forward is useful, but
    it is not the complete paper schedule.
@@ -167,3 +172,4 @@ Decisions that changed direction, with the evidence that forced them. Append-onl
 | 2026-09-05 | Add four-block and fixed-shape one-read candidates; reject every spilling specialization. | The four-block cluster cuts per-block source storage and compiles at 72 registers with zero stack or local memory. The `(N=9,D=4096)` packed-register CTA compiles at 128 registers with zero stack or local memory. Wider packed-register and source-serial tiles produced 72–984 bytes of stack per thread, so those shapes are not eligible for GPU measurement. |
 | 2026-09-05 | Shard packed registers across clusters for the two remaining gap shapes. | A four-block `(N=9,D=8192)` specialization and a two-block `(N=32,D=2048)` specialization retain every source pair across both gradient equations. Both dtypes compile at 128 registers with zero stack and zero local memory. Only source-sized scalar reductions use DSM. |
 | 2026-09-06 | Make unattended evidence fail closed before the GPU campaign. | An independent audit found that a supervisor restart could rerun GPU work after measurement and that report gates accepted incomplete environment and compiler records. The runner now resumes CPU-only publication before any GPU query, child processes retain both locks, and validators bind exact runtime and compiler contracts. |
+| 2026-09-06 | Use an exact-work Liger-style promotion comparator. | The pinned upstream Liger operator calculates a fixed-one RMSNorm gain and its gradient, which are outside the switchyard two-input contract. The new BSD-attributed local comparator keeps Liger's token-owned, two-source-pass structure but removes that extra work. The upstream result remains observational. |

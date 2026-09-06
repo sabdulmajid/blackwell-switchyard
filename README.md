@@ -1,9 +1,8 @@
 # blackwell-switchyard
 
-Blackwell Switchyard makes Block Attention Residuals practical to measure and train on
-NVIDIA Blackwell GPUs. The repository contains a paper-faithful reference, strong framework
-baselines, fused GPU operators, raw benchmark data, and a 1.3 billion parameter Transformer
-integration.
+Blackwell Switchyard measures and optimizes Block Attention Residuals (Block AttnRes) on NVIDIA Blackwell
+GPUs. The repository contains an implementation of the paper equations, framework baselines,
+fused GPU operators, raw benchmark data, and a 1.3 billion parameter Transformer model.
 
 ## What the paper changes
 
@@ -36,6 +35,17 @@ The weighted sum uses the raw sources.
 The softmax uses the source axis.
 The score does not use `1/sqrt(D)` attention scaling.
 
+### Terms used in this README
+
+- A **source** is an earlier model state that the operator can select.
+- A **pseudo-query** is the learned vector `w`. It scores the sources for one destination.
+- The **residual mechanism** is all work that Block AttnRes adds to the standard residual model.
+- **Production dispatch** is the code path that the public training function can select.
+- A **promotion comparator** is a fair reference that performs the same functional work.
+- A **source arena** is a preallocated buffer that stores each source one time.
+- **bf16** is the 16-bit bfloat data type.
+- **L2** is the GPU cache between the compute units and device memory.
+
 ## The systems problem
 
 This operator does little arithmetic for each byte that it moves.
@@ -56,12 +66,13 @@ This second source read can therefore come from device memory.
 
 ## What this project contributes
 
-- A float64 oracle pins the exact paper semantics.
-- Two framework formulations measure PyTorch eager mode and max-autotuned Inductor fairly.
+- A float64 oracle defines the exact paper semantics.
+- Two framework formulations measure PyTorch eager mode and max-autotuned Inductor under the same method.
 - Two production Triton strategies cover register-resident and L2-tiled shapes.
 - A source arena removes repeated source-stack copies from the Transformer integration.
 - One output-only batched kernel reuses each resident source tile across as many as 16 queries.
 - An experimental CUDA path targets the large-shape training traffic limit.
+- A local Liger-style comparator performs the same two-input work as the switchyard operator.
 - The benchmark records latency, memory, kernel count, raw trials, and correctness evidence.
 
 The experimental CUDA path addresses the source reread directly.
@@ -80,16 +91,16 @@ Liger Kernel, Flash Linear Attention, and other projects also contain fused impl
 This project contributes an independent Blackwell comparison, a measured hardware model,
 and a Transformer systems benchmark with a fixed-batch training smoke test.
 
-## Current result and open gap
+## Current measured result and remaining gap
 
 At the main operator shape, the accepted switchyard path is 1.70x faster in forward and
 3.71x faster in forward plus backward than max-autotuned Inductor.
-In the 1.3 billion parameter decoder, it reduces the residual mechanism share from 39 percent
-to 11 percent. This change increases full-step throughput by 1.46x against the framework
+In the 1.3 billion parameter decoder, it reduces the residual mechanism share from 39.1 percent
+to 11.4 percent. This change increases full-step throughput by 1.46x against the framework
 AttnRes implementation.
 
-Liger Kernel is LinkedIn's open-source Triton kernel library for language-model training.
-Liger remains faster at three important large training shapes:
+Liger Kernel is an open-source Triton kernel library from LinkedIn. The stored upstream Liger
+result remains faster at three important large training shapes:
 
 | Shape | switchyard forward and backward | Liger forward and backward | Gap |
 |---|---:|---:|---:|
@@ -97,7 +108,13 @@ Liger remains faster at three important large training shapes:
 | `N=9 B=1 T=4096 D=4096` | 0.920 ms | **0.774 ms** | 18.9 percent |
 | `N=9 B=1 T=4096 D=8192` | 1.961 ms | **1.435 ms** | 36.7 percent |
 
-Liger keeps its two source passes in one program.
+The upstream Liger operator has an RMSNorm gain input and calculates its gradient. The
+switchyard operator does not have this input. Thus, these stored upstream results are useful
+observations, but they are not the promotion baseline. The new campaign measures two Liger
+variants. The local exact-contract variant is the promotion baseline. The pinned upstream
+variant is an observational baseline.
+
+The Liger design keeps its two source passes in one program.
 This design gives the second pass a better chance to use L2.
 The switchyard one-read experiment tries to remove the second source pass instead.
 The guarded GPU campaign will decide if the lower traffic offsets the cost of cluster
@@ -115,10 +132,13 @@ Regenerate them from the selected backward revision before a release.
 
 Install a PyTorch and Triton build that matches your NVIDIA driver and CUDA toolkit first.
 The package does not select a GPU-specific PyTorch wheel for you.
-Then install this repository:
+Then install this repository. Use the `test` option for the CPU test suite. Use the `bench`
+option for benchmark reports and plots.
 
 ```bash
 python -m pip install -e .
+python -m pip install -e ".[test]"
+python -m pip install -e ".[bench]"
 ```
 
 The published measurements use the following configuration:
@@ -206,11 +226,12 @@ The test batch contains four sequences of 2048 tokens.
 | Variant | Step time | Tokens per second | Peak memory | Residual mechanism share |
 |---|---:|---:|---:|---:|
 | Standard PreNorm residual | 428.89 ms | 19,101 | 30.33 GiB | control |
-| Block AttnRes with framework operations | 704.54 ms | 11,627 | 31.87 GiB | 39 percent |
-| **Block AttnRes with switchyard** | **484.21 ms** | **16,918** | **31.86 GiB** | **11 percent** |
+| Block AttnRes with framework operations | 704.54 ms | 11,627 | 31.87 GiB | 39.1 percent |
+| **Block AttnRes with switchyard** | **484.21 ms** | **16,918** | **31.86 GiB** | **11.4 percent** |
 
 The fused integration is 1.46x faster than the framework integration.
-Block AttnRes adds 11 percent to the step time of the standard residual model.
+The residual mechanism is 11.4 percent of the fused step. The complete fused model is
+12.9 percent slower than the standard-residual control.
 It adds 1.53 GiB of peak memory.
 
 The source arena avoids repeated `torch.stack` operations.
@@ -289,10 +310,11 @@ The tests cover these items:
 - Second-order gradients for the framework reference
 - Online softmax merging
 - Transformer source schedules
-- One-GPU and two-GPU integration
+- One-GPU integration
 
 The CPU-only suite checks the reference, configuration, package, and experiment gates.
 The complete suite also runs the Triton correctness and integration tests on a GPU.
+A separate Distributed Data Parallel (DDP) benchmark validates the two-GPU integration.
 
 ## Hardware and tools
 
@@ -340,15 +362,16 @@ python bench/bench_ddp.py
 python scripts/summarize_model.py
 ```
 
-The benchmark drivers record the repository revision, command arguments, random seeds,
-software versions, an opaque campaign device ID, and GPU process state.
-They do not publish the physical GPU UUID.
-They remove external absolute paths from the command arguments.
-They do not record prompts, task links, process names, or process identifiers.
-They check the process state before and after each accepted run.
-Third-party runs also record pinned upstream revisions.
-Some historical machine, model, and DDP result files predate the expanded provenance fields.
-Regenerate those files from a clean revision before a release.
+The new backward campaign records the repository revision, command arguments, random seeds,
+software versions, an opaque campaign device ID, and sampled GPU process state. It does not
+publish the physical GPU UUID. It removes external absolute paths from command arguments. It
+does not record prompts, task links, process names, or process identifiers. It also records
+the pinned upstream revision. The historical operator, machine, model, and DDP result files
+predate this expanded provenance format. Regenerate these files from a clean revision before
+a release.
+
+See the [backward campaign procedure](docs/backward_experiment.md#guarded-unattended-campaign)
+for the exact guarded command.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before you submit a correctness or performance change.
 

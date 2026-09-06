@@ -33,7 +33,7 @@ The source stacks at the three gap shapes are 288 to 576 MiB. They do not fit in
 L2 cache. The grid boundary therefore turns the second source pass into device-memory traffic.
 Tile-size changes cannot remove this traffic.
 
-Stored measurements show the gap:
+Stored measurements with the pinned upstream Liger operator show the gap:
 
 | Shape | switchyard forward and backward | Liger forward and backward |
 |---|---:|---:|
@@ -41,11 +41,17 @@ Stored measurements show the gap:
 | `N=9 B=1 T=4096 D=4096` | 0.920 ms | 0.774 ms |
 | `N=9 B=1 T=4096 D=8192` | 1.961 ms | 1.435 ms |
 
-Liger Kernel is LinkedIn's open-source Triton kernel library for language-model training.
-Its AttnRes backward assigns one program to each token. It saves softmax weights and inverse
-RMS values in the forward pass. Its two source passes occur in one program, so the second pass
-can use L2. Liger also calculates an extra RMSNorm-gain gradient that this project does not
-need. Its win shows that source locality is more important than the current kernel split.
+Liger Kernel is an open-source Triton kernel library from LinkedIn. Its AttnRes backward
+assigns one program to each token. It saves softmax weights and inverse RMS values in the
+forward pass. Its two source passes occur in one program, so the second pass can use L2. The
+upstream operator also uses an RMSNorm gain input and calculates its gradient. The switchyard
+operator does not use this input. Therefore, the stored upstream result is an observational
+comparison. It is not the promotion baseline.
+
+The campaign also includes a BSD-attributed local Liger-style comparator. This comparator
+keeps the same token-owned, two-source-pass structure. It removes the gain input and gain
+gradient. It has the same two-input functional contract as switchyard. The promotion gate uses
+this exact-contract comparator. The campaign reports the pinned upstream operator separately.
 
 Liger is already close to the measured two-read bandwidth model. A source-serial Triton kernel
 can mainly match that design. The only path to a lower traffic floor is to keep each source
@@ -194,8 +200,12 @@ CUDA_VISIBLE_DEVICES="" python scripts/compile_candidates.py
 
 The gate compiles the target Triton specializations and the CUDA extension for `sm_120`. It
 uses `cuobjdump` to record registers, stack, local memory, static shared memory, and static global
-load instructions. It fails on compiler-reported local storage. It also fails if the generated
-register-cluster kernels do not have the exact global load count from the audited one-read
+load instructions. It fails if an experimental kernel uses compiler-reported local storage.
+It also fails if the exact-contract Liger-style comparator spills. This rule prevents a weak
+comparator from entering the promotion gate.
+Accepted production kernels stay in
+the report for comparison, but their known spills do not fail this experimental gate. The gate
+also fails if the generated register-cluster kernels do not have the exact global load count from the audited one-read
 schedule. The command does not initialize or query a GPU.
 
 ## GPU experiment order
@@ -204,8 +214,8 @@ Use exclusive access. Do not start with the full matrix.
 
 1. Run adversarial gradient tests for bf16 and fp16.
 2. Run a short compile and launch smoke test for each supported plan.
-3. Measure the gap shapes. Compare `current`, Liger, the portable candidate, and all one-read
-   candidates.
+3. Measure the gap shapes. Compare `current`, the exact-contract Liger-style comparator, the
+   pinned upstream Liger operator, the portable candidate, and all one-read candidates.
 4. Drop dominated plans.
 5. Run the bounded crossover matrix only for the survivors.
 6. Run the complete dtype, memory, kernel-count, and Transformer regressions before dispatch.
@@ -216,14 +226,15 @@ the complete report. A valid performance loss at one shape does not erase a vali
 shape. Production dispatch can use only the exact shape and dtype cells that clear all gates.
 
 The benchmark uses 15 interleaved trials with 13 samples per trial. Reversed adjacent orders
-balance which implementation in each pair runs first. A dispatch cell must beat both the current
-path and Liger in all 15 independent trial medians. Across the 264 candidate, shape, dtype, and
-comparator hypotheses and three permitted campaign attempts, the conservative Bonferroni
-sign-error bound is less than 0.05.
+balance which implementation in each pair runs first. Point estimates use the median of paired
+trial ratios. A dispatch cell must beat the current path and the exact-contract Liger-style
+comparator in every paired trial. It must do this for backward and for forward plus backward.
+The trials are repeated measurements on one GPU. The report does not claim that they are
+independent. It does not assign a family-wise probability to the result.
 
-The benchmark must store the exact training plan, an opaque campaign device ID, kernel names,
-main and auxiliary kernel launch counts, saved-state bytes, workspace, raw samples, and trial
-order. The publication gate reconstructs the timing statistics from the raw samples. It rejects
+The benchmark must store the exact training plan, an opaque campaign device ID, compute-kernel
+launch counts, auxiliary memory operation counts, saved-state bytes, workspace, raw samples,
+and trial order. The publication gate reconstructs the timing statistics from the raw samples. It rejects
 missing profiler data, missing memory data, and a mismatch between the recorded schedule and the
 raw trial order. The benchmark must record the GPU process state before and after each run. It
 must check output, `dv`, and `dw` against the float64 oracle before timing.
@@ -236,14 +247,16 @@ must meet both checks.
 ## Guarded unattended campaign
 
 [`run_when_gpu_idle.py`](../scripts/run_when_gpu_idle.py) can wait for the shared host without
-using a GPU. The configured campaign does not trust an estimated finish time. It requires all
-GPUs to have no compute process at every 60-second sample for 30 minutes. All GPUs must also
-stay at zero utilization and use no more than 64 MiB of background memory. A final process and
-activity query closes the launch race. The runner then makes only one GPU visible to the
-campaign.
+using a GPU. The configured campaign does not trust an estimated finish time. It requires the
+global GPU process table to stay empty at every 60-second sample for 30 minutes. The selected
+GPU must also stay at zero utilization and use no more than 64 MiB of background memory. The
+target-only activity scope avoids a known stale utilization signal on the other card. A final
+global process query and selected-GPU activity query close the launch race. The runner then
+makes only the selected GPU visible to the campaign.
 
 The benchmark samples the selected GPU every 0.05 seconds while it runs. It exits immediately
-if a sample sees an unrelated process. The outer runner also samples every 0.25 seconds. It stops
+if a sample sees an unrelated process. The outer runner samples the global GPU process table
+every 0.25 seconds. It stops
 its process group within a two-second grace period. It then waits for a new 30-minute sampled idle
 interval. It makes at most three
 attempts. A retry keeps each clean, complete benchmark phase and reruns only the interrupted
@@ -266,6 +279,43 @@ The manifest records one guard attestation for each attempt that produced reusab
 Each benchmark phase records its generating attempt. Bundle validation binds the phase timestamp
 to that attempt's idle interval and guarded launch. Public evidence uses a random campaign device
 ID. The physical GPU UUID remains only in external guard state and is never committed.
+
+Use a dedicated linked worktree and external state directories. Replace each example path with
+an absolute path that is outside the repository. The following command is the production
+campaign contract for GPU 1 on this host:
+
+```bash
+export CAMPAIGN_ROOT=/absolute/path/outside/repository/backward-campaign
+export CAMPAIGN_WORKTREE=/absolute/path/outside/repository/backward-worktree
+export THIRD_PARTY_DIR=/absolute/path/outside/repository/third-party
+export SWITCHYARD_TOOLCHAIN_DIR=/absolute/path/outside/repository/python-toolchain
+export SWITCHYARD_EXPECTED_HEAD=$(git rev-parse HEAD)
+export SWITCHYARD_CAMPAIGN_BRANCH=codex/backward-campaign-${SWITCHYARD_EXPECTED_HEAD:0:7}
+export SWITCHYARD_CAMPAIGN_DIR=$CAMPAIGN_ROOT/data
+export SWITCHYARD_RESULT_BRANCH=codex/backward-architecture
+
+git worktree add -b "$SWITCHYARD_CAMPAIGN_BRANCH" \
+  "$CAMPAIGN_WORKTREE" "$SWITCHYARD_EXPECTED_HEAD"
+git -C "$CAMPAIGN_WORKTREE" config --local user.name Ayman
+git -C "$CAMPAIGN_WORKTREE" config --local user.email ayman.hasib@outlook.com
+
+python scripts/run_when_gpu_idle.py \
+  --not-before "$(date -Iseconds)" \
+  --gpu-index 1 \
+  --idle-activity-scope target_gpu \
+  --idle-seconds 1800 \
+  --wait-poll-seconds 60 \
+  --watchdog-seconds 0.25 \
+  --finalize-seconds 1800 \
+  --deadline-hours 36 \
+  --max-attempts 3 \
+  --state "$CAMPAIGN_ROOT/runner-state.json" \
+  --log "$CAMPAIGN_ROOT/runner.log" \
+  --lock "$CAMPAIGN_ROOT/runner.lock" \
+  --gpu-complete-marker "$SWITCHYARD_CAMPAIGN_DIR/gpu_complete" \
+  --cwd "$CAMPAIGN_WORKTREE" \
+  -- bash scripts/run_backward_gpu_campaign.sh
+```
 
 A deterministic smoke, correctness, schema, or provenance failure stops the campaign. It does
 not spend another GPU attempt on the same inputs. Only a collision, interrupted phase, or
@@ -298,12 +348,15 @@ Do not loosen a correctness tolerance to admit a candidate. The numerical error 
 within 1.05 times the accepted path unless a documented operation-order difference explains a
 smaller absolute bound.
 
-A source-serial plan must not enter production only because it matches Liger. The primary
-question is whether the one-read plan produces a material and repeatable result below Liger's
+A source-serial plan must not enter production only because it matches the exact-contract
+Liger-style comparator. The primary question is whether the one-read plan produces a material
+and repeatable result below the comparator's
 two-read floor. The expected physical ceiling is about 1.35 to 1.43 times the current backward
-and about 1.10 to 1.14 times Liger at the gap shapes. Treat this as an opportunity bound, not a
+and about 1.10 to 1.14 times the historical upstream Liger result at the gap shapes. Treat this
+as an opportunity bound, not a
 performance claim.
 
-If no one-read plan beats Liger, inspect achieved bandwidth, cluster occupancy, barriers, and
+If no one-read plan beats the exact-contract comparator, inspect achieved bandwidth, cluster
+occupancy, barriers, and
 shared-memory transactions before changing tile constants. If the architecture fails after
 that analysis, remove it cleanly and keep the evidence.

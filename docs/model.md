@@ -40,10 +40,9 @@ the control difference is the number quoted.
 | switchyard/stack | 63.7 | 12.9% | 7.4% |
 | switchyard/arena | 55.3 | 11.4% | 7.4% |
 
-Block AttnRes costs **39% of a training step** with the framework
-implementation and **11%** with the fused one -- a
+Block AttnRes is **39.1% of the framework step** and **11.4% of the fused step**. This is a
 3.4x reduction in the mechanism's overhead. End to end that is
-**1.46x** the step time,
+**1.46x** training throughput,
 705 ms down to 484 ms, and
 **1.46x** the tokens per second.
 
@@ -58,10 +57,8 @@ per sublayer:
 265 slab copies per forward against 49, where a slab is one
 `B x T x D` tensor (32 MiB here).
 
-Against the standard-residual control, AttnRes implemented properly adds
-1.53 GiB of peak
-memory (5%)
-and 11% of step time. Those are
+Against the standard-residual control, the fused model adds 1.53 GiB of peak
+memory (5%) and 12.9% of step time. The residual mechanism is 11.4% of the fused step. These are
 the numbers an architect deciding whether to adopt it would want.
 
 The source-count schedule the model actually produces was checked against the
@@ -116,4 +113,3 @@ imply -- because NCCL overlaps the reduction with the backward pass. The fused
 variant scales marginally *better* (87% against 85%), which is not a win worth
 claiming: it has slightly more compute per byte communicated, so there is more
 backward to hide the all-reduce behind.
-

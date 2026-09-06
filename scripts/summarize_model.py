@@ -73,10 +73,10 @@ def main() -> None:
     if fw and ours:
         fa = attribution[fw["variant"]]["step_share_pct"]
         oa = attribution[ours["variant"]]["step_share_pct"]
-        w(f"\nBlock AttnRes costs **{fa:.0f}% of a training step** with the framework")
-        w(f"implementation and **{oa:.0f}%** with the fused one -- a")
+        w(f"\nBlock AttnRes is **{fa:.1f}% of the framework step** and")
+        w(f"**{oa:.1f}% of the fused step**. This is a")
         w(f"{fa / oa:.1f}x reduction in the mechanism's overhead. End to end that is")
-        w(f"**{fw['step']['median_ms'] / ours['step']['median_ms']:.2f}x** the step time,")
+        w(f"**{fw['step']['median_ms'] / ours['step']['median_ms']:.2f}x** training throughput,")
         w(f"{fw['step']['median_ms']:.0f} ms down to {ours['step']['median_ms']:.0f} ms, and")
         w(f"**{ours['tokens_per_second'] / fw['tokens_per_second']:.2f}x** the tokens per second.\n")
         w("Quoting the Amdahl arithmetic rather than the kernel speedup is deliberate.")
@@ -95,10 +95,12 @@ def main() -> None:
         if sc and st:
             w(f"{st} slab copies per forward against {sc}, where a slab is one")
             w(f"`B x T x D` tensor ({stack['slab_bytes'] / 2**20:.0f} MiB here).")
-        w("\nAgainst the standard-residual control, AttnRes implemented properly adds")
+        step_overhead = 100 * (ours["step"]["median_ms"] / base["step"]["median_ms"] - 1)
+        w("\nAgainst the standard-residual control, the fused model adds")
         w(f"{(ours['peak_memory_bytes'] - base['peak_memory_bytes']) / 2**30:.2f} GiB of peak")
         w(f"memory ({100 * (ours['peak_memory_bytes'] / base['peak_memory_bytes'] - 1):.0f}%)")
-        w(f"and {attribution[ours['variant']]['step_share_pct']:.0f}% of step time. Those are")
+        w(f"and {step_overhead:.1f}% of step time. The residual mechanism is")
+        w(f"{attribution[ours['variant']]['step_share_pct']:.1f}% of the fused step. These are")
         w("the numbers an architect deciding whether to adopt it would want.\n")
 
     if any(v.get("source_counts_match_eq6") for v in variants):
