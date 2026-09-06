@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run the bounded backward campaign on the GPU selected by the idle runner.
 set -euo pipefail
+umask 077
 
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_dir"
@@ -10,6 +11,8 @@ cd "$repo_dir"
 : "${SWITCHYARD_CAMPAIGN_DIR:?set SWITCHYARD_CAMPAIGN_DIR outside the repository}"
 : "${SWITCHYARD_TARGET_GPU_UUID:?the idle runner must select one GPU UUID}"
 : "${SWITCHYARD_PUBLIC_DEVICE_ID:?the idle runner must select one public device ID}"
+: "${SWITCHYARD_GUARD_IDLE_ACTIVITY_SCOPE:?the runner must attest its activity scope}"
+: "${SWITCHYARD_GUARD_PROCESS_SCOPE:?the runner must attest its process scope}"
 : "${SWITCHYARD_RUN_ATTEMPT:?the idle runner must number each attempt}"
 : "${SWITCHYARD_GUARD_NOT_BEFORE:?the idle runner must attest not-before time}"
 : "${SWITCHYARD_GUARD_IDLE_STARTED_AT:?the idle runner must attest idle start}"
@@ -17,6 +20,13 @@ cd "$repo_dir"
 : "${SWITCHYARD_GUARD_IDLE_PROBE_COUNT:?the idle runner must attest idle probes}"
 : "${SWITCHYARD_GUARD_MAX_IDLE_GPU_UTILIZATION_PERCENT:?the runner must attest idle utilization}"
 : "${SWITCHYARD_GUARD_MAX_IDLE_MEMORY_MIB:?the runner must attest idle memory}"
+: "${SWITCHYARD_GUARD_MAX_IDLE_PROBE_GAP_SECONDS:?the runner must attest idle probe coverage}"
+: "${SWITCHYARD_GUARD_MAX_GLOBAL_COMPUTE_PROCESS_COUNT:?the runner must attest process count}"
+: "${SWITCHYARD_GUARD_MAX_NON_TARGET_GPU_UTILIZATION_PERCENT:?the runner must attest non-target utilization}"
+: "${SWITCHYARD_GUARD_MAX_NON_TARGET_MEMORY_MIB:?the runner must attest non-target memory}"
+: "${SWITCHYARD_GUARD_MAX_NON_TARGET_PCIE_RX_KIB_PER_SECOND:?the runner must attest non-target PCIe RX}"
+: "${SWITCHYARD_GUARD_MAX_NON_TARGET_PCIE_TX_KIB_PER_SECOND:?the runner must attest non-target PCIe TX}"
+: "${SWITCHYARD_RUNNER_STATE:?the idle runner must provide its external state path}"
 : "${SWITCHYARD_GUARD_GPU_COUNT:?the idle runner must attest GPU inventory size}"
 : "${THIRD_PARTY_DIR:?set THIRD_PARTY_DIR to the pinned dependency directory}"
 : "${SWITCHYARD_TOOLCHAIN_DIR:?set SWITCHYARD_TOOLCHAIN_DIR to the local Python headers}"
@@ -25,8 +35,8 @@ result_branch=${SWITCHYARD_RESULT_BRANCH:-codex/backward-architecture}
 cpu_recovery=${SWITCHYARD_CPU_RECOVERY:-0}
 expected_origin=https://github.com/sabdulmajid/blackwell-switchyard.git
 forbidden_metadata='co-authored-by|claude|anthropic|wizchem|chatgpt|openai\.com|session[-_/][[:alnum:]]|file://|/(home|tmp|pub[0-9]+|mnt|scratch|workspace)/|[[:alpha:]]:[\\/](Users|home|tmp|workspace)[\\/]|([[:alnum:]-]+\.)+(internal|local)([^[:alnum:]_]|$)|GPU-[[:alnum:]-]+'
-all_impls=current,serial_recompute_atomic_t4,serial_saved_partials_t16,cuda_shared,cuda_cluster,cuda_cluster4,cuda_register,cuda_register_cluster,cuda_register_cluster_full,liger
-portable_impls=current,serial_recompute_atomic_t4,serial_saved_partials_t16,liger
+all_impls=current,serial_recompute_atomic_t4,serial_saved_partials_t16,cuda_shared,cuda_cluster,cuda_cluster4,cuda_register,cuda_register_cluster,cuda_register_cluster_full,liger_exact,liger_upstream
+portable_impls=current,serial_recompute_atomic_t4,serial_saved_partials_t16,liger_exact,liger_upstream
 candidates=(
   serial_recompute_atomic_t4
   serial_saved_partials_t16
@@ -41,6 +51,8 @@ if [[ ! "$SWITCHYARD_EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] ||
    [[ ! "$SWITCHYARD_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] ||
    [[ ! "$SWITCHYARD_TARGET_GPU_UUID" =~ ^GPU-[A-Za-z0-9-]+$ ]] ||
    [[ ! "$SWITCHYARD_PUBLIC_DEVICE_ID" =~ ^device-[0-9a-f]{16}$ ]] ||
+   [[ ! "$SWITCHYARD_GUARD_IDLE_ACTIVITY_SCOPE" =~ ^(all_gpus|target_gpu)$ ]] ||
+   [[ "$SWITCHYARD_GUARD_PROCESS_SCOPE" != all_gpus ]] ||
    [[ ! "$cpu_recovery" =~ ^[01]$ ]] ||
    ! git check-ref-format --branch "$SWITCHYARD_CAMPAIGN_BRANCH" >/dev/null ||
    ! git check-ref-format --branch "$result_branch" >/dev/null; then
@@ -227,6 +239,8 @@ from datetime import datetime
 path = sys.argv[1]
 attempt = {
     "attempt": int(os.environ["SWITCHYARD_RUN_ATTEMPT"]),
+    "idle_activity_scope": os.environ["SWITCHYARD_GUARD_IDLE_ACTIVITY_SCOPE"],
+    "process_scope": os.environ["SWITCHYARD_GUARD_PROCESS_SCOPE"],
     "not_before": os.environ["SWITCHYARD_GUARD_NOT_BEFORE"],
     "idle_started_at": os.environ["SWITCHYARD_GUARD_IDLE_STARTED_AT"],
     "launch_at": os.environ["SWITCHYARD_GUARD_LAUNCH_AT"],
@@ -236,6 +250,24 @@ attempt = {
         os.environ["SWITCHYARD_GUARD_MAX_IDLE_GPU_UTILIZATION_PERCENT"]
     ),
     "max_idle_memory_mib": int(os.environ["SWITCHYARD_GUARD_MAX_IDLE_MEMORY_MIB"]),
+    "max_idle_probe_gap_seconds": float(
+        os.environ["SWITCHYARD_GUARD_MAX_IDLE_PROBE_GAP_SECONDS"]
+    ),
+    "max_global_compute_process_count": int(
+        os.environ["SWITCHYARD_GUARD_MAX_GLOBAL_COMPUTE_PROCESS_COUNT"]
+    ),
+    "max_non_target_gpu_utilization_percent": int(
+        os.environ["SWITCHYARD_GUARD_MAX_NON_TARGET_GPU_UTILIZATION_PERCENT"]
+    ),
+    "max_non_target_memory_mib": int(
+        os.environ["SWITCHYARD_GUARD_MAX_NON_TARGET_MEMORY_MIB"]
+    ),
+    "max_non_target_pcie_rx_kib_per_second": int(
+        os.environ["SWITCHYARD_GUARD_MAX_NON_TARGET_PCIE_RX_KIB_PER_SECOND"]
+    ),
+    "max_non_target_pcie_tx_kib_per_second": int(
+        os.environ["SWITCHYARD_GUARD_MAX_NON_TARGET_PCIE_TX_KIB_PER_SECOND"]
+    ),
     "wait_poll_seconds": int(os.environ["SWITCHYARD_GUARD_WAIT_POLL_SECONDS"]),
     "watchdog_seconds": float(os.environ["SWITCHYARD_GUARD_WATCHDOG_SECONDS"]),
     "finalize_seconds": int(os.environ["SWITCHYARD_GUARD_FINALIZE_SECONDS"]),
@@ -248,7 +280,7 @@ if os.path.exists(path):
         document = json.load(handle)
     if (
         set(document) != {"schema_version", "device_id", "target_gpu_uuid", "attempts"}
-        or document["schema_version"] != 1
+        or document["schema_version"] != 2
         or document["device_id"] != attempt["device_id"]
         or document["target_gpu_uuid"] != attempt["target_gpu_uuid"]
         or not isinstance(document["attempts"], list)
@@ -256,7 +288,7 @@ if os.path.exists(path):
         raise SystemExit("existing guard document differs from this runner")
 else:
     document = {
-        "schema_version": 1,
+        "schema_version": 2,
         "device_id": attempt["device_id"],
         "target_gpu_uuid": attempt["target_gpu_uuid"],
         "attempts": [],
@@ -307,12 +339,20 @@ if any(moment.tzinfo is None for moment in (not_before, idle_started, launch)):
     raise SystemExit("guard timestamps must include UTC offsets")
 if (
     attestation["idle_seconds"] < 1800
+    or attestation["idle_activity_scope"] not in {"all_gpus", "target_gpu"}
+    or attestation["process_scope"] != "all_gpus"
     or not 30 <= attestation["wait_poll_seconds"] <= 300
     or not 0 < attestation["watchdog_seconds"] <= 0.25
     or attestation["finalize_seconds"] < 1800
     or attestation["gpu_count"] < 1
     or attestation["max_idle_gpu_utilization_percent"] != 0
     or not 0 <= attestation["max_idle_memory_mib"] <= 64
+    or not 0 <= attestation["max_idle_probe_gap_seconds"] <= attestation["wait_poll_seconds"] + 5
+    or attestation["max_global_compute_process_count"] != 0
+    or not 0 <= attestation["max_non_target_gpu_utilization_percent"] <= 100
+    or attestation["max_non_target_memory_mib"] < 0
+    or attestation["max_non_target_pcie_rx_kib_per_second"] != 0
+    or attestation["max_non_target_pcie_tx_kib_per_second"] != 0
     or attestation["device_id"] != os.environ["SWITCHYARD_PUBLIC_DEVICE_ID"]
     or attestation["target_gpu_uuid"] != os.environ["SWITCHYARD_TARGET_GPU_UUID"]
     or launch < not_before
@@ -368,7 +408,15 @@ report_reusable() {
     --expected-commit "$SWITCHYARD_EXPECTED_HEAD" \
     --expected-branch "$SWITCHYARD_CAMPAIGN_BRANCH" \
     --expected-tree "$expected_tree" \
-    --expected-device-id "$SWITCHYARD_PUBLIC_DEVICE_ID" $quick_flag
+    --expected-device-id "$SWITCHYARD_PUBLIC_DEVICE_ID" $quick_flag &&
+  python - "$report" "$SWITCHYARD_RUN_ATTEMPT" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    report = json.load(handle)
+raise SystemExit(report.get("campaign_attempt") != int(sys.argv[2]))
+PY
 }
 
 require_gpu_regeneration() {
@@ -595,17 +643,59 @@ python - "$manifest" <<'PY'
 import json
 import os
 import sys
+import time
 
 with open(os.environ["SWITCHYARD_GUARD_ATTESTATION"], encoding="utf-8") as handle:
     private_guard = json.load(handle)
 
+runner_state = None
+for _ in range(40):
+    try:
+        with open(os.environ["SWITCHYARD_RUNNER_STATE"], encoding="utf-8") as handle:
+            runner_state = json.load(handle)
+    except (FileNotFoundError, json.JSONDecodeError):
+        runner_state = None
+    matches = [
+        event
+        for event in (runner_state or {}).get("events", [])
+        if event.get("phase") == "gpu_phase_complete"
+        and event.get("attempt") == int(os.environ["SWITCHYARD_RUN_ATTEMPT"])
+    ]
+    if len(matches) == 1:
+        break
+    time.sleep(0.25)
+else:
+    raise SystemExit("runner did not publish one watchdog completion attestation")
+
+watchdog = matches[0]
+if (
+    type(watchdog.get("watchdog_probe_count")) is not int
+    or watchdog["watchdog_probe_count"] <= 0
+    or type(watchdog.get("max_watchdog_probe_gap_seconds")) is not float
+    or not 0 <= watchdog["max_watchdog_probe_gap_seconds"] <= 1.0
+):
+    raise SystemExit("runner watchdog completion attestation is invalid")
+
 guards = []
 for item in private_guard["attempts"]:
+    if item.get("attempt") != int(os.environ["SWITCHYARD_RUN_ATTEMPT"]):
+        continue
     public = {key: value for key, value in item.items() if key != "target_gpu_uuid"}
+    public.update(
+        {
+            "watchdog_probe_count": watchdog["watchdog_probe_count"],
+            "max_watchdog_probe_gap_seconds": watchdog[
+                "max_watchdog_probe_gap_seconds"
+            ],
+            "maximum_allowed_watchdog_probe_gap_seconds": 1.0,
+        }
+    )
     guards.append(public)
+if len(guards) != 1:
+    raise SystemExit("current attempt has no unique launch guard")
 
 payload = {
-    "schema_version": 1,
+    "schema_version": 2,
     "repository_commit": os.environ["SWITCHYARD_EXPECTED_HEAD"],
     "repository_tree": os.environ["SWITCHYARD_EXPECTED_TREE"],
     "benchmark_branch": os.environ["SWITCHYARD_CAMPAIGN_BRANCH"],

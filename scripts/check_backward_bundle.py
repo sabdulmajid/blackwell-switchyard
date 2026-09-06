@@ -35,13 +35,15 @@ ALL_IMPLEMENTATIONS = [
     "cuda_register",
     "cuda_register_cluster",
     "cuda_register_cluster_full",
-    "liger",
+    "liger_exact",
+    "liger_upstream",
 ]
 PORTABLE_IMPLEMENTATIONS = [
     "current",
     "serial_recompute_atomic_t4",
     "serial_saved_partials_t16",
-    "liger",
+    "liger_exact",
+    "liger_upstream",
 ]
 CANDIDATES = [
     "serial_recompute_atomic_t4",
@@ -587,7 +589,7 @@ def validate_bundle(
 
     manifest = payloads["manifest"]
     exact_manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "repository_commit": expected_commit,
         "repository_tree": expected_tree,
         "benchmark_branch": expected_branch,
@@ -611,6 +613,8 @@ def validate_bundle(
         problems.append("manifest field set is not exact")
     guard_fields = {
         "attempt",
+        "idle_activity_scope",
+        "process_scope",
         "not_before",
         "idle_started_at",
         "launch_at",
@@ -618,6 +622,15 @@ def validate_bundle(
         "idle_probe_count",
         "max_idle_gpu_utilization_percent",
         "max_idle_memory_mib",
+        "max_idle_probe_gap_seconds",
+        "max_global_compute_process_count",
+        "max_non_target_gpu_utilization_percent",
+        "max_non_target_memory_mib",
+        "max_non_target_pcie_rx_kib_per_second",
+        "max_non_target_pcie_tx_kib_per_second",
+        "watchdog_probe_count",
+        "max_watchdog_probe_gap_seconds",
+        "maximum_allowed_watchdog_probe_gap_seconds",
         "wait_poll_seconds",
         "watchdog_seconds",
         "finalize_seconds",
@@ -646,6 +659,7 @@ def validate_bundle(
             "wait_poll_seconds",
             "finalize_seconds",
             "gpu_count",
+            "watchdog_probe_count",
         }
         numeric_guard_valid = True
         for field in integer_guard_fields:
@@ -671,6 +685,10 @@ def validate_bundle(
             by_attempt[attempt] = (guard, moments)
         if guard["device_id"] != expected_device_id:
             problems.append(f"manifest guard {index} has the wrong device ID")
+        if guard["idle_activity_scope"] not in {"all_gpus", "target_gpu"}:
+            problems.append(f"manifest guard {index} idle_activity_scope is invalid")
+        if guard["process_scope"] != "all_gpus":
+            problems.append(f"manifest guard {index} process_scope must equal all_gpus")
         if type(guard["idle_seconds"]) is int and guard["idle_seconds"] < MIN_IDLE_SECONDS:
             problems.append(
                 f"manifest guard {index} idle_seconds must be at least {MIN_IDLE_SECONDS}"
@@ -689,6 +707,54 @@ def validate_bundle(
             )
         elif idle_memory > 64:
             problems.append(f"manifest guard {index} max_idle_memory_mib exceeds 64 MiB")
+        idle_probe_gap = guard["max_idle_probe_gap_seconds"]
+        if (
+            isinstance(idle_probe_gap, bool)
+            or not isinstance(idle_probe_gap, int | float)
+            or not math.isfinite(idle_probe_gap)
+            or idle_probe_gap < 0
+            or idle_probe_gap > guard["wait_poll_seconds"] + 5
+        ):
+            problems.append(f"manifest guard {index} max_idle_probe_gap_seconds is invalid")
+        if guard["max_global_compute_process_count"] != 0:
+            problems.append(
+                f"manifest guard {index} max_global_compute_process_count must be zero"
+            )
+        non_target_utilization = guard["max_non_target_gpu_utilization_percent"]
+        if (
+            isinstance(non_target_utilization, bool)
+            or not isinstance(non_target_utilization, int)
+            or not 0 <= non_target_utilization <= 100
+        ):
+            problems.append(
+                f"manifest guard {index} max_non_target_gpu_utilization_percent is invalid"
+            )
+        non_target_memory = guard["max_non_target_memory_mib"]
+        if (
+            isinstance(non_target_memory, bool)
+            or not isinstance(non_target_memory, int)
+            or non_target_memory < 0
+        ):
+            problems.append(f"manifest guard {index} max_non_target_memory_mib is invalid")
+        for field in (
+            "max_non_target_pcie_rx_kib_per_second",
+            "max_non_target_pcie_tx_kib_per_second",
+        ):
+            if guard[field] != 0:
+                problems.append(f"manifest guard {index} {field} must be zero")
+        watchdog_gap = guard["max_watchdog_probe_gap_seconds"]
+        if (
+            type(watchdog_gap) is not float
+            or not math.isfinite(watchdog_gap)
+            or not 0 <= watchdog_gap <= 1.0
+        ):
+            problems.append(
+                f"manifest guard {index} max_watchdog_probe_gap_seconds is invalid"
+            )
+        if guard["maximum_allowed_watchdog_probe_gap_seconds"] != 1.0:
+            problems.append(
+                f"manifest guard {index} maximum_allowed_watchdog_probe_gap_seconds is invalid"
+            )
         wait_poll = guard["wait_poll_seconds"]
         if type(wait_poll) is int and not (
             MIN_WAIT_POLL_SECONDS <= wait_poll <= MAX_WAIT_POLL_SECONDS

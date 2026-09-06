@@ -52,6 +52,13 @@ from harness import (  # noqa: E402
     measure_memory,
     repository_provenance,
 )
+from switchyard._benchmark_contracts import (  # noqa: E402
+    LIGER_EXACT_WORK_CONTRACT,
+    LIGER_UPSTREAM_WORK_CONTRACT,
+    PINNED_LIGER_COMMIT,
+    PINNED_LIGER_SOURCE_SHA256,
+)
+from switchyard._liger_exact import block_attn_res_liger_exact  # noqa: E402
 from switchyard.performance import (  # noqa: E402
     backward_traffic_estimate,
     forward_traffic_estimate,
@@ -116,8 +123,6 @@ TOLERANCES = {
     torch.float16: {"output": 5e-3, "dv": 1e-2, "dw": 3e-2},
     torch.float32: {"output": 2e-5, "dv": 1e-4, "dw": 1e-3},
 }
-PINNED_LIGER_COMMIT = "777799588a89d74c489ed995e3bf006427738e85"
-PINNED_LIGER_SOURCE_SHA256 = "57da6fed98f794088b2a56223e6c7ef9fc920824f0c483cb0ef0b5a343dab0b1"
 
 
 def _liger_provenance() -> dict:
@@ -153,6 +158,17 @@ def _liger_provenance() -> dict:
         "source_path": str(source.relative_to(checkout.resolve())),
         "source_sha256": source_sha256,
         "under_pinned_checkout": True,
+    }
+
+
+def _liger_exact_provenance() -> dict:
+    source = REPO / "src" / "switchyard" / "_liger_exact.py"
+    return {
+        "source_path": str(source.relative_to(REPO)),
+        "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "derived_from": f"Liger-Kernel@{PINNED_LIGER_COMMIT}",
+        "license": "BSD-2-Clause",
+        "under_pinned_checkout": False,
     }
 
 
@@ -295,7 +311,7 @@ def _measure_paired_trials(
 
     CUDA-event samples within one trial are autocorrelated. The evaluator
     therefore treats the interleaved trial medians, not every repetition, as
-    the independent paired observations.
+    descriptive paired observations. It does not assume trial independence.
     """
     trial_count, reps, warmup = (2, 10, 8) if quick else (15, 13, 10)
     names = list(functions)
@@ -379,18 +395,28 @@ def build_implementations(v: torch.Tensor) -> tuple[dict, list[str]]:
             "experimental candidate; not reachable from production dispatch",
         ),
     }
+    implementations["liger_exact"] = {
+        "fn": block_attn_res_liger_exact,
+        "status": "BSD-attributed exact-contract Liger-style promotion comparator",
+        "work_contract": LIGER_EXACT_WORK_CONTRACT,
+    }
     notes: list[str] = []
     try:
         from liger_kernel.ops.attn_res import LigerAttnResFunction
 
         gain = torch.ones(v.shape[-1], device=v.device, dtype=v.dtype)
 
-        def liger(values, query, eps=DEFAULT_EPS):
+        def liger_upstream(values, query, eps=DEFAULT_EPS):
             return LigerAttnResFunction.apply(values, query, gain, eps)
 
-        implementations["liger"] = {
-            "fn": liger,
-            "status": "pinned third-party comparator; RMSNorm gain fixed to one",
+        implementations["liger_upstream"] = {
+            "fn": liger_upstream,
+            "status": (
+                "pinned upstream Liger observational comparator; fixed-one gain and "
+                "discarded gain gradient are extra work"
+            ),
+            "work_contract": LIGER_UPSTREAM_WORK_CONTRACT,
+            "extra_resident_bytes": gain.numel() * gain.element_size(),
         }
     except Exception as exc:  # noqa: BLE001
         notes.append(f"Liger unavailable: {type(exc).__name__}: {exc}"[:300])
@@ -457,6 +483,8 @@ def bench_one(
         "correctness": correctness_by_seed[0]["report"],
         "correctness_by_seed": correctness_by_seed,
     }
+    if spec.get("work_contract") is not None:
+        record["work_contract"] = spec["work_contract"]
     plan = spec.get("plan")
     if plan is not None:
         record["training_plan"] = plan.as_dict()
@@ -488,6 +516,7 @@ def bench_one(
 
     itemsize = v.element_size()
     resident, accounted_output = _training_memory_bytes(v, w, g)
+    resident += int(spec.get("extra_resident_bytes", 0))
     record["fwd_bwd_memory"] = measure_memory(
         runtime["fwd_bwd"],
         device=device,
@@ -513,6 +542,23 @@ def bench_one(
         ) <= 32768
         record["forward_traffic_model"] = forward_traffic_estimate(
             "resident" if forward_resident else "tiled",
+            shape.n,
+            shape.b,
+            shape.t,
+            shape.d,
+            itemsize=itemsize,
+        ).as_dict()
+    elif name in {"liger_exact", "liger_upstream"}:
+        record["traffic_model"] = backward_traffic_estimate(
+            name,
+            shape.n,
+            shape.b,
+            shape.t,
+            shape.d,
+            itemsize=itemsize,
+        ).as_dict()
+        record["forward_traffic_model"] = forward_traffic_estimate(
+            name,
             shape.n,
             shape.b,
             shape.t,
@@ -612,7 +658,7 @@ def main() -> None:
         default=(
             "current,serial_recompute_atomic_t4,serial_saved_partials_t16,"
             "cuda_shared,cuda_cluster,cuda_cluster4,cuda_register,"
-            "cuda_register_cluster,cuda_register_cluster_full,liger"
+            "cuda_register_cluster,cuda_register_cluster_full,liger_exact,liger_upstream"
         ),
     )
     parser.add_argument("--quick", action="store_true")
@@ -626,7 +672,11 @@ def main() -> None:
     args = parser.parse_args()
 
     selected = [name.strip() for name in args.impls.split(",") if name.strip()]
-    comparators = {"liger": _liger_provenance()} if "liger" in selected else {}
+    comparators = {}
+    if "liger_exact" in selected:
+        comparators["liger_exact"] = _liger_exact_provenance()
+    if "liger_upstream" in selected:
+        comparators["liger_upstream"] = _liger_provenance()
     device = torch.device(f"cuda:{args.device}")
     torch.cuda.set_device(device)
     preflight, physical_uuid = _gpu_preflight(device, allow_busy=args.allow_busy_gpu)
@@ -645,7 +695,7 @@ def main() -> None:
     out = args.out or REPO / "results" / f"backward_candidates_{args.dtype}.json"
 
     report = {
-        "schema_version": 3,
+        "schema_version": 4,
         "run_id": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
         "campaign_attempt": int(os.environ.get("SWITCHYARD_RUN_ATTEMPT", "0")),
         "experiment": "backward architecture selection",
@@ -671,9 +721,9 @@ def main() -> None:
                 + "; all raw samples and trial order stored"
             ),
             "statistics": (
-                "paired trial medians are independent observations; individual event "
-                "samples are not treated as independent; a dispatch cell must win every "
-                f"one of the {2 if args.quick else 15} trials against current and Liger"
+                "paired trial medians control point estimates; no independence or formal "
+                "family-wise probability is claimed; a dispatch cell must win every "
+                f"one of the {2 if args.quick else 15} trials against current and liger_exact"
             ),
             "cache": "L2 flushed after graph setup and before every timed region",
             "compilation": "excluded by warmup",

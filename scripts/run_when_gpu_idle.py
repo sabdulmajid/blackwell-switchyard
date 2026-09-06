@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Run one command after all GPUs have been idle for a sustained interval.
+"""Run one command after the required GPU activity has stayed idle.
 
 The runner uses no GPU while it waits. At a low frequency, it checks NVIDIA's
-process table, utilization, and allocated memory. During the command, it
-monitors only the selected GPU. If an unrelated process appears there, it stops
-its own process group and waits for a new idle interval before the next bounded
-attempt.
+global process table and the configured activity scope. The activity scope can
+cover every GPU or only the selected GPU. During the GPU phase, the runner
+continues to check the global process table. If an unrelated GPU process appears
+anywhere, it stops its own process group and waits for a new bounded attempt.
 """
 
 from __future__ import annotations
@@ -28,10 +28,16 @@ from pathlib import Path
 
 CPU_RECOVERY_EXIT = 74
 MAX_IDLE_MEMORY_MIB = 64
+MAX_IDLE_PROBE_DELAY_SECONDS = 5.0
+MAX_WATCHDOG_PROBE_GAP_SECONDS = 1.0
+IDLE_ACTIVITY_SCOPES = frozenset({"all_gpus", "target_gpu"})
+PROCESS_SCOPE = "all_gpus"
 PUBLIC_DEVICE_ID_PATTERN = re.compile(r"device-[0-9a-f]{16}")
 GPU_UUID_PATTERN = re.compile(r"GPU-[A-Za-z0-9-]+")
 RECOVERY_CONTEXT_FIELDS = {
     "target_uuid",
+    "idle_activity_scope",
+    "process_scope",
     "attempt",
     "not_before",
     "idle_seconds",
@@ -43,6 +49,12 @@ RECOVERY_CONTEXT_FIELDS = {
     "idle_probe_count",
     "max_idle_gpu_utilization_percent",
     "max_idle_memory_mib",
+    "max_idle_probe_gap_seconds",
+    "max_global_compute_process_count",
+    "max_non_target_gpu_utilization_percent",
+    "max_non_target_memory_mib",
+    "max_non_target_pcie_rx_kib_per_second",
+    "max_non_target_pcie_tx_kib_per_second",
     "gpu_count",
 }
 
@@ -83,14 +95,18 @@ def _parse_compute_apps(text: str) -> list[dict[str, str | int]]:
 def _parse_activity(text: str) -> dict[int, dict[str, int]]:
     result: dict[int, dict[str, int]] = {}
     for row in csv.reader(line for line in text.splitlines() if line.strip()):
-        if len(row) != 3 or any(not field.strip().isdigit() for field in row):
+        if len(row) != 5 or any(not field.strip().isdigit() for field in row):
             raise ValueError(f"malformed GPU activity row: {row!r}")
-        index, utilization, memory_used = (int(field.strip()) for field in row)
+        index, utilization, memory_used, pcie_rx, pcie_tx = (
+            int(field.strip()) for field in row
+        )
         if index in result or not 0 <= utilization <= 100:
             raise ValueError(f"invalid GPU activity row: {row!r}")
         result[index] = {
             "utilization_percent": utilization,
             "memory_used_mib": memory_used,
+            "pcie_rx_kib_per_second": pcie_rx,
+            "pcie_tx_kib_per_second": pcie_tx,
         }
     if not result:
         raise ValueError("nvidia-smi returned an empty GPU activity table")
@@ -104,6 +120,14 @@ def _parent_pid(pid: int) -> int | None:
         return int(fields[1])
     except (FileNotFoundError, IndexError, PermissionError, ValueError):
         return None
+
+
+def _record_probe_gap(
+    previous_probe_at: float, maximum_gap_seconds: float, *, now: float | None = None
+) -> tuple[float, float]:
+    """Include the complete interval since the preceding watchdog boundary."""
+    probe_at = time.monotonic() if now is None else now
+    return probe_at, max(maximum_gap_seconds, probe_at - previous_probe_at)
 
 
 def _is_descendant(
@@ -151,20 +175,47 @@ def _compute_apps() -> list[dict[str, str | int]]:
 def _activity() -> dict[int, dict[str, int]]:
     return _parse_activity(
         _smi(
-            "--query-gpu=index,utilization.gpu,memory.used",
+            "--query-gpu=index,utilization.gpu,memory.used,pcie.rx_util,pcie.tx_util",
             "--format=csv,noheader,nounits",
         )
     )
 
 
 def _is_idle_activity(
-    activity: dict[int, dict[str, int]], inventory: dict[int, str]
+    activity: dict[int, dict[str, int]],
+    inventory: dict[int, str],
+    *,
+    activity_scope: str = "all_gpus",
+    target_index: int | None = None,
 ) -> bool:
-    return set(activity) == set(inventory) and all(
+    if set(activity) != set(inventory):
+        return False
+    if activity_scope == "all_gpus":
+        guarded_indices = set(inventory)
+    elif activity_scope == "target_gpu" and target_index in inventory:
+        guarded_indices = {target_index}
+    else:
+        return False
+    return all(
         values["utilization_percent"] == 0
         and values["memory_used_mib"] <= MAX_IDLE_MEMORY_MIB
+        for index, values in activity.items()
+        if index in guarded_indices
+    ) and all(
+        values["pcie_rx_kib_per_second"] == 0
+        and values["pcie_tx_kib_per_second"] == 0
         for values in activity.values()
     )
+
+
+def _guarded_memory_values(
+    activity: dict[int, dict[str, int]],
+    *,
+    activity_scope: str,
+    target_index: int,
+) -> list[int]:
+    indices = activity if activity_scope == "all_gpus" else {target_index}
+    return [activity[index]["memory_used_mib"] for index in indices]
 
 
 class StateRecorder:
@@ -176,6 +227,7 @@ class StateRecorder:
         self.recovery_context: dict | None = None
         self.public_device_id = f"device-{secrets.token_hex(8)}"
         if path.exists():
+            os.chmod(path, 0o600)
             payload = json.loads(path.read_text())
             if payload.get("campaign_identity") != campaign_identity:
                 raise ValueError("runner state belongs to a different campaign")
@@ -225,10 +277,12 @@ class StateRecorder:
             "events": self.events[-200:],
             "recovery_context": self.recovery_context,
         }
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         temporary.write_text(json.dumps(payload, indent=2) + "\n")
+        os.chmod(temporary, 0o600)
         os.replace(temporary, self.path)
+        os.chmod(self.path, 0o600)
 
     def set_recovery_context(self, context: dict | None) -> None:
         self.recovery_context = (
@@ -278,6 +332,8 @@ def _validate_recovery_context(value: object) -> dict:
     if (
         not isinstance(value["target_uuid"], str)
         or GPU_UUID_PATTERN.fullmatch(value["target_uuid"]) is None
+        or value["idle_activity_scope"] not in IDLE_ACTIVITY_SCOPES
+        or value["process_scope"] != PROCESS_SCOPE
         or not _positive_int(value["attempt"])
         or not _offset_timestamp(value["not_before"])
         or not _positive_int(value["idle_seconds"])
@@ -291,6 +347,20 @@ def _validate_recovery_context(value: object) -> dict:
         or isinstance(value["max_idle_memory_mib"], bool)
         or not isinstance(value["max_idle_memory_mib"], int)
         or not 0 <= value["max_idle_memory_mib"] <= MAX_IDLE_MEMORY_MIB
+        or isinstance(value["max_idle_probe_gap_seconds"], bool)
+        or not isinstance(value["max_idle_probe_gap_seconds"], int | float)
+        or not 0
+        <= value["max_idle_probe_gap_seconds"]
+        <= value["wait_poll_seconds"] + MAX_IDLE_PROBE_DELAY_SECONDS
+        or value["max_global_compute_process_count"] != 0
+        or isinstance(value["max_non_target_gpu_utilization_percent"], bool)
+        or not isinstance(value["max_non_target_gpu_utilization_percent"], int)
+        or not 0 <= value["max_non_target_gpu_utilization_percent"] <= 100
+        or isinstance(value["max_non_target_memory_mib"], bool)
+        or not isinstance(value["max_non_target_memory_mib"], int)
+        or value["max_non_target_memory_mib"] < 0
+        or value["max_non_target_pcie_rx_kib_per_second"] != 0
+        or value["max_non_target_pcie_tx_kib_per_second"] != 0
         or not _positive_int(value["gpu_count"])
     ):
         raise ValueError("runner state has invalid recovery context values")
@@ -308,6 +378,8 @@ def _recovery_environment(
         {
             "CUDA_VISIBLE_DEVICES": context["target_uuid"],
             "SWITCHYARD_TARGET_GPU_UUID": context["target_uuid"],
+            "SWITCHYARD_GUARD_IDLE_ACTIVITY_SCOPE": context["idle_activity_scope"],
+            "SWITCHYARD_GUARD_PROCESS_SCOPE": context["process_scope"],
             "SWITCHYARD_PUBLIC_DEVICE_ID": public_device_id,
             "SWITCHYARD_RUN_ATTEMPT": str(context["attempt"]),
             "SWITCHYARD_GUARD_NOT_BEFORE": context["not_before"],
@@ -325,6 +397,24 @@ def _recovery_environment(
             ),
             "SWITCHYARD_GUARD_MAX_IDLE_MEMORY_MIB": str(
                 context["max_idle_memory_mib"]
+            ),
+            "SWITCHYARD_GUARD_MAX_IDLE_PROBE_GAP_SECONDS": str(
+                context["max_idle_probe_gap_seconds"]
+            ),
+            "SWITCHYARD_GUARD_MAX_GLOBAL_COMPUTE_PROCESS_COUNT": str(
+                context["max_global_compute_process_count"]
+            ),
+            "SWITCHYARD_GUARD_MAX_NON_TARGET_GPU_UTILIZATION_PERCENT": str(
+                context["max_non_target_gpu_utilization_percent"]
+            ),
+            "SWITCHYARD_GUARD_MAX_NON_TARGET_MEMORY_MIB": str(
+                context["max_non_target_memory_mib"]
+            ),
+            "SWITCHYARD_GUARD_MAX_NON_TARGET_PCIE_RX_KIB_PER_SECOND": str(
+                context["max_non_target_pcie_rx_kib_per_second"]
+            ),
+            "SWITCHYARD_GUARD_MAX_NON_TARGET_PCIE_TX_KIB_PER_SECOND": str(
+                context["max_non_target_pcie_tx_kib_per_second"]
             ),
             "SWITCHYARD_GUARD_GPU_COUNT": str(context["gpu_count"]),
         }
@@ -352,6 +442,7 @@ def _campaign_identity(args: argparse.Namespace, command: list[str]) -> str:
             else None
         ),
         "gpu_index": args.gpu_index,
+        "idle_activity_scope": args.idle_activity_scope,
         "gpu_lock_dir": str(args.gpu_lock_dir.resolve()),
         "idle_seconds": args.idle_seconds,
         "max_attempts": args.max_attempts,
@@ -399,8 +490,9 @@ def _run_cpu_recovery(
     cpu_environment["SWITCHYARD_CPU_RECOVERY"] = "1"
     while time.time() < deadline:
         recorder.write("cpu_recovery_started", attempt=attempt)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with log_path.open("a") as log:
+            os.chmod(log_path, 0o600)
             process = subprocess.Popen(
                 command,
                 cwd=cwd,
@@ -447,6 +539,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--not-before", required=True, type=_parse_not_before)
     parser.add_argument("--gpu-index", type=int, default=0)
+    parser.add_argument(
+        "--idle-activity-scope",
+        choices=sorted(IDLE_ACTIVITY_SCOPES),
+        default="all_gpus",
+        help="require idle telemetry from every GPU or only the selected GPU",
+    )
     parser.add_argument("--idle-seconds", type=int, default=1800)
     parser.add_argument("--wait-poll-seconds", type=int, default=60)
     parser.add_argument("--watchdog-seconds", type=float, default=0.25)
@@ -477,8 +575,9 @@ def main() -> int:
     if args.gpu_index < 0:
         parser.error("--gpu-index must be nonnegative")
 
-    args.lock.parent.mkdir(parents=True, exist_ok=True)
+    args.lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock_handle = args.lock.open("w")
+    os.chmod(args.lock, 0o600)
     try:
         fcntl.flock(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
@@ -505,7 +604,12 @@ def main() -> int:
             command,
             cwd=args.cwd,
             environment=_recovery_environment(
-                os.environ, context, recorder.public_device_id
+                {
+                    **os.environ,
+                    "SWITCHYARD_RUNNER_STATE": str(args.state.resolve()),
+                },
+                context,
+                recorder.public_device_id,
             ),
             log_path=args.log,
             recorder=recorder,
@@ -535,8 +639,10 @@ def main() -> int:
         return 2
     target_uuid = inventory[args.gpu_index]
     args.gpu_lock_dir.mkdir(parents=True, exist_ok=True)
-    gpu_lock_path = args.gpu_lock_dir / f"blackwell-switchyard-{target_uuid}.lock"
+    target_lock_id = hashlib.sha256(target_uuid.encode()).hexdigest()[:16]
+    gpu_lock_path = args.gpu_lock_dir / f"blackwell-switchyard-device-{target_lock_id}.lock"
     gpu_lock_handle = gpu_lock_path.open("w")
+    os.chmod(gpu_lock_path, 0o600)
     try:
         fcntl.flock(gpu_lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
@@ -545,9 +651,15 @@ def main() -> int:
     gpu_lock_handle.write(f"{os.getpid()}\n")
     gpu_lock_handle.flush()
     recorder.write(
-        "waiting_for_all_gpus_idle",
+        (
+            "waiting_for_all_gpus_idle"
+            if args.idle_activity_scope == "all_gpus"
+            else "waiting_for_target_gpu_idle"
+        ),
         target_index=args.gpu_index,
         target_uuid=target_uuid,
+        idle_activity_scope=args.idle_activity_scope,
+        process_scope=PROCESS_SCOPE,
         required_idle_seconds=args.idle_seconds,
         wait_poll_seconds=args.wait_poll_seconds,
     )
@@ -556,6 +668,10 @@ def main() -> int:
     idle_since_wall: float | None = None
     idle_probe_count = 0
     max_idle_memory_mib = 0
+    max_idle_probe_gap_seconds = 0.0
+    last_idle_probe_at: float | None = None
+    max_non_target_gpu_utilization_percent = 0
+    max_non_target_memory_mib = 0
     while time.time() < deadline and attempt < args.max_attempts:
         try:
             apps = _compute_apps()
@@ -565,26 +681,72 @@ def main() -> int:
             idle_since_wall = None
             idle_probe_count = 0
             max_idle_memory_mib = 0
+            max_idle_probe_gap_seconds = 0.0
+            last_idle_probe_at = None
+            max_non_target_gpu_utilization_percent = 0
+            max_non_target_memory_mib = 0
             recorder.write("wait_probe_failed", error=f"{type(exc).__name__}: {exc}"[:300])
             time.sleep(args.wait_poll_seconds)
             continue
 
-        if apps or not _is_idle_activity(activity, inventory):
+        if apps or not _is_idle_activity(
+            activity,
+            inventory,
+            activity_scope=args.idle_activity_scope,
+            target_index=args.gpu_index,
+        ):
             idle_since = None
             idle_since_wall = None
             idle_probe_count = 0
             max_idle_memory_mib = 0
+            max_idle_probe_gap_seconds = 0.0
+            last_idle_probe_at = None
+            max_non_target_gpu_utilization_percent = 0
+            max_non_target_memory_mib = 0
             time.sleep(args.wait_poll_seconds)
             continue
         if idle_since is None:
             idle_since = time.monotonic()
             idle_since_wall = time.time()
             recorder.write("idle_grace_started")
+        probe_at = time.monotonic()
+        if last_idle_probe_at is not None:
+            probe_gap = probe_at - last_idle_probe_at
+            if probe_gap > args.wait_poll_seconds + MAX_IDLE_PROBE_DELAY_SECONDS:
+                idle_since = probe_at
+                idle_since_wall = time.time()
+                idle_probe_count = 0
+                max_idle_memory_mib = 0
+                max_idle_probe_gap_seconds = 0.0
+                max_non_target_gpu_utilization_percent = 0
+                max_non_target_memory_mib = 0
+                recorder.write("idle_grace_restarted_after_probe_gap")
+            else:
+                max_idle_probe_gap_seconds = max(
+                    max_idle_probe_gap_seconds, probe_gap
+                )
+        last_idle_probe_at = probe_at
         idle_probe_count += 1
         max_idle_memory_mib = max(
             max_idle_memory_mib,
-            *(values["memory_used_mib"] for values in activity.values()),
+            *_guarded_memory_values(
+                activity,
+                activity_scope=args.idle_activity_scope,
+                target_index=args.gpu_index,
+            ),
         )
+        non_target = [
+            values for index, values in activity.items() if index != args.gpu_index
+        ]
+        if non_target:
+            max_non_target_gpu_utilization_percent = max(
+                max_non_target_gpu_utilization_percent,
+                *(values["utilization_percent"] for values in non_target),
+            )
+            max_non_target_memory_mib = max(
+                max_non_target_memory_mib,
+                *(values["memory_used_mib"] for values in non_target),
+            )
         elapsed = time.monotonic() - idle_since
         if elapsed < args.idle_seconds:
             time.sleep(min(args.wait_poll_seconds, args.idle_seconds - elapsed))
@@ -600,28 +762,79 @@ def main() -> int:
             idle_since_wall = None
             idle_probe_count = 0
             max_idle_memory_mib = 0
+            max_idle_probe_gap_seconds = 0.0
+            last_idle_probe_at = None
+            max_non_target_gpu_utilization_percent = 0
+            max_non_target_memory_mib = 0
             recorder.write("final_probe_failed", error=f"{type(exc).__name__}: {exc}"[:300])
             time.sleep(args.wait_poll_seconds)
             continue
-        if final_apps or not _is_idle_activity(final_activity, inventory):
+        if final_apps or not _is_idle_activity(
+            final_activity,
+            inventory,
+            activity_scope=args.idle_activity_scope,
+            target_index=args.gpu_index,
+        ):
             idle_since = None
             idle_since_wall = None
             idle_probe_count = 0
             max_idle_memory_mib = 0
+            max_idle_probe_gap_seconds = 0.0
+            last_idle_probe_at = None
+            max_non_target_gpu_utilization_percent = 0
+            max_non_target_memory_mib = 0
             continue
 
+        final_probe_at = time.monotonic()
+        if (
+            last_idle_probe_at is None
+            or final_probe_at - last_idle_probe_at
+            > args.wait_poll_seconds + MAX_IDLE_PROBE_DELAY_SECONDS
+        ):
+            idle_since = None
+            idle_since_wall = None
+            idle_probe_count = 0
+            max_idle_memory_mib = 0
+            max_idle_probe_gap_seconds = 0.0
+            last_idle_probe_at = None
+            max_non_target_gpu_utilization_percent = 0
+            max_non_target_memory_mib = 0
+            recorder.write("final_probe_gap_exceeded")
+            continue
+        max_idle_probe_gap_seconds = max(
+            max_idle_probe_gap_seconds, final_probe_at - last_idle_probe_at
+        )
+        last_idle_probe_at = final_probe_at
         attempt += 1
         idle_probe_count += 1
         max_idle_memory_mib = max(
             max_idle_memory_mib,
-            *(values["memory_used_mib"] for values in final_activity.values()),
+            *_guarded_memory_values(
+                final_activity,
+                activity_scope=args.idle_activity_scope,
+                target_index=args.gpu_index,
+            ),
         )
+        final_non_target = [
+            values for index, values in final_activity.items() if index != args.gpu_index
+        ]
+        if final_non_target:
+            max_non_target_gpu_utilization_percent = max(
+                max_non_target_gpu_utilization_percent,
+                *(values["utilization_percent"] for values in final_non_target),
+            )
+            max_non_target_memory_mib = max(
+                max_non_target_memory_mib,
+                *(values["memory_used_mib"] for values in final_non_target),
+            )
         launch_time = time.time()
         if idle_since_wall is None:
             recorder.write("failed", reason="idle wall-clock evidence is missing")
             return 2
         context = {
             "target_uuid": target_uuid,
+            "idle_activity_scope": args.idle_activity_scope,
+            "process_scope": PROCESS_SCOPE,
             "attempt": attempt,
             "not_before": datetime.fromtimestamp(args.not_before)
             .astimezone()
@@ -637,17 +850,31 @@ def main() -> int:
             "idle_probe_count": idle_probe_count,
             "max_idle_gpu_utilization_percent": 0,
             "max_idle_memory_mib": max_idle_memory_mib,
+            "max_idle_probe_gap_seconds": max_idle_probe_gap_seconds,
+            "max_global_compute_process_count": 0,
+            "max_non_target_gpu_utilization_percent": (
+                max_non_target_gpu_utilization_percent
+            ),
+            "max_non_target_memory_mib": max_non_target_memory_mib,
+            "max_non_target_pcie_rx_kib_per_second": 0,
+            "max_non_target_pcie_tx_kib_per_second": 0,
             "gpu_count": len(inventory),
         }
         environment = _recovery_environment(
-            os.environ, context, recorder.public_device_id
+            {
+                **os.environ,
+                "SWITCHYARD_RUNNER_STATE": str(args.state.resolve()),
+            },
+            context,
+            recorder.public_device_id,
         )
         if args.gpu_complete_marker is not None:
             args.gpu_complete_marker.unlink(missing_ok=True)
         recorder.set_recovery_context(context)
         recorder.write("launching_workload", attempt=attempt, target_uuid=target_uuid)
-        args.log.parent.mkdir(parents=True, exist_ok=True)
+        args.log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with args.log.open("a") as log:
+            os.chmod(args.log, 0o600)
             process = subprocess.Popen(
                 command,
                 cwd=args.cwd,
@@ -668,6 +895,11 @@ def main() -> int:
             gpu_complete_since: float | None = None
             deadline_reached = False
             finalization_timed_out = False
+            watchdog_probe_count = 0
+            watchdog_max_probe_gap_seconds = 0.0
+            # Measure from process launch. This includes the first query's
+            # runtime and prevents a stalled first query from reporting a zero gap.
+            last_watchdog_probe_at = time.monotonic()
             while process.poll() is None:
                 time.sleep(args.watchdog_seconds)
                 if process.poll() is not None:
@@ -676,14 +908,8 @@ def main() -> int:
                     _terminate_group(process, recorder, "campaign deadline reached")
                     deadline_reached = True
                     break
-                if (
-                    args.gpu_complete_marker is not None
-                    and args.gpu_complete_marker.exists()
-                ):
-                    if gpu_complete_since is None:
-                        gpu_complete_since = time.monotonic()
-                        recorder.write("gpu_phase_complete", attempt=attempt)
-                    elif time.monotonic() - gpu_complete_since > args.finalize_seconds:
+                if gpu_complete_since is not None:
+                    if time.monotonic() - gpu_complete_since > args.finalize_seconds:
                         _terminate_group(
                             process,
                             recorder,
@@ -693,9 +919,7 @@ def main() -> int:
                         break
                     continue
                 try:
-                    target_apps = [
-                        item for item in _compute_apps() if item["gpu_uuid"] == target_uuid
-                    ]
+                    observed_apps = _compute_apps()
                     blind_probes = 0
                 except (OSError, subprocess.SubprocessError, ValueError) as exc:
                     blind_probes += 1
@@ -708,14 +932,42 @@ def main() -> int:
                         foreign_apps = [{"watchdog": "unavailable"}]
                         break
                     continue
+                last_watchdog_probe_at, watchdog_max_probe_gap_seconds = (
+                    _record_probe_gap(
+                        last_watchdog_probe_at,
+                        watchdog_max_probe_gap_seconds,
+                    )
+                )
+                watchdog_probe_count += 1
+                if watchdog_max_probe_gap_seconds > MAX_WATCHDOG_PROBE_GAP_SECONDS:
+                    _terminate_group(
+                        process,
+                        recorder,
+                        "global GPU watchdog probe gap exceeded one second",
+                    )
+                    foreign_apps = [{"watchdog": "probe_gap"}]
+                    break
                 foreign_apps = [
                     item
-                    for item in target_apps
+                    for item in observed_apps
                     if not _is_descendant(int(item["pid"]), process.pid)
                 ]
                 if foreign_apps:
                     _terminate_group(process, recorder, "foreign GPU process appeared")
                     break
+                if (
+                    args.gpu_complete_marker is not None
+                    and args.gpu_complete_marker.exists()
+                ):
+                    gpu_complete_since = time.monotonic()
+                    recorder.write(
+                        "gpu_phase_complete",
+                        attempt=attempt,
+                        watchdog_probe_count=watchdog_probe_count,
+                        max_watchdog_probe_gap_seconds=(
+                            watchdog_max_probe_gap_seconds
+                        ),
+                    )
 
             return_code = process.poll()
 
@@ -730,6 +982,10 @@ def main() -> int:
             idle_since_wall = None
             idle_probe_count = 0
             max_idle_memory_mib = 0
+            max_idle_probe_gap_seconds = 0.0
+            last_idle_probe_at = None
+            max_non_target_gpu_utilization_percent = 0
+            max_non_target_memory_mib = 0
             continue
         if deadline_reached:
             recorder.write("expired", attempts=attempt)
@@ -753,6 +1009,10 @@ def main() -> int:
                 idle_since_wall = None
                 idle_probe_count = 0
                 max_idle_memory_mib = 0
+                max_idle_probe_gap_seconds = 0.0
+                last_idle_probe_at = None
+                max_non_target_gpu_utilization_percent = 0
+                max_non_target_memory_mib = 0
                 continue
             return recovery_code
         if return_code == 0:
@@ -784,6 +1044,10 @@ def main() -> int:
                 idle_since_wall = None
                 idle_probe_count = 0
                 max_idle_memory_mib = 0
+                max_idle_probe_gap_seconds = 0.0
+                last_idle_probe_at = None
+                max_non_target_gpu_utilization_percent = 0
+                max_non_target_memory_mib = 0
                 continue
             return recovery_code
         if return_code == 75:
@@ -792,6 +1056,10 @@ def main() -> int:
             idle_since_wall = None
             idle_probe_count = 0
             max_idle_memory_mib = 0
+            max_idle_probe_gap_seconds = 0.0
+            last_idle_probe_at = None
+            max_non_target_gpu_utilization_percent = 0
+            max_non_target_memory_mib = 0
             continue
         recorder.write("failed", attempt=attempt, return_code=return_code)
         return return_code or 1

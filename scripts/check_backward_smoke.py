@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -14,6 +15,11 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "scripts"))
 
+from check_backward_report import (  # noqa: E402
+    LIGER_EXACT_SOURCE_SHA256,
+    LIGER_EXACT_WORK_CONTRACT,
+    LIGER_UPSTREAM_WORK_CONTRACT,
+)
 from evaluate_backward import (  # noqa: E402
     MASKED_TAIL_SHAPES,
     PINNED_LIGER_COMMIT,
@@ -37,10 +43,11 @@ EXPECTED = {
     "cuda_register",
     "cuda_register_cluster",
     "cuda_register_cluster_full",
-    "liger",
+    "liger_exact",
+    "liger_upstream",
 }
-CANDIDATES = EXPECTED - {"current", "liger"}
-NUMERICAL_FLOOR_CANDIDATES = CANDIDATES - {"cuda_shared"}
+CANDIDATES = EXPECTED - {"current", "liger_exact", "liger_upstream"}
+NUMERICAL_FLOOR_IMPLEMENTATIONS = (CANDIDATES - {"cuda_shared"}) | {"liger_exact"}
 GATE_SHAPES = {
     (9, 1, 4096, 4096),
     (9, 1, 4096, 8192),
@@ -78,12 +85,12 @@ def check_reports(
         dtype = report.get("dtype", "")
         prefix = dtype or "unknown dtype"
         if (
-            report.get("schema_version") != 3
+            report.get("schema_version") != 4
             or report.get("shape_set") != "gate"
             or not isinstance(report.get("run_id"), str)
             or re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", report["run_id"]) is None
         ):
-            problems.append(f"{prefix}: report is not a schema-2 gate run")
+            problems.append(f"{prefix}: report is not a schema-4 gate run")
         if report.get("run_status") != "complete":
             problems.append(f"{prefix}: report is not complete")
         if report.get("correctness_seeds") != [0, 1, 2]:
@@ -101,7 +108,8 @@ def check_reports(
             problems.append(f"{prefix}: pinned Liger commit is missing or wrong")
         if provenance.get("third_party_dirty", {}).get("Liger-Kernel") is not False:
             problems.append(f"{prefix}: pinned Liger checkout is not recorded clean")
-        liger = report.get("comparators", {}).get("liger", {})
+        comparators = report.get("comparators", {})
+        liger = comparators.get("liger_upstream", {})
         if (
             liger.get("commit") != PINNED_LIGER_COMMIT
             or liger.get("under_pinned_checkout") is not True
@@ -109,6 +117,15 @@ def check_reports(
             or liger.get("source_sha256") != PINNED_LIGER_SOURCE_SHA256
         ):
             problems.append(f"{prefix}: imported Liger provenance is incomplete")
+        liger_exact = comparators.get("liger_exact", {})
+        if (
+            liger_exact.get("source_sha256") != LIGER_EXACT_SOURCE_SHA256
+            or liger_exact.get("source_path") != "src/switchyard/_liger_exact.py"
+            or liger_exact.get("derived_from") != f"Liger-Kernel@{PINNED_LIGER_COMMIT}"
+            or liger_exact.get("license") != "BSD-2-Clause"
+            or liger_exact.get("under_pinned_checkout") is not False
+        ):
+            problems.append(f"{prefix}: exact-contract Liger provenance is incomplete")
         preflight = report.get("gpu_preflight", {})
         postflight = report.get("gpu_postflight", {})
         if (
@@ -124,6 +141,7 @@ def check_reports(
         samples = monitor.get("samples")
         interval = monitor.get("interval_seconds")
         duration = monitor.get("duration_seconds")
+        max_probe_gap = monitor.get("max_probe_gap_seconds")
         monitor_coverage_ok = (
             isinstance(samples, int)
             and samples >= 2
@@ -132,6 +150,11 @@ def check_reports(
             and isinstance(duration, int | float)
             and duration >= interval
             and samples >= max(2, int(duration / (2 * interval)))
+            and monitor.get("probe_attempts") == samples
+            and isinstance(max_probe_gap, int | float)
+            and math.isfinite(max_probe_gap)
+            and 0 <= max_probe_gap <= 0.25
+            and monitor.get("maximum_allowed_probe_gap_seconds") == 0.25
         )
         if (
             monitor.get("device_id") != preflight.get("device_id")
@@ -167,6 +190,12 @@ def check_reports(
             local_success[implementation] += 1
             if not _correct(record):
                 problems.append(f"{prefix} {shape} {implementation}: correctness failed")
+            expected_contract = {
+                "liger_exact": LIGER_EXACT_WORK_CONTRACT,
+                "liger_upstream": LIGER_UPSTREAM_WORK_CONTRACT,
+            }.get(implementation)
+            if expected_contract is not None and record.get("work_contract") != expected_contract:
+                problems.append(f"{prefix} {shape} {implementation}: work contract is wrong")
             if [
                 item.get("seed") for item in record.get("correctness_by_seed", [])
             ] != [0, 1, 2]:
@@ -209,7 +238,7 @@ def check_reports(
                 item.get("seed"): item.get("report", {})
                 for item in current.get("correctness_by_seed", [])
             }
-            for candidate in NUMERICAL_FLOOR_CANDIDATES:
+            for candidate in NUMERICAL_FLOOR_IMPLEMENTATIONS:
                 measured = records.get(candidate, {})
                 if measured.get("skipped"):
                     continue
@@ -236,6 +265,10 @@ def check_reports(
             problems.append(f"{prefix}: exact masked-tail shapes are missing")
         for case in tails:
             shape = _shape(case)
+            rows = {
+                (item.get("impl"), item.get("seed")): item
+                for item in case.get("implementations", [])
+            }
             observed = {
                 (item.get("impl"), item.get("seed"))
                 for item in case.get("implementations", [])
@@ -258,6 +291,29 @@ def check_reports(
                     problems.append(
                         f"{prefix} masked tail {shape} {item.get('impl')} seed={item.get('seed')}"
                     )
+            for seed in (0, 1, 2):
+                accepted = rows.get(("current", seed), {}).get("correctness", {})
+                for implementation in NUMERICAL_FLOOR_IMPLEMENTATIONS:
+                    measured = rows.get((implementation, seed), {})
+                    if measured.get("skipped"):
+                        continue
+                    observed = measured.get("correctness", {})
+                    for value in ("output", "dv", "dw"):
+                        accepted_error = accepted.get(value, {}).get("rel_l2")
+                        observed_error = observed.get(value, {}).get("rel_l2")
+                        if not isinstance(accepted_error, int | float) or not isinstance(
+                            observed_error, int | float
+                        ):
+                            problems.append(
+                                f"{prefix} masked tail {shape} {implementation} seed={seed} "
+                                f"{value}: numerical floor evidence is missing"
+                            )
+                        elif observed_error > max(1.05 * accepted_error, 1e-7):
+                            problems.append(
+                                f"{prefix} masked tail {shape} {implementation} seed={seed} "
+                                f"{value}: error {observed_error:.3e} exceeds "
+                                f"{accepted_error:.3e}"
+                            )
 
         for implementation, count in local_success.items():
             if count == 0:

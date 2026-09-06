@@ -7,7 +7,6 @@ import argparse
 import hashlib
 import json
 import math
-import random
 import re
 import statistics
 import sys
@@ -17,6 +16,12 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
+from switchyard._benchmark_contracts import (  # noqa: E402
+    LIGER_EXACT_WORK_CONTRACT,
+    LIGER_UPSTREAM_WORK_CONTRACT,
+    PINNED_LIGER_COMMIT,
+    PINNED_LIGER_SOURCE_SHA256,
+)
 from switchyard.performance import (  # noqa: E402
     backward_traffic_estimate,
     forward_traffic_estimate,
@@ -24,8 +29,9 @@ from switchyard.performance import (  # noqa: E402
 from switchyard.training_plan import get_training_plan, plan_supports  # noqa: E402
 
 ALL_DTYPES = {"bfloat16", "float16", "float32"}
-PINNED_LIGER_COMMIT = "777799588a89d74c489ed995e3bf006427738e85"
-PINNED_LIGER_SOURCE_SHA256 = "57da6fed98f794088b2a56223e6c7ef9fc920824f0c483cb0ef0b5a343dab0b1"
+LIGER_EXACT_SOURCE_SHA256 = hashlib.sha256(
+    (REPO / "src" / "switchyard" / "_liger_exact.py").read_bytes()
+).hexdigest()
 FULL_TRIAL_COUNT = 15
 FULL_REPS_PER_TRIAL = 13
 FULL_WARMUP_PER_TRIAL = 10
@@ -62,23 +68,6 @@ CAMPAIGN_CANDIDATES = (
     "cuda_register_cluster",
     "cuda_register_cluster_full",
 )
-CAMPAIGN_DISPATCH_HYPOTHESES = 2 * sum(
-    plan_supports(get_training_plan(candidate), *shape, dtype)[0]
-    for candidate in CAMPAIGN_CANDIDATES
-    for dtype in (
-        ("bfloat16", "float16")
-        if get_training_plan(candidate).backward.family.startswith("cuda")
-        else tuple(ALL_DTYPES)
-    )
-    for shape in EXPECTED_FULL_SHAPES
-)
-FAMILYWISE_SIGN_ERROR_BOUND = (
-    CAMPAIGN_DISPATCH_HYPOTHESES
-    * MAX_CAMPAIGN_ATTEMPTS
-    * 0.5**FULL_TRIAL_COUNT
-)
-
-
 @dataclass(frozen=True)
 class Comparison:
     dtype: str
@@ -91,8 +80,12 @@ class Comparison:
     current_fwd_bwd_ms: float
     candidate_fwd_bwd_ms: float
     current_fwd_bwd_speedup: float
-    liger_fwd_bwd_ms: float
-    liger_fwd_bwd_speedup: float
+    liger_exact_backward_ms: float
+    liger_exact_backward_speedup: float
+    liger_exact_fwd_bwd_ms: float
+    liger_exact_fwd_bwd_speedup: float
+    liger_upstream_fwd_bwd_ms: float
+    liger_upstream_fwd_bwd_speedup_observational: float
 
 
 def _shape(record: dict) -> tuple[int, int, int, int]:
@@ -234,18 +227,14 @@ def _timing_from_raw(
     return {"median_ms": median, "cv": cv, "trial_medians": by_trial}
 
 
-def _paired_speedup_lower_bound(numerator: dict[int, float], denominator: dict[int, float]) -> float | None:
-    """Bootstrap paired trial ratios, never correlated event-level samples."""
+def _paired_speedups(
+    numerator: dict[int, float], denominator: dict[int, float]
+) -> list[float] | None:
+    """Return paired trial ratios without a formal independence claim."""
     trial_ids = sorted(set(numerator) & set(denominator))
     if len(trial_ids) < FULL_TRIAL_COUNT:
         return None
-    ratios = [numerator[index] / denominator[index] for index in trial_ids]
-    rng = random.Random(0)
-    estimates = [
-        statistics.median(rng.choices(ratios, k=len(ratios))) for _ in range(10_000)
-    ]
-    estimates.sort()
-    return estimates[int(0.025 * len(estimates))]
+    return [numerator[index] / denominator[index] for index in trial_ids]
 
 
 def _required_dtypes(candidate: str) -> set[str]:
@@ -440,6 +429,7 @@ def _canonical_model(model) -> dict:
 
 
 def _check_memory_contract(
+    implementation: str,
     dtype: str,
     shape: tuple[int, int, int, int],
     record: dict,
@@ -469,7 +459,8 @@ def _check_memory_contract(
     token_bytes = b * t * d * itemsize
     query_bytes = d * itemsize
     expected_accounted = values_bytes + token_bytes + query_bytes
-    expected_resident = 2 * expected_accounted
+    extra_resident = query_bytes if implementation == "liger_upstream" else 0
+    expected_resident = 2 * expected_accounted + extra_resident
     if memory["accounted_output_bytes"] != expected_accounted:
         problems.append(f"{label}: accounted output bytes are wrong")
     if memory["resident_bytes"] != expected_resident:
@@ -606,11 +597,11 @@ def evaluate_reports(
         report = by_dtype[dtype]
         prefix = dtype
         if (
-            report.get("schema_version") != 3
+            report.get("schema_version") != 4
             or not isinstance(report.get("run_id"), str)
             or re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", report["run_id"]) is None
         ):
-            problems.append(f"{prefix}: schema version 2 or run ID is missing")
+            problems.append(f"{prefix}: schema version 4 or run ID is missing")
         if report.get("run_status") != "complete":
             problems.append(f"{prefix}: report is not a completed run")
         if report.get("shape_set") != "full":
@@ -626,7 +617,8 @@ def evaluate_reports(
             problems.append(f"{prefix}: pinned Liger commit is missing or wrong")
         if provenance.get("third_party_dirty", {}).get("Liger-Kernel") is not False:
             problems.append(f"{prefix}: pinned Liger worktree cleanliness is missing or false")
-        liger_provenance = report.get("comparators", {}).get("liger", {})
+        comparators = report.get("comparators", {})
+        liger_provenance = comparators.get("liger_upstream", {})
         if (
             liger_provenance.get("commit") != PINNED_LIGER_COMMIT
             or liger_provenance.get("worktree_dirty") is not False
@@ -635,6 +627,17 @@ def evaluate_reports(
             or not liger_provenance.get("source_path")
         ):
             problems.append(f"{prefix}: imported Liger source provenance is incomplete")
+        liger_exact_provenance = comparators.get("liger_exact", {})
+        if (
+            liger_exact_provenance.get("source_path")
+            != "src/switchyard/_liger_exact.py"
+            or liger_exact_provenance.get("derived_from")
+            != f"Liger-Kernel@{PINNED_LIGER_COMMIT}"
+            or liger_exact_provenance.get("license") != "BSD-2-Clause"
+            or liger_exact_provenance.get("under_pinned_checkout") is not False
+            or liger_exact_provenance.get("source_sha256") != LIGER_EXACT_SOURCE_SHA256
+        ):
+            problems.append(f"{prefix}: exact-contract Liger provenance is incomplete")
         if "--quick" in provenance.get("argv", []):
             problems.append(f"{prefix}: quick runs cannot produce a production decision")
         preflight = report.get("gpu_preflight", {})
@@ -660,6 +663,7 @@ def evaluate_reports(
         samples = monitor.get("samples")
         interval = monitor.get("interval_seconds")
         duration = monitor.get("duration_seconds")
+        max_probe_gap = monitor.get("max_probe_gap_seconds")
         monitor_coverage_ok = (
             isinstance(samples, int)
             and samples >= 2
@@ -668,6 +672,11 @@ def evaluate_reports(
             and isinstance(duration, int | float)
             and duration >= interval
             and samples >= max(2, int(duration / (2 * interval)))
+            and monitor.get("probe_attempts") == samples
+            and isinstance(max_probe_gap, int | float)
+            and math.isfinite(max_probe_gap)
+            and 0 <= max_probe_gap <= 0.25
+            and monitor.get("maximum_allowed_probe_gap_seconds") == 0.25
         )
         if monitor.get("probe_errors") or not monitor_coverage_ok:
             problems.append(f"{prefix}: sampled GPU monitor was incomplete")
@@ -675,7 +684,7 @@ def evaluate_reports(
             problems.append(f"{prefix}: candidate isolation flag is missing or true")
         if report.get("correctness_seeds") != [0, 1, 2]:
             problems.append(f"{prefix}: correctness seeds must be [0, 1, 2]")
-        if not {"current", candidate, "liger"} <= set(
+        if not {"current", candidate, "liger_exact", "liger_upstream"} <= set(
             report.get("selected_implementations", [])
         ):
             problems.append(f"{prefix}: selected implementation set omits a comparator")
@@ -685,21 +694,36 @@ def evaluate_reports(
         if observed_tail_shapes != MASKED_TAIL_SHAPES:
             problems.append(f"{prefix}: exact masked-tail correctness cases are required")
         for case in tails:
+            rows = {
+                (item.get("impl"), item.get("seed")): item
+                for item in case.get("implementations", [])
+            }
             expected = {
                 (implementation, seed)
-                for implementation in ("current", candidate, "liger")
+                for implementation in (
+                    "current",
+                    candidate,
+                    "liger_exact",
+                    "liger_upstream",
+                )
                 for seed in (0, 1, 2)
             }
             observed_rows = [
                 (item.get("impl"), item.get("seed"))
                 for item in case.get("implementations", [])
-                if item.get("impl") in {"current", candidate, "liger"}
+                if item.get("impl")
+                in {"current", candidate, "liger_exact", "liger_upstream"}
             ]
             if len(observed_rows) != len(expected) or set(observed_rows) != expected:
                 problems.append(f"{prefix}: masked-tail implementation/seed matrix is incomplete")
             for item in case.get("implementations", []):
                 implementation = item.get("impl")
-                if implementation not in {"current", candidate, "liger"}:
+                if implementation not in {
+                    "current",
+                    candidate,
+                    "liger_exact",
+                    "liger_upstream",
+                }:
                     continue
                 skipped = str(item.get("skipped", ""))
                 supported, _ = plan_supports(plan, *(_shape(case)), dtype)
@@ -718,6 +742,24 @@ def evaluate_reports(
                         correctness_failures.append(failure)
                     else:
                         problems.append(f"{failure}: comparator correctness is incomplete")
+            for seed in (0, 1, 2):
+                accepted = rows.get(("current", seed), {}).get("correctness", {})
+                exact = rows.get(("liger_exact", seed), {}).get("correctness", {})
+                for value in ("output", "dv", "dw"):
+                    accepted_error = accepted.get(value, {}).get("rel_l2")
+                    exact_error = exact.get(value, {}).get("rel_l2")
+                    if not isinstance(accepted_error, int | float) or not isinstance(
+                        exact_error, int | float
+                    ):
+                        problems.append(
+                            f"{prefix} masked-tail liger_exact seed={seed} {value}: "
+                            "numerical floor evidence is missing"
+                        )
+                    elif exact_error > max(1.05 * accepted_error, 1e-7):
+                        problems.append(
+                            f"{prefix} masked-tail liger_exact seed={seed} {value}: "
+                            f"error {exact_error:.3e} exceeds {accepted_error:.3e}"
+                        )
 
         execution_order = report.get("execution_order", [])
         schedule_shapes = [_shape(item) for item in execution_order]
@@ -739,10 +781,15 @@ def evaluate_reports(
         for shape in sorted(EXPECTED_FULL_SHAPES & set(table)):
             records = table[shape]
             label = f"{prefix} {shape}"
-            if not {"current", candidate, "liger"} <= set(records):
-                problems.append(f"{label}: current/{candidate}/Liger set is incomplete")
+            if not {"current", candidate, "liger_exact", "liger_upstream"} <= set(records):
+                problems.append(
+                    f"{label}: current/{candidate}/liger_exact/liger_upstream set is incomplete"
+                )
                 continue
-            current, measured, liger = records["current"], records[candidate], records["liger"]
+            current = records["current"]
+            measured = records[candidate]
+            liger_exact = records["liger_exact"]
+            liger_upstream = records["liger_upstream"]
             supported, reason = plan_supports(plan, *shape, dtype)
             if not supported:
                 if not str(measured.get("skipped", "")).startswith("unsupported plan:"):
@@ -763,7 +810,7 @@ def evaluate_reports(
                         "schedules are required"
                     )
                     continue
-                required = {"current", candidate, "liger"}
+                required = {"current", candidate, "liger_exact", "liger_upstream"}
                 if any(
                     not required <= set(trial.get("implementations", []))
                     for trial in trial_schedule
@@ -776,7 +823,7 @@ def evaluate_reports(
                 }
                 if len(candidate_positions) < 2:
                     problems.append(f"{label}: {metric} order was not rotated")
-                for comparator in ("current", "liger"):
+                for comparator in ("current", "liger_exact", "liger_upstream"):
                     candidate_first = sum(
                         trial["implementations"].index(candidate)
                         < trial["implementations"].index(comparator)
@@ -799,7 +846,8 @@ def evaluate_reports(
             for implementation, record in (
                 ("current", current),
                 (candidate, measured),
-                ("liger", liger),
+                ("liger_exact", liger_exact),
+                ("liger_upstream", liger_upstream),
             ):
                 if record.get("skipped") or not _correct(record):
                     failure = f"{label} {implementation}"
@@ -807,7 +855,17 @@ def evaluate_reports(
                         correctness_failures.append(failure)
                     else:
                         problems.append(f"{failure}: comparator correctness is incomplete")
+                expected_work_contract = {
+                    "liger_exact": LIGER_EXACT_WORK_CONTRACT,
+                    "liger_upstream": LIGER_UPSTREAM_WORK_CONTRACT,
+                }.get(implementation)
+                if (
+                    expected_work_contract is not None
+                    and record.get("work_contract") != expected_work_contract
+                ):
+                    problems.append(f"{label} {implementation}: work contract is wrong")
                 workspaces[implementation] = _check_memory_contract(
+                    implementation,
                     dtype,
                     shape,
                     record,
@@ -842,7 +900,15 @@ def evaluate_reports(
             candidate_seeds = {
                 item["seed"]: item["report"] for item in measured.get("correctness_by_seed", [])
             }
-            if set(current_seeds) != {0, 1, 2} or set(candidate_seeds) != {0, 1, 2}:
+            liger_exact_seeds = {
+                item["seed"]: item["report"]
+                for item in liger_exact.get("correctness_by_seed", [])
+            }
+            if (
+                set(current_seeds) != {0, 1, 2}
+                or set(candidate_seeds) != {0, 1, 2}
+                or set(liger_exact_seeds) != {0, 1, 2}
+            ):
                 problems.append(f"{label}: exact three-seed correctness set is missing")
             for seed in sorted(set(current_seeds) & set(candidate_seeds)):
                 for value in ("output", "dv", "dw"):
@@ -857,10 +923,25 @@ def evaluate_reports(
                             f"{label} seed={seed} {value}: "
                             f"{candidate_error:.3e} vs {accepted_error:.3e}"
                         )
+                    exact_error = liger_exact_seeds.get(seed, {}).get(value, {}).get("rel_l2")
+                    if (
+                        not isinstance(exact_error, int | float)
+                        or not isinstance(accepted_error, int | float)
+                        or exact_error > max(1.05 * accepted_error, 1e-7)
+                    ):
+                        problems.append(
+                            f"{label} liger_exact seed={seed} {value}: numerical error "
+                            "does not match the accepted error floor"
+                        )
 
             required_timing_keys = {
                 (implementation, metric)
-                for implementation in ("current", candidate, "liger")
+                for implementation in (
+                    "current",
+                    candidate,
+                    "liger_exact",
+                    "liger_upstream",
+                )
                 for metric in ("forward", "backward", "fwd_bwd")
             }
             if not required_timing_keys <= set(raw_timings):
@@ -868,11 +949,48 @@ def evaluate_reports(
                 continue
             current_ms = raw_timings[("current", "backward")]["median_ms"]
             candidate_ms = raw_timings[(candidate, "backward")]["median_ms"]
+            liger_exact_backward = raw_timings[("liger_exact", "backward")]["median_ms"]
             current_fwd_bwd = raw_timings[("current", "fwd_bwd")]["median_ms"]
             candidate_fwd_bwd = raw_timings[(candidate, "fwd_bwd")]["median_ms"]
-            liger_fwd_bwd = raw_timings[("liger", "fwd_bwd")]["median_ms"]
-            speedup = current_ms / candidate_ms
-            change = 1.0 - candidate_ms / current_ms
+            liger_exact_fwd_bwd = raw_timings[("liger_exact", "fwd_bwd")]["median_ms"]
+            liger_upstream_fwd_bwd = raw_timings[("liger_upstream", "fwd_bwd")][
+                "median_ms"
+            ]
+            backward_ratios = _paired_speedups(
+                raw_timings[("current", "backward")]["trial_medians"],
+                raw_timings[(candidate, "backward")]["trial_medians"],
+            )
+            liger_exact_backward_ratios = _paired_speedups(
+                raw_timings[("liger_exact", "backward")]["trial_medians"],
+                raw_timings[(candidate, "backward")]["trial_medians"],
+            )
+            if backward_ratios is None or liger_exact_backward_ratios is None:
+                problems.append(f"{label}: paired backward trial matrix is incomplete")
+                continue
+            current_training_ratios = _paired_speedups(
+                raw_timings[("current", "fwd_bwd")]["trial_medians"],
+                raw_timings[(candidate, "fwd_bwd")]["trial_medians"],
+            )
+            liger_exact_training_ratios = _paired_speedups(
+                raw_timings[("liger_exact", "fwd_bwd")]["trial_medians"],
+                raw_timings[(candidate, "fwd_bwd")]["trial_medians"],
+            )
+            liger_upstream_training_ratios = _paired_speedups(
+                raw_timings[("liger_upstream", "fwd_bwd")]["trial_medians"],
+                raw_timings[(candidate, "fwd_bwd")]["trial_medians"],
+            )
+            if (
+                current_training_ratios is None
+                or liger_exact_training_ratios is None
+                or liger_upstream_training_ratios is None
+            ):
+                problems.append(f"{label}: paired training trial matrix is incomplete")
+                continue
+            speedup = statistics.median(backward_ratios)
+            liger_exact_backward_speedup = statistics.median(
+                liger_exact_backward_ratios
+            )
+            change = 1.0 - 1.0 / speedup
             classification = "WIN" if change >= threshold else "LOSS" if change <= -threshold else "NOISE"
             comparisons.append(
                 Comparison(
@@ -885,9 +1003,13 @@ def evaluate_reports(
                     classification,
                     current_fwd_bwd,
                     candidate_fwd_bwd,
-                    current_fwd_bwd / candidate_fwd_bwd,
-                    liger_fwd_bwd,
-                    liger_fwd_bwd / candidate_fwd_bwd,
+                    statistics.median(current_training_ratios),
+                    liger_exact_backward,
+                    liger_exact_backward_speedup,
+                    liger_exact_fwd_bwd,
+                    statistics.median(liger_exact_training_ratios),
+                    liger_upstream_fwd_bwd,
+                    statistics.median(liger_upstream_training_ratios),
                 )
             )
 
@@ -955,26 +1077,35 @@ def evaluate_reports(
                         label,
                     )
 
-            current_training_speedup = current_fwd_bwd / candidate_fwd_bwd
-            liger_training_speedup = liger_fwd_bwd / candidate_fwd_bwd
-            current_lower = _paired_speedup_lower_bound(
+            current_trial_ratios = _paired_speedups(
                 raw_timings[("current", "fwd_bwd")]["trial_medians"],
                 raw_timings[(candidate, "fwd_bwd")]["trial_medians"],
             )
-            liger_lower = _paired_speedup_lower_bound(
-                raw_timings[("liger", "fwd_bwd")]["trial_medians"],
+            liger_exact_trial_ratios = _paired_speedups(
+                raw_timings[("liger_exact", "fwd_bwd")]["trial_medians"],
                 raw_timings[(candidate, "fwd_bwd")]["trial_medians"],
             )
-            current_trial_ratios = [
-                raw_timings[("current", "fwd_bwd")]["trial_medians"][trial]
-                / raw_timings[(candidate, "fwd_bwd")]["trial_medians"][trial]
-                for trial in range(FULL_TRIAL_COUNT)
-            ]
-            liger_trial_ratios = [
-                raw_timings[("liger", "fwd_bwd")]["trial_medians"][trial]
-                / raw_timings[(candidate, "fwd_bwd")]["trial_medians"][trial]
-                for trial in range(FULL_TRIAL_COUNT)
-            ]
+            liger_upstream_trial_ratios = _paired_speedups(
+                raw_timings[("liger_upstream", "fwd_bwd")]["trial_medians"],
+                raw_timings[(candidate, "fwd_bwd")]["trial_medians"],
+            )
+            if (
+                current_trial_ratios is None
+                or liger_exact_trial_ratios is None
+                or liger_upstream_trial_ratios is None
+            ):
+                problems.append(f"{label}: paired training trial matrix is incomplete")
+                continue
+            current_training_speedup = statistics.median(current_trial_ratios)
+            liger_exact_training_speedup = statistics.median(
+                liger_exact_trial_ratios
+            )
+            liger_upstream_training_speedup = statistics.median(
+                liger_upstream_trial_ratios
+            )
+            current_minimum = min(current_trial_ratios)
+            liger_exact_minimum = min(liger_exact_trial_ratios)
+            liger_exact_backward_minimum = min(liger_exact_backward_ratios)
             cell_reasons = []
             if classification != "WIN" or speedup < 1.10:
                 cell_reasons.append(
@@ -988,25 +1119,39 @@ def evaluate_reports(
                 cell_reasons.append(
                     f"current/candidate training speedup is {current_training_speedup:.3f}"
                 )
-            if liger_training_speedup < PRACTICAL_TRAINING_MARGIN:
+            if liger_exact_backward_speedup < PRACTICAL_TRAINING_MARGIN:
                 cell_reasons.append(
-                    f"Liger/candidate training speedup is {liger_training_speedup:.3f}"
+                    "liger_exact/candidate backward speedup is "
+                    f"{liger_exact_backward_speedup:.3f}"
                 )
-            if current_lower is None or current_lower <= 1.0:
+            if liger_exact_training_speedup < PRACTICAL_TRAINING_MARGIN:
                 cell_reasons.append(
-                    "paired current training lower bound does not exceed 1.0"
+                    "liger_exact/candidate training speedup is "
+                    f"{liger_exact_training_speedup:.3f}"
                 )
-            if liger_lower is None or liger_lower <= 1.0:
+            if current_minimum <= 1.0:
                 cell_reasons.append(
-                    "paired Liger training lower bound does not exceed 1.0"
+                    "minimum paired current training speedup does not exceed 1.0"
+                )
+            if liger_exact_minimum <= 1.0:
+                cell_reasons.append(
+                    "minimum paired liger_exact training speedup does not exceed 1.0"
+                )
+            if liger_exact_backward_minimum <= 1.0:
+                cell_reasons.append(
+                    "minimum paired liger_exact backward speedup does not exceed 1.0"
                 )
             if not all(ratio > 1.0 for ratio in current_trial_ratios):
                 cell_reasons.append(
                     f"candidate did not beat current in all {FULL_TRIAL_COUNT} trials"
                 )
-            if not all(ratio > 1.0 for ratio in liger_trial_ratios):
+            if not all(ratio > 1.0 for ratio in liger_exact_trial_ratios):
                 cell_reasons.append(
-                    f"candidate did not beat Liger in all {FULL_TRIAL_COUNT} trials"
+                    f"candidate did not beat liger_exact in all {FULL_TRIAL_COUNT} training trials"
+                )
+            if not all(ratio > 1.0 for ratio in liger_exact_backward_ratios):
+                cell_reasons.append(
+                    f"candidate did not beat liger_exact in all {FULL_TRIAL_COUNT} backward trials"
                 )
             if (
                 isinstance(current_workspace, int)
@@ -1028,15 +1173,27 @@ def evaluate_reports(
                     ),
                     "reasons": cell_reasons,
                     "backward_speedup_vs_current": speedup,
+                    "backward_speedup_vs_liger_exact": liger_exact_backward_speedup,
                     "training_speedup_vs_current": current_training_speedup,
-                    "training_speedup_vs_liger": liger_training_speedup,
-                    "paired_current_lower_bound": current_lower,
-                    "paired_liger_lower_bound": liger_lower,
+                    "training_speedup_vs_liger_exact": liger_exact_training_speedup,
+                    "training_speedup_vs_liger_upstream_observational": (
+                        liger_upstream_training_speedup
+                    ),
+                    "minimum_paired_current_training_speedup": current_minimum,
+                    "minimum_paired_liger_exact_training_speedup": (
+                        liger_exact_minimum
+                    ),
+                    "minimum_paired_liger_exact_backward_speedup": (
+                        liger_exact_backward_minimum
+                    ),
                     "all_current_trials_win": all(
                         ratio > 1.0 for ratio in current_trial_ratios
                     ),
-                    "all_liger_trials_win": all(
-                        ratio > 1.0 for ratio in liger_trial_ratios
+                    "all_liger_exact_training_trials_win": all(
+                        ratio > 1.0 for ratio in liger_exact_trial_ratios
+                    ),
+                    "all_liger_exact_backward_trials_win": all(
+                        ratio > 1.0 for ratio in liger_exact_backward_ratios
                     ),
                 }
             )
@@ -1044,22 +1201,29 @@ def evaluate_reports(
             if shape in ANCHOR_SHAPES:
                 anchor_speedups.append(speedup)
                 anchor_current_training_speedups.append(current_training_speedup)
-                anchor_liger_training_speedups.append(liger_training_speedup)
-                if current_lower is None or liger_lower is None:
-                    problems.append(
-                        f"{label}: {FULL_TRIAL_COUNT} paired training trials are required"
+                anchor_liger_training_speedups.append(liger_exact_training_speedup)
+                if (
+                    current_training_speedup < PRACTICAL_TRAINING_MARGIN
+                    or current_minimum <= 1.0
+                ):
+                    training_confidence_failures.append(
+                        f"{label}: current/candidate training speedup="
+                        f"{current_training_speedup:.3f}, minimum paired trial="
+                        f"{current_minimum:.3f}"
                     )
-                else:
-                    if current_training_speedup < PRACTICAL_TRAINING_MARGIN or current_lower <= 1.0:
-                        training_confidence_failures.append(
-                            f"{label}: current/candidate training speedup={current_training_speedup:.3f}, "
-                            f"95% lower bound={current_lower:.3f}"
-                        )
-                    if liger_training_speedup < PRACTICAL_TRAINING_MARGIN or liger_lower <= 1.0:
-                        confidence_failures.append(
-                            f"{label}: Liger/candidate training speedup={liger_training_speedup:.3f}, "
-                            f"95% lower bound={liger_lower:.3f}"
-                        )
+                if (
+                    liger_exact_training_speedup < PRACTICAL_TRAINING_MARGIN
+                    or liger_exact_minimum <= 1.0
+                    or liger_exact_backward_speedup < PRACTICAL_TRAINING_MARGIN
+                    or liger_exact_backward_minimum <= 1.0
+                ):
+                    confidence_failures.append(
+                        f"{label}: liger_exact/candidate training speedup="
+                        f"{liger_exact_training_speedup:.3f}, minimum paired training="
+                        f"{liger_exact_minimum:.3f}, backward speedup="
+                        f"{liger_exact_backward_speedup:.3f}, minimum paired backward="
+                        f"{liger_exact_backward_minimum:.3f}"
+                    )
 
     if len(device_ids) > 1:
         problems.append("all dtype runs must use the same campaign device ID")
@@ -1123,9 +1287,11 @@ def evaluate_reports(
         "max_cv": max_cv,
         "practical_training_margin": PRACTICAL_TRAINING_MARGIN,
         "max_training_regression": MAX_TRAINING_REGRESSION,
-        "campaign_dispatch_hypotheses": CAMPAIGN_DISPATCH_HYPOTHESES,
         "max_campaign_attempts": MAX_CAMPAIGN_ATTEMPTS,
-        "familywise_sign_error_bound": FAMILYWISE_SIGN_ERROR_BOUND,
+        "statistical_interpretation": (
+            "paired trial ratios are descriptive repeated measurements; no trial "
+            "independence or family-wise probability is claimed"
+        ),
         "commits": sorted(commits),
         "trees": sorted(trees),
         "problems": problems,
@@ -1148,7 +1314,7 @@ def evaluate_reports(
             if anchor_current_training_speedups
             else None
         ),
-        "anchor_liger_training_speedup_floor": (
+        "anchor_liger_exact_training_speedup_floor": (
             min(anchor_liger_training_speedups)
             if anchor_liger_training_speedups
             else None

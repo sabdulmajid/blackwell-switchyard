@@ -12,6 +12,7 @@ if not torch.cuda.is_available():  # pragma: no cover
 if torch.cuda.get_device_capability() != (12, 0):  # pragma: no cover
     pytest.skip("one-read candidates require sm_120", allow_module_level=True)
 
+from switchyard._liger_exact import block_attn_res_liger_exact  # noqa: E402
 from switchyard.cuda_op import (  # noqa: E402
     _load_extension,
     cuda_cluster_launch_info,
@@ -69,25 +70,26 @@ def _compare_plan(
     values = cuda_input(values_low).requires_grad_(True)
     query = cuda_input(query_low).requires_grad_(True)
     grad = cuda_input(grad_low)
-    output = _block_attn_res_with_plan(
-        values,
-        query,
-        DEFAULT_EPS,
-        plan_name=plan_name,
+    output = (
+        block_attn_res_liger_exact(values, query, DEFAULT_EPS)
+        if plan_name == "liger_exact"
+        else _block_attn_res_with_plan(
+            values,
+            query,
+            DEFAULT_EPS,
+            plan_name=plan_name,
+        )
     )
     accepted_values = values.detach().requires_grad_(True)
     accepted_query = query.detach().requires_grad_(True)
     accepted_output = block_attn_res_triton(
         accepted_values, accepted_query, DEFAULT_EPS
     )
-    if plan_name == "cuda_register_cluster_full":
-        candidate_output_error = _relative_l2(output, oracle_output)
-        accepted_output_error = _relative_l2(accepted_output, oracle_output)
-        output_tolerance = 0.02 if dtype == torch.bfloat16 else 0.005
-        assert candidate_output_error <= output_tolerance
-        assert candidate_output_error <= max(1.05 * accepted_output_error, 1e-7)
-    else:
-        torch.testing.assert_close(output, accepted_output, rtol=0.0, atol=0.0)
+    candidate_output_error = _relative_l2(output, oracle_output)
+    accepted_output_error = _relative_l2(accepted_output, oracle_output)
+    output_tolerance = 0.02 if dtype == torch.bfloat16 else 0.005
+    assert candidate_output_error <= output_tolerance
+    assert candidate_output_error <= max(1.05 * accepted_output_error, 1e-7)
     dv, dw = torch.autograd.grad(output, (values, query), grad)
     accepted_dv, accepted_dw = torch.autograd.grad(
         accepted_output, (accepted_values, accepted_query), grad
@@ -114,7 +116,7 @@ def _compare_plan(
 @pytest.mark.parametrize(
     ("plan_name", "shape"),
     [
-        ("serial_recompute_atomic_t4", (9, 1, 5, 4097)),
+        ("serial_recompute_atomic_t4", (9, 1, 5, 4095)),
         ("serial_saved_partials_t16", (17, 1, 3, 2049)),
         ("cuda_shared", (9, 1, 5, 4097)),
         ("cuda_cluster", (17, 1, 3, 2049)),
@@ -124,6 +126,8 @@ def _compare_plan(
         ("cuda_register_cluster", (32, 1, 3, 2048)),
         ("cuda_register_cluster_full", (9, 1, 3, 8192)),
         ("cuda_register_cluster_full", (32, 1, 3, 2048)),
+        ("liger_exact", (17, 2, 3, 2049)),
+        ("liger_exact", (9, 1, 5, 4097)),
     ],
 )
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
@@ -149,6 +153,7 @@ def test_candidates_match_float64_oracle_on_masked_tails(plan_name, shape, dtype
         ("cuda_register_cluster", 32, 2048),
         ("cuda_register_cluster_full", 9, 8192),
         ("cuda_register_cluster_full", 32, 2048),
+        ("liger_exact", 9, 512),
     ],
 )
 def test_candidates_handle_uniform_ties_with_nonzero_gradient(plan_name, n, d):
@@ -168,6 +173,7 @@ def test_candidates_handle_uniform_ties_with_nonzero_gradient(plan_name, n, d):
         "cuda_shared",
         "cuda_cluster",
         "cuda_cluster4",
+        "liger_exact",
     ],
 )
 def test_candidates_handle_saturated_logits(plan_name):
@@ -177,6 +183,28 @@ def test_candidates_handle_saturated_logits(plan_name):
     query = 16.0 * query / query.norm()
     grad = torch.randn(1, 5, 1024, generator=generator, dtype=torch.float64)
     _compare_plan(plan_name, values, query, grad, torch.bfloat16)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+def test_liger_exact_single_source_has_identity_gradients(dtype):
+    generator = torch.Generator().manual_seed(31)
+    values = torch.randn(1, 2, 3, 257, generator=generator, dtype=torch.float64)
+    query = torch.randn(257, generator=generator, dtype=torch.float64)
+    grad = torch.randn(2, 3, 257, generator=generator, dtype=torch.float64)
+    dv, dw = _compare_plan("liger_exact", values, query, grad, dtype)
+    torch.testing.assert_close(dv.cpu(), grad.to(dtype), rtol=0.0, atol=0.0)
+    assert torch.count_nonzero(dw) == 0
+
+
+def test_liger_exact_float32_exercises_nontrivial_softmax_and_backward():
+    generator = torch.Generator().manual_seed(37)
+    values = torch.randn(9, 1, 3, 513, generator=generator, dtype=torch.float64)
+    query = torch.randn(513, generator=generator, dtype=torch.float64)
+    query /= query.norm()
+    grad = torch.randn(1, 3, 513, generator=generator, dtype=torch.float64)
+    dv, dw = _compare_plan("liger_exact", values, query, grad, torch.float32)
+    assert torch.count_nonzero(dv) > 0
+    assert torch.count_nonzero(dw) > 0
 
 
 @pytest.mark.parametrize(

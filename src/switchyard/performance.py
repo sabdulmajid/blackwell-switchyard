@@ -56,7 +56,13 @@ def forward_traffic_estimate(
     l2_to_dram_ratio: float = 4.15,
 ) -> ForwardTrafficEstimate:
     """Model the source passes of a forward implementation explicitly."""
-    if strategy not in {"resident", "tiled", "cuda_register_cluster"}:
+    if strategy not in {
+        "resident",
+        "tiled",
+        "cuda_register_cluster",
+        "liger_exact",
+        "liger_upstream",
+    }:
         raise ValueError(f"unknown forward strategy: {strategy}")
     if min(n, b, t, d, itemsize) <= 0:
         raise ValueError("shape and item size must be positive")
@@ -65,7 +71,13 @@ def forward_traffic_estimate(
     token_slab = b * t * d * itemsize
     source_stack = n * token_slab
     minimum = source_stack + token_slab
-    saved_state = 3 * n * b * t * 4 if saves_backward_coefficients else 0
+    saved_state = (
+        2 * n * b * t * 4
+        if strategy in {"liger_exact", "liger_upstream"}
+        else 3 * n * b * t * 4
+        if saves_backward_coefficients
+        else 0
+    )
     if strategy in {"resident", "cuda_register_cluster"}:
         logical = minimum
         dram = minimum
@@ -129,6 +141,8 @@ def backward_traffic_estimate(
         "cuda_cluster4",
         "cuda_register",
         "cuda_register_cluster",
+        "liger_exact",
+        "liger_upstream",
     }:
         raise ValueError(f"unknown backward strategy: {strategy}")
     if min(
@@ -178,7 +192,12 @@ def backward_traffic_estimate(
             "the two fp32 statistics transfers reach DRAM",
             "query-vector traffic is cache-resident and excluded",
         )
-    elif strategy in {"source_serial", "source_serial_saved"}:
+    elif strategy in {
+        "source_serial",
+        "source_serial_saved",
+        "liger_exact",
+        "liger_upstream",
+    }:
         # One CTA retains g while it visits all sources. Its immediate second
         # source pass is charged at the measured L2/DRAM latency ratio.
         logical = 3 * source_stack + token_slab
@@ -191,11 +210,18 @@ def backward_traffic_estimate(
             atomics = groups * d
         if strategy == "source_serial_saved":
             saved_state = 3 * n * b * t * 4
+        elif strategy in {"liger_exact", "liger_upstream"}:
+            saved_state = 2 * n * b * t * 4
+            atomics *= 2 if strategy == "liger_upstream" else 1
         assumptions = (
             f"the immediate second source pass is served by L2 at {l2_to_dram_ratio:.2f}x DRAM",
             "the output gradient remains resident within a token program",
             "query-vector traffic is cache-resident and excluded",
-            "atomic serialization cost is not represented by the byte estimate",
+            (
+                "unmodified Liger also loads an affine gain and computes its gradient"
+                if strategy == "liger_upstream"
+                else "atomic serialization cost is not represented by the byte estimate"
+            ),
         )
     elif strategy == "cuda_shared":
         logical = minimum

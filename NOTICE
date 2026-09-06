@@ -1,3 +1,9 @@
 Copyright 2026 Ayman Abdul-Majid
 
 Licensed under the Apache License, Version 2.0. See LICENSE.
+
+This product includes a modified benchmark comparator derived from the
+Liger-Kernel Attention Residuals operator.
+Copyright 2024 LinkedIn Corporation. All Rights Reserved.
+The original and modified comparator are available under the BSD 2-Clause
+License. See licenses/BSD-2-Clause-Liger-Kernel.txt.

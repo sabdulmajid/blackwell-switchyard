@@ -15,7 +15,7 @@ MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
-IMPLS = ["current", "cuda_cluster", "liger"]
+IMPLS = ["current", "cuda_cluster", "liger_exact", "liger_upstream"]
 EXPECTED_COMMIT = "a" * 40
 EXPECTED_TREE = "b" * 40
 EXPECTED_BRANCH = "codex/campaign"
@@ -81,6 +81,9 @@ def _kernels() -> dict:
         "total_kernels": 1,
         "total_cuda_us": 1.0,
         "by_name": {"test_kernel": {"launches_per_call": 1.0, "cuda_us_per_call": 1.0}},
+        "total_auxiliary_operations": 0,
+        "total_auxiliary_cuda_us": 0.0,
+        "auxiliary_by_name": {},
     }
 
 
@@ -99,7 +102,7 @@ def _memory() -> dict:
 def _report(*, quick: bool = False, shape_set: str = "full") -> dict:
     trial_count = 2 if quick else 15
     report = {
-        "schema_version": 3,
+        "schema_version": 4,
         "run_id": "20260905T200000Z",
         "campaign_attempt": 1,
         "experiment": "backward architecture selection",
@@ -137,7 +140,12 @@ def _report(*, quick: bool = False, shape_set: str = "full") -> dict:
             "device_id": EXPECTED_DEVICE_ID,
             "started_at_utc": "2026-09-05T19:59:59.500Z",
             "ended_at_utc": "2026-09-05T20:00:25.100Z",
+            "first_probe_at_utc": "2026-09-05T19:59:59.500Z",
+            "last_probe_at_utc": "2026-09-05T20:00:25.100Z",
             "samples": 500,
+            "probe_attempts": 500,
+            "max_probe_gap_seconds": 0.06,
+            "maximum_allowed_probe_gap_seconds": 0.25,
             "interval_seconds": 0.05,
             "duration_seconds": 25.6,
             "collision_detected": False,
@@ -164,7 +172,14 @@ def _report(*, quick: bool = False, shape_set: str = "full") -> dict:
             "query_seed": 1,
         },
         "comparators": {
-            "liger": {
+            "liger_exact": {
+                "source_sha256": MODULE.LIGER_EXACT_SOURCE_SHA256,
+                "source_path": "src/switchyard/_liger_exact.py",
+                "derived_from": f"Liger-Kernel@{MODULE.PINNED_LIGER_COMMIT}",
+                "license": "BSD-2-Clause",
+                "under_pinned_checkout": False,
+            },
+            "liger_upstream": {
                 "commit": MODULE.PINNED_LIGER_COMMIT,
                 "source_sha256": MODULE.PINNED_LIGER_SOURCE_SHA256,
                 "source_path": "src/liger_kernel/ops/attn_res.py",
@@ -222,6 +237,10 @@ def _report(*, quick: bool = False, shape_set: str = "full") -> dict:
                         "threads_per_block": 256,
                         "cluster_blocks": 2,
                     }
+                if name == "liger_exact":
+                    record["work_contract"] = MODULE.LIGER_EXACT_WORK_CONTRACT
+                elif name == "liger_upstream":
+                    record["work_contract"] = MODULE.LIGER_UPSTREAM_WORK_CONTRACT
                 expected_traffic = MODULE._expected_traffic_models(
                     name, shape, "bfloat16", record, []
                 )
@@ -294,7 +313,7 @@ def test_running_or_contaminated_report_cannot_be_reused():
 
 def test_report_with_wrong_source_or_zero_monitor_coverage_cannot_be_reused():
     report = _report()
-    report["comparators"]["liger"]["source_sha256"] = "wrong"
+    report["comparators"]["liger_upstream"]["source_sha256"] = "wrong"
     report["gpu_process_monitor"]["samples"] = 0
     assert _problems(report)
 
@@ -424,6 +443,9 @@ def test_environment_values_and_types_are_exact(field: str, value: object):
         ("gpu_postflight", "benchmark_process_context_count", 2),
         ("gpu_postflight", "foreign_compute_process_count_at_end", False),
         ("gpu_process_monitor", "samples", True),
+        ("gpu_process_monitor", "probe_attempts", True),
+        ("gpu_process_monitor", "max_probe_gap_seconds", True),
+        ("gpu_process_monitor", "maximum_allowed_probe_gap_seconds", True),
         ("gpu_process_monitor", "interval_seconds", 0.25),
         ("gpu_process_monitor", "duration_seconds", 25),
         ("gpu_process_monitor", "collision_detected", 0),
@@ -502,7 +524,7 @@ def test_command_provenance_must_have_the_exact_sanitized_shape(argv: list[str])
 
 def test_comparator_source_path_must_be_exact_and_relative():
     report = _report()
-    report["comparators"]["liger"]["source_path"] = "/mnt/Liger-Kernel/attn_res.py"
+    report["comparators"]["liger_upstream"]["source_path"] = "/mnt/Liger-Kernel/attn_res.py"
     assert _problems(report)
 
 
@@ -583,6 +605,10 @@ def test_monitor_timeline_must_cover_the_complete_report():
     report["gpu_process_monitor"]["ended_at_utc"] = "2026-09-05T20:00:00.050Z"
     report["gpu_process_monitor"]["duration_seconds"] = 0.05
     report["gpu_process_monitor"]["samples"] = 2
+    report["gpu_process_monitor"]["probe_attempts"] = 2
+    report["gpu_process_monitor"]["max_probe_gap_seconds"] = 0.05
+    report["gpu_process_monitor"]["first_probe_at_utc"] = "2026-09-05T20:00:00.000Z"
+    report["gpu_process_monitor"]["last_probe_at_utc"] = "2026-09-05T20:00:00.050Z"
     assert any("monitor" in problem for problem in _problems(report))
 
 

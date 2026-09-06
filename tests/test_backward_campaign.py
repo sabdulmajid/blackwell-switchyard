@@ -39,6 +39,10 @@ def test_campaign_preserves_per_attempt_guard_attestations():
     assert '"attempts": []' in SCRIPT
     assert 'document["attempts"].append(attempt)' in SCRIPT
     assert '"guard_attestations": guards' in SCRIPT
+    assert '"idle_activity_scope": os.environ["SWITCHYARD_GUARD_IDLE_ACTIVITY_SCOPE"]' in SCRIPT
+    assert '"process_scope": os.environ["SWITCHYARD_GUARD_PROCESS_SCOPE"]' in SCRIPT
+    assert '"watchdog_probe_count": watchdog["watchdog_probe_count"]' in SCRIPT
+    assert 'report.get("campaign_attempt") != int(sys.argv[2])' in SCRIPT
     assert 'key != "target_gpu_uuid"' in SCRIPT
     assert "tempfile.NamedTemporaryFile" in SCRIPT
     assert "os.fsync(handle.fileno())" in SCRIPT

@@ -48,6 +48,10 @@ from switchyard._backward_candidates import (  # noqa: E402
     _source_serial_launch,
     saved_forward_launch_config,
 )
+from switchyard._liger_exact import (  # noqa: E402
+    _liger_exact_bwd_kernel,
+    _liger_exact_fwd_kernel,
+)
 from switchyard.cuda_op import _load_extension  # noqa: E402
 from switchyard.training_plan import get_training_plan, plan_supports  # noqa: E402
 from switchyard.triton_op import (  # noqa: E402
@@ -149,9 +153,8 @@ INPUT_POINTER_TYPES = {
     "float32": "*fp32",
 }
 
-# These phases mirror the guarded campaign. Liger is a comparator rather than
-# a project TrainingPlan, so its separately pinned source is not part of this
-# repository-managed Triton matrix.
+# These phases mirror the guarded campaign. Comparator kernels use a recorded
+# spill policy because they are baselines, not promotion candidates.
 CAMPAIGN_CANDIDATE_PLAN_NAMES = (
     "serial_recompute_atomic_t4",
     "serial_saved_partials_t16",
@@ -186,7 +189,7 @@ class TritonCompilationSpec:
     function: object
     input_dtype: str
     signature: dict[str, str]
-    constants: dict[str, int | bool]
+    constants: dict[str, int | bool | float]
     num_warps: int
     num_stages: int
     require_spill_free: bool
@@ -321,10 +324,41 @@ def _current_apply_signature(dtype: str) -> dict[str, str]:
     }
 
 
+def _liger_exact_forward_signature(dtype: str) -> dict[str, str]:
+    pointer = INPUT_POINTER_TYPES[dtype]
+    return {
+        "values_ptr": pointer,
+        "query_ptr": pointer,
+        "output_ptr": pointer,
+        "alpha_ptr": "*fp32",
+        "rstd_ptr": "*fp32",
+        "n_src": "i32",
+        "n_tokens": "i32",
+        "D": "i32",
+        "eps": "fp32",
+    }
+
+
+def _liger_exact_backward_signature(dtype: str) -> dict[str, str]:
+    pointer = INPUT_POINTER_TYPES[dtype]
+    return {
+        "grad_output_ptr": pointer,
+        "values_ptr": pointer,
+        "query_ptr": pointer,
+        "alpha_ptr": "*fp32",
+        "rstd_ptr": "*fp32",
+        "grad_values_ptr": pointer,
+        "grad_query_ptr": "*fp32",
+        "n_src": "i32",
+        "n_tokens": "i32",
+        "D": "i32",
+    }
+
+
 def _spec_name(
     kernel_name: str,
     dtype: str,
-    constants: dict[str, int | bool],
+    constants: dict[str, int | bool | float],
     warps: int,
     stages: int,
 ) -> str:
@@ -349,7 +383,7 @@ def _make_spec(
     function: object,
     dtype: str,
     signature: dict[str, str],
-    constants: dict[str, int | bool],
+    constants: dict[str, int | bool | float],
     *,
     warps: int,
     stages: int = 1,
@@ -481,6 +515,36 @@ def triton_compilation_specs() -> list[TritonCompilationSpec]:
     for shape_set, dtype, plan_names in CAMPAIGN_PHASES:
         shapes = (*SHAPE_SETS[shape_set], *CORRECTNESS_ONLY_SHAPES)
         for shape in shapes:
+            block_n = next(bucket for bucket in (4, 8, 16, 32) if shape.n <= bucket)
+            block_d = triton.next_power_of_2(shape.d)
+            warps = 16 if block_d >= 8192 else 8 if block_d >= 2048 else 4
+            comparator_specs = (
+                _make_spec(
+                    "_liger_exact_fwd_kernel",
+                    _liger_exact_fwd_kernel,
+                    dtype,
+                    _liger_exact_forward_signature(dtype),
+                    {"BLOCK_D": block_d, "BLOCK_N": block_n},
+                    warps=warps,
+                ),
+                _make_spec(
+                    "_liger_exact_bwd_kernel",
+                    _liger_exact_bwd_kernel,
+                    dtype,
+                    _liger_exact_backward_signature(dtype),
+                    {"BLOCK_D": block_d, "BLOCK_N": block_n},
+                    warps=warps,
+                ),
+            )
+            for spec in comparator_specs:
+                key = (
+                    spec.kernel_name,
+                    spec.input_dtype,
+                    tuple(sorted(spec.constants.items())),
+                    spec.num_warps,
+                    spec.num_stages,
+                )
+                unique.setdefault(key, spec)
             for plan_name in plan_names:
                 plan = get_training_plan(plan_name)
                 supported, _ = plan_supports(

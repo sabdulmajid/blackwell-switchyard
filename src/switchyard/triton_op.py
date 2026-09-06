@@ -46,7 +46,7 @@ import triton.language as tl
 from torch.autograd.function import once_differentiable
 
 from .reference import DEFAULT_EPS
-from .training_plan import RESIDENT_TILE_MAX, TrainingPlan, get_training_plan
+from .training_plan import RESIDENT_TILE_MAX, TrainingPlan, get_training_plan, plan_supports
 
 __all__ = ["block_attn_res_triton", "block_attn_res_batched", "BlockAttnResTriton"]
 
@@ -601,6 +601,25 @@ class _BlockAttnResTriton(torch.autograd.Function):
     def forward(ctx, v: torch.Tensor, w: torch.Tensor, eps: float, plan_name: str):
         n, b, t, d = _validate_inputs(v, w, eps)
         plan = get_training_plan(plan_name)
+        if not plan.production:
+            properties = torch.cuda.get_device_properties(v.device)
+            supported, reason = plan_supports(
+                plan,
+                n,
+                b,
+                t,
+                d,
+                str(v.dtype).removeprefix("torch."),
+                optin_shared_bytes=int(
+                    getattr(properties, "shared_memory_per_block_optin", 0)
+                ),
+                compute_capability=torch.cuda.get_device_capability(v.device),
+            )
+            if not supported:
+                raise ValueError(
+                    f"training plan {plan.name!r} does not support "
+                    f"N={n}, B={b}, T={t}, D={d}, dtype={v.dtype}: {reason}"
+                )
 
         # The kernel walks tokens with a single stride, so B and T are flattened.
         # Requiring contiguity here keeps the indexing honest rather than

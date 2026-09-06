@@ -83,6 +83,20 @@ class TrainingPlan:
     rationale: str
 
     def __post_init__(self) -> None:
+        saved_required = {
+            "cuda_cluster",
+            "cuda_cluster4",
+            "cuda_register",
+            "cuda_register_cluster",
+        }
+        if self.backward.family in saved_required and (
+            self.forward.saved_state != "backward_coefficients"
+        ):
+            raise ValueError(f"{self.backward.family} requires saved backward coefficients")
+        if self.backward.family in {"auto", "cuda_shared"} and (
+            self.forward.family != "standard" or self.forward.saved_state != "none"
+        ):
+            raise ValueError(f"{self.backward.family} requires the standard recompute forward")
         if self.forward.family == "cuda_register_cluster" and (
             self.forward.saved_state != "backward_coefficients"
             or self.backward.family != "cuda_register_cluster"

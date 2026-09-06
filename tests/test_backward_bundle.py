@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
 import json
@@ -44,6 +45,20 @@ def test_compile_gate_accepts_only_clean_spill_free_resources():
     report = _compile_report(stack_bytes=8)
     problems = MODULE._compile_problems(report, *_compile_arguments(report))
     assert any("spills" in problem for problem in problems)
+
+
+def test_compile_gate_records_spills_only_for_production_baselines():
+    report = _compile_report()
+    comparator = copy.deepcopy(report["compilations"][0])
+    comparator.update(name="liger_exact_fwd_kernel_test", spill_policy="record")
+    comparator["resources"][0].update(
+        kernel="_liger_exact_fwd_kernel",
+        stack_bytes=16,
+    )
+    report["compilations"].insert(-1, comparator)
+    commit, source_hash, _contract = _compile_arguments(report)
+    problems = MODULE._compile_problems(report, commit, source_hash)
+    assert any("non-baseline" in problem for problem in problems)
 
 
 def test_compile_gate_rejects_unknown_nested_fields():
@@ -137,7 +152,7 @@ def _valid_bundle(monkeypatch):
             ],
         }
     payloads["manifest"] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "repository_commit": "abc",
         "repository_tree": "tree",
         "benchmark_branch": "codex/campaign",
@@ -149,6 +164,8 @@ def _valid_bundle(monkeypatch):
         "guard_attestations": [
             {
                 "attempt": 1,
+                "idle_activity_scope": "target_gpu",
+                "process_scope": "all_gpus",
                 "not_before": "2026-09-05T23:00:00-04:00",
                 "idle_started_at": "2026-09-05T23:00:00-04:00",
                 "launch_at": "2026-09-05T23:30:00-04:00",
@@ -156,6 +173,15 @@ def _valid_bundle(monkeypatch):
                 "idle_probe_count": 31,
                 "max_idle_gpu_utilization_percent": 0,
                 "max_idle_memory_mib": 2,
+                "max_idle_probe_gap_seconds": 60.1,
+                "max_global_compute_process_count": 0,
+                "max_non_target_gpu_utilization_percent": 100,
+                "max_non_target_memory_mib": 2,
+                "max_non_target_pcie_rx_kib_per_second": 0,
+                "max_non_target_pcie_tx_kib_per_second": 0,
+                "watchdog_probe_count": 100,
+                "max_watchdog_probe_gap_seconds": 0.3,
+                "maximum_allowed_watchdog_probe_gap_seconds": 1.0,
                 "wait_poll_seconds": 60,
                 "watchdog_seconds": 0.25,
                 "finalize_seconds": 1800,
@@ -201,6 +227,14 @@ def test_bundle_rejects_weakened_collision_guards(monkeypatch):
         "max_idle_gpu_utilization_percent": 1,
         "max_idle_memory_mib": 65,
         "gpu_count": 1,
+        "idle_activity_scope": "some_gpus",
+        "process_scope": "target_gpu",
+        "max_idle_probe_gap_seconds": 66,
+        "max_global_compute_process_count": 1,
+        "max_non_target_pcie_rx_kib_per_second": 1,
+        "watchdog_probe_count": 0,
+        "max_watchdog_probe_gap_seconds": 1.01,
+        "maximum_allowed_watchdog_probe_gap_seconds": 1.01,
     }
     for field, value in unsafe_values.items():
         prefix, by_path, arguments = _valid_bundle(monkeypatch)

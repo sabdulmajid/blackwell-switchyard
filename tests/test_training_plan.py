@@ -31,6 +31,38 @@ def test_forward_saved_state_is_atomic_contract():
     )
 
 
+@pytest.mark.parametrize(
+    "family",
+    ["cuda_cluster", "cuda_cluster4", "cuda_register", "cuda_register_cluster"],
+)
+def test_one_read_backward_requires_saved_coefficients(family):
+    with pytest.raises(ValueError, match="requires saved backward coefficients"):
+        from switchyard.training_plan import TrainingPlan
+
+        TrainingPlan(
+            name="invalid",
+            forward=ForwardPlan(),
+            backward=BackwardPlan(family, 1, "persistent_atomics"),
+            production=False,
+            rationale="invalid test plan",
+        )
+
+
+@pytest.mark.parametrize("family", ["auto", "cuda_shared"])
+def test_recompute_backward_rejects_saved_coefficients(family):
+    from switchyard.training_plan import TrainingPlan
+
+    reduction = "grouped_atomics"
+    with pytest.raises(ValueError, match="standard recompute forward"):
+        TrainingPlan(
+            name="invalid",
+            forward=ForwardPlan(saved_state="backward_coefficients"),
+            backward=BackwardPlan(family, 1, reduction),
+            production=False,
+            rationale="invalid test plan",
+        )
+
+
 @pytest.mark.parametrize("tokens", [0, 3, 6])
 def test_token_group_must_be_a_positive_power_of_two(tokens):
     with pytest.raises(ValueError, match="power of two"):

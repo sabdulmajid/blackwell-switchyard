@@ -20,7 +20,7 @@ CANDIDATE_PLAN = MODULE.get_training_plan(CANDIDATE).as_dict()
 
 
 def _trial_order(trial):
-    implementations = ["current", CANDIDATE, "liger"]
+    implementations = ["current", CANDIDATE, "liger_exact", "liger_upstream"]
     offset = (trial // 2) % len(implementations)
     order = implementations[offset:] + implementations[:offset]
     return list(reversed(order)) if trial % 2 else order
@@ -94,14 +94,14 @@ def _set_trial_latency(timing, trial_id, latency):
     )
 
 
-def _memory(shape, dtype, workspace=0):
+def _memory(shape, dtype, workspace=0, *, extra_resident=0):
     itemsize = 4 if dtype == "float32" else 2
     n, b, t, d = shape
     accounted = (n * b * t * d + b * t * d + d) * itemsize
     return {
-        "peak_allocated_bytes": 2 * accounted + workspace,
+        "peak_allocated_bytes": 2 * accounted + extra_resident + workspace,
         "workspace_bytes": workspace,
-        "resident_bytes": 2 * accounted,
+        "resident_bytes": 2 * accounted + extra_resident,
         "incremental_peak_bytes": accounted + workspace,
         "returned_bytes": 0,
         "accounted_output_bytes": accounted,
@@ -140,7 +140,13 @@ def _record(
             }
             for seed in (0, 1, 2)
         ],
-        "fwd_bwd_memory": _memory(shape, dtype),
+        "fwd_bwd_memory": _memory(
+            shape,
+            dtype,
+            extra_resident=(shape[3] * (4 if dtype == "float32" else 2))
+            if impl == "liger_upstream"
+            else 0,
+        ),
     }
     if impl == CANDIDATE:
         itemsize = 4 if dtype == "float32" else 2
@@ -205,6 +211,10 @@ def _record(
                 },
             }
         )
+    if impl == "liger_exact":
+        record["work_contract"] = MODULE.LIGER_EXACT_WORK_CONTRACT
+    elif impl == "liger_upstream":
+        record["work_contract"] = MODULE.LIGER_UPSTREAM_WORK_CONTRACT
     return record
 
 
@@ -222,16 +232,22 @@ def _report(dtype, *, candidate_ms=0.8, candidate_fwd_bwd=None, ok=True, dirty=F
                     ok=ok,
                     fwd_bwd_ms=candidate_fwd_bwd,
                 ),
-                _record("liger", shape, 0.9, dtype=dtype),
+                _record("liger_exact", shape, 0.9, dtype=dtype),
+                _record("liger_upstream", shape, 0.95, dtype=dtype),
             ]
         )
     return {
         "dtype": dtype,
-        "schema_version": 3,
+        "schema_version": 4,
         "run_id": "20260905T200000Z" if dtype == "bfloat16" else "20260905T200001Z",
         "run_status": "complete",
         "shape_set": "full",
-        "selected_implementations": ["current", CANDIDATE, "liger"],
+        "selected_implementations": [
+            "current",
+            CANDIDATE,
+            "liger_exact",
+            "liger_upstream",
+        ],
         "candidate_reachable_from_production": False,
         "correctness_seeds": [0, 1, 2],
         "gpu_preflight": {
@@ -245,7 +261,12 @@ def _report(dtype, *, candidate_ms=0.8, candidate_fwd_bwd=None, ok=True, dirty=F
         },
         "gpu_process_monitor": {
             "device_id": "device-0123456789abcdef",
+            "first_probe_at_utc": "2026-09-05T20:00:00.000Z",
+            "last_probe_at_utc": "2026-09-05T20:00:25.000Z",
             "samples": 100,
+            "probe_attempts": 100,
+            "max_probe_gap_seconds": 0.06,
+            "maximum_allowed_probe_gap_seconds": 0.25,
             "interval_seconds": 0.25,
             "duration_seconds": 25.0,
             "collision_detected": False,
@@ -263,7 +284,14 @@ def _report(dtype, *, candidate_ms=0.8, candidate_fwd_bwd=None, ok=True, dirty=F
             "argv": [],
         },
         "comparators": {
-            "liger": {
+            "liger_exact": {
+                "source_path": "src/switchyard/_liger_exact.py",
+                "source_sha256": MODULE.LIGER_EXACT_SOURCE_SHA256,
+                "derived_from": f"Liger-Kernel@{MODULE.PINNED_LIGER_COMMIT}",
+                "license": "BSD-2-Clause",
+                "under_pinned_checkout": False,
+            },
+            "liger_upstream": {
                 "commit": MODULE.PINNED_LIGER_COMMIT,
                 "worktree_dirty": False,
                 "under_pinned_checkout": True,
@@ -296,10 +324,16 @@ def _report(dtype, *, candidate_ms=0.8, candidate_fwd_bwd=None, ok=True, dirty=F
                         "impl": impl,
                         "seed": seed,
                         "correctness": {
-                            name: {"ok": True} for name in ("output", "dv", "dw")
+                            name: {"ok": True, "rel_l2": 1e-3}
+                            for name in ("output", "dv", "dw")
                         },
                     }
-                    for impl in ("current", CANDIDATE, "liger")
+                    for impl in (
+                        "current",
+                        CANDIDATE,
+                        "liger_exact",
+                        "liger_upstream",
+                    )
                     for seed in (0, 1, 2)
                 ],
             }
@@ -318,7 +352,12 @@ def _complete_register_cluster_full_reports():
     reports = _complete_reports()
     for report in reports:
         dtype = report["dtype"]
-        report["selected_implementations"] = ["current", candidate, "liger"]
+        report["selected_implementations"] = [
+            "current",
+            candidate,
+            "liger_exact",
+            "liger_upstream",
+        ]
         for schedule in report["execution_order"]:
             for trials in schedule["metrics"].values():
                 for trial in trials:
@@ -564,12 +603,32 @@ def test_correctness_failure_rejects_candidate():
 def test_comparator_failure_requests_new_data_instead_of_rejecting_candidate():
     reports = _complete_reports()
     for report in reports:
-        liger = next(record for record in report["results"] if record["impl"] == "liger")
-        liger["correctness"]["dw"]["ok"] = False
+        liger_exact = next(
+            record for record in report["results"] if record["impl"] == "liger_exact"
+        )
+        liger_exact["correctness"]["dw"]["ok"] = False
     decision = MODULE.evaluate_reports(reports, candidate=CANDIDATE)
     assert decision["status"] == "MORE_DATA"
     assert not decision["correctness_failures"]
     assert any("comparator correctness" in problem for problem in decision["problems"])
+
+
+def test_numerically_degraded_exact_comparator_requests_new_data():
+    reports = _complete_reports()
+    for report in reports:
+        for record in report["results"]:
+            if record["impl"] != "liger_exact":
+                continue
+            record["correctness"]["dw"]["rel_l2"] = 0.01
+            for item in record["correctness_by_seed"]:
+                item["report"]["dw"]["rel_l2"] = 0.01
+        for case in report["correctness_only"]:
+            for item in case["implementations"]:
+                if item["impl"] == "liger_exact":
+                    item["correctness"]["dw"]["rel_l2"] = 0.01
+    decision = MODULE.evaluate_reports(reports, candidate=CANDIDATE)
+    assert decision["status"] == "MORE_DATA"
+    assert any("liger_exact" in problem for problem in decision["problems"])
 
 
 def test_candidate_without_material_wins_is_dropped():
@@ -628,15 +687,17 @@ def test_dirty_or_unstable_measurements_cannot_promote():
     assert decision["eligible_dispatches"] == []
 
 
-def test_campaign_wide_sign_gate_controls_familywise_error():
-    assert MODULE.CAMPAIGN_DISPATCH_HYPOTHESES == 264
-    assert MODULE.MAX_CAMPAIGN_ATTEMPTS == 3
-    assert MODULE.FAMILYWISE_SIGN_ERROR_BOUND < 0.05
+def test_gate_makes_no_independence_or_familywise_probability_claim():
+    decision = MODULE.evaluate_reports(_complete_reports(), candidate=CANDIDATE)
+    interpretation = decision["statistical_interpretation"]
+    assert "no trial independence" in interpretation
+    assert "no" in interpretation and "family-wise probability" in interpretation
+    assert decision["max_campaign_attempts"] == 3
 
 
 def test_unbalanced_trial_order_cannot_promote():
     reports = _complete_reports()
-    fixed_order = ["current", CANDIDATE, "liger"]
+    fixed_order = ["current", CANDIDATE, "liger_exact", "liger_upstream"]
     for report in reports:
         for shape_schedule in report["execution_order"]:
             for trials in shape_schedule["metrics"].values():
@@ -670,8 +731,8 @@ def test_one_losing_training_trial_blocks_that_dispatch_cell():
         and tuple(item["shape"].values()) == shape
     )
     assert cell["status"] == "FALLBACK"
-    assert cell["all_liger_trials_win"] is False
-    assert any("all 15 trials" in reason for reason in cell["reasons"])
+    assert cell["all_liger_exact_training_trials_win"] is False
+    assert any("all 15 training trials" in reason for reason in cell["reasons"])
 
 
 def test_incomplete_memory_evidence_cannot_promote():
@@ -725,16 +786,18 @@ def test_faster_backward_cannot_hide_slower_complete_training():
 def test_missing_commit_or_liger_provenance_cannot_promote():
     reports = _complete_reports()
     reports[1]["provenance"].pop("repository_commit")
-    reports[0]["comparators"].pop("liger")
+    reports[0]["comparators"].pop("liger_exact")
     decision = MODULE.evaluate_reports(reports, candidate=CANDIDATE)
     assert decision["status"] == "MORE_DATA"
     assert any("nonempty repository commit" in problem for problem in decision["problems"])
-    assert any("Liger source provenance" in problem for problem in decision["problems"])
+    assert any(
+        "exact-contract Liger provenance" in problem for problem in decision["problems"]
+    )
 
 
 def test_wrong_liger_source_hash_or_empty_monitor_cannot_promote():
     reports = _complete_reports()
-    reports[0]["comparators"]["liger"]["source_sha256"] = "wrong"
+    reports[0]["comparators"]["liger_upstream"]["source_sha256"] = "wrong"
     reports[1]["gpu_process_monitor"]["samples"] = 0
     decision = MODULE.evaluate_reports(reports, candidate=CANDIDATE)
     assert decision["status"] == "MORE_DATA"

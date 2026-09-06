@@ -36,7 +36,7 @@ def test_benchmark_registers_complete_private_plans():
         assert implementations[name]["plan"].production is False
 
 
-def test_trial_summary_preserves_independent_trial_medians():
+def test_trial_summary_preserves_paired_trial_medians():
     trials = [
         {"samples_ms": [float(index), float(index + 2)]}
         for index in range(1, 6)

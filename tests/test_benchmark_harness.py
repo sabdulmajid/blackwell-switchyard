@@ -44,6 +44,10 @@ def test_gpu_process_monitor_records_a_transient_competitor(monkeypatch):
     assert report["device_id"] == "device-0123456789abcdef"
     assert report["started_at_utc"].endswith("Z")
     assert report["ended_at_utc"].endswith("Z")
+    assert report["first_probe_at_utc"].endswith("Z")
+    assert report["last_probe_at_utc"].endswith("Z")
+    assert report["probe_attempts"] == 2
+    assert 0 <= report["max_probe_gap_seconds"] <= report["maximum_allowed_probe_gap_seconds"]
     assert report["collision_detected"]
     assert report["collision_events"][0]["foreign_process_count"] == 1
     assert not report["probe_errors"]
@@ -116,3 +120,54 @@ def test_repository_provenance_fails_closed_when_git_fails(monkeypatch, tmp_path
         pass
     else:
         raise AssertionError("repository provenance accepted a failed Git query")
+
+
+def test_kernel_profiler_separates_compute_and_auxiliary_device_operations(monkeypatch):
+    events = [
+        SimpleNamespace(
+            device_type=MODULE.torch.autograd.DeviceType.CUDA,
+            key="test_compute_kernel",
+            count=3,
+            self_device_time_total=30.0,
+        ),
+        SimpleNamespace(
+            device_type=MODULE.torch.autograd.DeviceType.CUDA,
+            key="Memcpy DtoD (Device -> Device)",
+            count=3,
+            self_device_time_total=6.0,
+        ),
+        SimpleNamespace(
+            device_type=MODULE.torch.autograd.DeviceType.CUDA,
+            key="Memset (Device)",
+            count=6,
+            self_device_time_total=3.0,
+        ),
+    ]
+
+    class FakeProfile:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def key_averages(self):
+            return events
+
+    monkeypatch.setattr(MODULE.torch.cuda, "synchronize", lambda _device: None)
+    monkeypatch.setattr(MODULE.torch.profiler, "profile", lambda **_kwargs: FakeProfile())
+
+    report = MODULE.count_kernels(lambda: None, device=object(), iters=3).as_dict()
+
+    assert report["total_kernels"] == 1
+    assert report["total_cuda_us"] == 10.0
+    assert set(report["by_name"]) == {"test_compute_kernel"}
+    assert report["total_auxiliary_operations"] == 3
+    assert report["total_auxiliary_cuda_us"] == 3.0
+    assert {
+        name: measurement["kind"]
+        for name, measurement in report["auxiliary_by_name"].items()
+    } == {
+        "Memcpy DtoD (Device -> Device)": "memcpy",
+        "Memset (Device)": "memset",
+    }

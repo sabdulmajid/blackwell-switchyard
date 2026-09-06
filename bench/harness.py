@@ -52,13 +52,19 @@ class GPUProcessMonitor:
         *,
         report_device_id: str | None = None,
         interval_seconds: float = 0.05,
+        max_probe_gap_seconds: float | None = None,
         abort_on_collision: bool = False,
     ):
         if interval_seconds <= 0:
             raise ValueError("monitor interval must be positive")
+        if max_probe_gap_seconds is None:
+            max_probe_gap_seconds = max(0.25, 5 * interval_seconds)
+        if max_probe_gap_seconds < interval_seconds:
+            raise ValueError("maximum monitor gap cannot be shorter than its interval")
         self._device_uuid = device_uuid
         self.report_device_id = report_device_id or device_uuid
         self.interval_seconds = interval_seconds
+        self.max_probe_gap_seconds = max_probe_gap_seconds
         self.abort_on_collision = abort_on_collision
         self.own_pid = os.getpid()
         self._stop = threading.Event()
@@ -67,6 +73,11 @@ class GPUProcessMonitor:
         self._pynvml = None
         self._lock = threading.Lock()
         self._samples = 0
+        self._probe_attempts = 0
+        self._maximum_observed_probe_gap_seconds = 0.0
+        self._last_probe_at: float | None = None
+        self._first_probe_at_utc: str | None = None
+        self._last_probe_at_utc: str | None = None
         self._collision_events: list[dict] = []
         self._probe_errors: list[str] = []
         self._foreign_active = False
@@ -81,6 +92,9 @@ class GPUProcessMonitor:
         )
         pynvml.nvmlInit()
         self._started_at = time.monotonic()
+        # Measure the launch-to-first-probe interval. A stalled first NVML
+        # query must not appear as a zero-gap attestation.
+        self._last_probe_at = self._started_at
         self._pynvml = pynvml
         self._handle = pynvml.nvmlDeviceGetHandleByUUID(self._device_uuid)
         self._poll_once()
@@ -88,10 +102,11 @@ class GPUProcessMonitor:
         self._thread.start()
 
     def _poll_once(self) -> None:
+        new_collision = False
+        probe_failed = False
         try:
             processes = self._pynvml.nvmlDeviceGetComputeRunningProcesses(self._handle)
             foreign_count = sum(process.pid != self.own_pid for process in processes)
-            new_collision = False
             with self._lock:
                 self._samples += 1
                 if foreign_count and not self._foreign_active:
@@ -103,15 +118,34 @@ class GPUProcessMonitor:
                         }
                     )
                 self._foreign_active = bool(foreign_count)
-            if new_collision and self.abort_on_collision:
-                os._exit(75)
         except Exception as exc:  # noqa: BLE001
+            probe_failed = True
             message = f"{type(exc).__name__}: {exc}"[:300]
             with self._lock:
                 if message not in self._probe_errors:
                     self._probe_errors.append(message)
-            if self.abort_on_collision:
-                os._exit(75)
+        probe_at = time.monotonic()
+        probe_at_utc = (
+            datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        )
+        with self._lock:
+            self._probe_attempts += 1
+            if self._last_probe_at is not None:
+                gap = probe_at - self._last_probe_at
+                self._maximum_observed_probe_gap_seconds = max(
+                    self._maximum_observed_probe_gap_seconds, gap
+                )
+            self._last_probe_at = probe_at
+            if self._first_probe_at_utc is None:
+                self._first_probe_at_utc = probe_at_utc
+            self._last_probe_at_utc = probe_at_utc
+            gap_exceeded = (
+                self._maximum_observed_probe_gap_seconds > self.max_probe_gap_seconds
+            )
+            if gap_exceeded and "maximum monitor probe gap exceeded" not in self._probe_errors:
+                self._probe_errors.append("maximum monitor probe gap exceeded")
+        if self.abort_on_collision and (new_collision or probe_failed or gap_exceeded):
+            os._exit(75)
 
     def _run(self) -> None:
         while not self._stop.wait(self.interval_seconds):
@@ -134,8 +168,13 @@ class GPUProcessMonitor:
                 "device_id": self.report_device_id,
                 "started_at_utc": self._started_at_utc,
                 "ended_at_utc": ended_at_utc,
+                "first_probe_at_utc": self._first_probe_at_utc,
+                "last_probe_at_utc": self._last_probe_at_utc,
                 "interval_seconds": self.interval_seconds,
                 "samples": self._samples,
+                "probe_attempts": self._probe_attempts,
+                "max_probe_gap_seconds": self._maximum_observed_probe_gap_seconds,
+                "maximum_allowed_probe_gap_seconds": self.max_probe_gap_seconds,
                 "duration_seconds": duration,
                 "collision_detected": bool(self._collision_events),
                 "collision_events": self._collision_events.copy(),
@@ -360,12 +399,18 @@ class KernelReport:
     total_kernels: int | None
     total_cuda_us: float | None
     by_name: dict = field(default_factory=dict)
+    total_auxiliary_operations: int | None = 0
+    total_auxiliary_cuda_us: float | None = 0.0
+    auxiliary_by_name: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {
             "total_kernels": self.total_kernels,
             "total_cuda_us": self.total_cuda_us,
             "by_name": self.by_name,
+            "total_auxiliary_operations": self.total_auxiliary_operations,
+            "total_auxiliary_cuda_us": self.total_auxiliary_cuda_us,
+            "auxiliary_by_name": self.auxiliary_by_name,
         }
 
 
@@ -390,23 +435,31 @@ def count_kernels(
         torch.cuda.synchronize(device)
 
     by_name: dict[str, dict] = {}
+    auxiliary_by_name: dict[str, dict] = {}
     total = 0
     total_us = 0.0
+    auxiliary_total = 0
+    auxiliary_total_us = 0.0
     for evt in prof.key_averages():
-        # device_type 1 == CUDA; count only real device kernels, not the
-        # CPU-side launch stubs or memcpy bookkeeping.
+        # Device type 1 is CUDA. CPU-side launch stubs do not pass this test.
         if evt.device_type != torch.autograd.DeviceType.CUDA:
-            continue
-        if evt.key.startswith(("Memcpy", "Memset", "cuda")):
             continue
         if evt.count == 0:
             continue
-        by_name[evt.key] = {
+        measurement = {
             "launches_per_call": evt.count / iters,
             "cuda_us_per_call": evt.self_device_time_total / iters,
         }
-        total += evt.count
-        total_us += evt.self_device_time_total
+        lowered = evt.key.lower()
+        if "memcpy" in lowered or "memset" in lowered:
+            measurement["kind"] = "memcpy" if "memcpy" in lowered else "memset"
+            auxiliary_by_name[evt.key] = measurement
+            auxiliary_total += evt.count
+            auxiliary_total_us += evt.self_device_time_total
+        else:
+            by_name[evt.key] = measurement
+            total += evt.count
+            total_us += evt.self_device_time_total
 
     # A call that ran cannot have launched zero kernels. When the profiler is
     # invoked many times in one process it sometimes stops returning CUDA
@@ -417,6 +470,9 @@ def count_kernels(
             total_kernels=None,
             total_cuda_us=None,
             by_name={"_unavailable": "profiler returned no CUDA events for this call"},
+            total_auxiliary_operations=None,
+            total_auxiliary_cuda_us=None,
+            auxiliary_by_name=auxiliary_by_name,
         )
 
     if total % iters:
@@ -429,12 +485,33 @@ def count_kernels(
                     "the count is not stable per call"
                 )
             },
+            total_auxiliary_operations=None,
+            total_auxiliary_cuda_us=None,
+            auxiliary_by_name=auxiliary_by_name,
+        )
+
+    if auxiliary_total % iters:
+        return KernelReport(
+            total_kernels=None,
+            total_cuda_us=None,
+            by_name={
+                "_unavailable": (
+                    f"profiler counted {auxiliary_total} auxiliary operations across "
+                    f"{iters} calls; the count is not stable per call"
+                )
+            },
+            total_auxiliary_operations=None,
+            total_auxiliary_cuda_us=None,
+            auxiliary_by_name=auxiliary_by_name,
         )
 
     return KernelReport(
         total_kernels=total // iters,
         total_cuda_us=total_us / iters,
         by_name=by_name,
+        total_auxiliary_operations=auxiliary_total // iters,
+        total_auxiliary_cuda_us=auxiliary_total_us / iters,
+        auxiliary_by_name=auxiliary_by_name,
     )
 
 

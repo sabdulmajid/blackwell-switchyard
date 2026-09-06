@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -15,6 +16,12 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
+from switchyard._benchmark_contracts import (  # noqa: E402
+    LIGER_EXACT_WORK_CONTRACT,
+    LIGER_UPSTREAM_WORK_CONTRACT,
+    PINNED_LIGER_COMMIT,
+    PINNED_LIGER_SOURCE_SHA256,
+)
 from switchyard.performance import (  # noqa: E402
     backward_traffic_estimate,
     forward_traffic_estimate,
@@ -24,9 +31,6 @@ from switchyard.training_plan import (  # noqa: E402
     get_training_plan,
     plan_supports,
 )
-
-PINNED_LIGER_COMMIT = "777799588a89d74c489ed995e3bf006427738e85"
-PINNED_LIGER_SOURCE_SHA256 = "57da6fed98f794088b2a56223e6c7ef9fc920824f0c483cb0ef0b5a343dab0b1"
 
 TOP_LEVEL_FIELDS = {
     "schema_version",
@@ -73,6 +77,7 @@ RECORD_FIELDS = {
     "register_launch_info",
     "register_cluster_launch_info",
     "register_cluster_forward_launch_info",
+    "work_contract",
 }
 ACCURACY_FIELDS = {
     "ok",
@@ -178,7 +183,14 @@ EXPECTED_MULTIPROCESSORS = 188
 EXPECTED_MAX_SHARED_BYTES = 101376
 ACCEPTED_STATUS = "accepted production dispatch"
 EXPERIMENTAL_STATUS = "experimental candidate; not reachable from production dispatch"
-LIGER_STATUS = "pinned third-party comparator; RMSNorm gain fixed to one"
+LIGER_EXACT_STATUS = "BSD-attributed exact-contract Liger-style promotion comparator"
+LIGER_UPSTREAM_STATUS = (
+    "pinned upstream Liger observational comparator; fixed-one gain and discarded gain "
+    "gradient are extra work"
+)
+LIGER_EXACT_SOURCE = REPO / "src" / "switchyard" / "_liger_exact.py"
+LIGER_EXACT_SOURCE_SHA256 = hashlib.sha256(LIGER_EXACT_SOURCE.read_bytes()).hexdigest()
+WORK_CONTRACT_FIELDS = set(LIGER_EXACT_WORK_CONTRACT)
 EXPERIMENTAL_IMPLEMENTATIONS = {
     "source_serial",
     "serial_recompute_atomic_t4",
@@ -214,8 +226,10 @@ EMPTY_DIFF_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b785
 def _expected_result_status(name: str) -> str | None:
     if name == "current":
         return ACCEPTED_STATUS
-    if name == "liger":
-        return LIGER_STATUS
+    if name == "liger_exact":
+        return LIGER_EXACT_STATUS
+    if name == "liger_upstream":
+        return LIGER_UPSTREAM_STATUS
     if name in EXPERIMENTAL_IMPLEMENTATIONS:
         return EXPERIMENTAL_STATUS
     return None
@@ -273,9 +287,9 @@ def _expected_methodology(*, quick: bool) -> dict[str, str]:
             + "; all raw samples and trial order stored"
         ),
         "statistics": (
-            "paired trial medians are independent observations; individual event "
-            "samples are not treated as independent; a dispatch cell must win every "
-            f"one of the {trial_count} trials against current and Liger"
+            "paired trial medians control point estimates; no independence or formal "
+            "family-wise probability is claimed; a dispatch cell must win every "
+            f"one of the {trial_count} trials against current and liger_exact"
         ),
         "cache": "L2 flushed after graph setup and before every timed region",
         "compilation": "excluded by warmup",
@@ -365,7 +379,7 @@ def _shape(value: object) -> tuple[int, int, int, int] | None:
 def _plan_support(
     name: str, shape: tuple[int, int, int, int], dtype: str
 ) -> tuple[bool, dict | None]:
-    if name in {"current", "liger"}:
+    if name in {"current", "liger_exact", "liger_upstream"}:
         return True, None
     try:
         plan = get_training_plan(name)
@@ -522,7 +536,15 @@ def _accuracy_complete(value: object, tolerances: dict[str, float]) -> bool:
 
 
 def _kernel_profile_complete(value: object) -> bool:
-    if not isinstance(value, dict) or set(value) != {"total_kernels", "total_cuda_us", "by_name"}:
+    fields = {
+        "total_kernels",
+        "total_cuda_us",
+        "by_name",
+        "total_auxiliary_operations",
+        "total_auxiliary_cuda_us",
+        "auxiliary_by_name",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
         return False
     total = value["total_kernels"]
     by_name = value["by_name"]
@@ -549,8 +571,46 @@ def _kernel_profile_complete(value: object) -> bool:
             return False
         launches += measurement["launches_per_call"]
         cuda_us.append(measurement["cuda_us_per_call"])
-    return math.isclose(launches, total, rel_tol=1e-9, abs_tol=1e-9) and math.isclose(
-        math.fsum(cuda_us), value["total_cuda_us"], rel_tol=1e-6, abs_tol=1e-6
+    auxiliary_total = value["total_auxiliary_operations"]
+    auxiliary_us = value["total_auxiliary_cuda_us"]
+    auxiliary_by_name = value["auxiliary_by_name"]
+    if (
+        isinstance(auxiliary_total, bool)
+        or not isinstance(auxiliary_total, int)
+        or auxiliary_total < 0
+        or not _finite_number(auxiliary_us)
+        or not isinstance(auxiliary_by_name, dict)
+        or (auxiliary_total == 0) != (not auxiliary_by_name)
+    ):
+        return False
+    auxiliary_launches = 0.0
+    auxiliary_times = []
+    for measurement in auxiliary_by_name.values():
+        if not isinstance(measurement, dict) or set(measurement) != {
+            "launches_per_call",
+            "cuda_us_per_call",
+            "kind",
+        }:
+            return False
+        if measurement["kind"] not in {"memcpy", "memset"}:
+            return False
+        if not _finite_number(
+            measurement["launches_per_call"], minimum=1e-12
+        ) or not _finite_number(measurement["cuda_us_per_call"], minimum=1e-12):
+            return False
+        auxiliary_launches += measurement["launches_per_call"]
+        auxiliary_times.append(measurement["cuda_us_per_call"])
+    return (
+        math.isclose(launches, total, rel_tol=1e-9, abs_tol=1e-9)
+        and math.isclose(
+            math.fsum(cuda_us), value["total_cuda_us"], rel_tol=1e-6, abs_tol=1e-6
+        )
+        and math.isclose(
+            auxiliary_launches, auxiliary_total, rel_tol=1e-9, abs_tol=1e-9
+        )
+        and math.isclose(
+            math.fsum(auxiliary_times), auxiliary_us, rel_tol=1e-6, abs_tol=1e-6
+        )
     )
 
 
@@ -599,6 +659,8 @@ def _expected_record_fields(
     )
     if name == "current" or has_plan:
         fields.update({"traffic_model", "forward_traffic_model"})
+    if name in {"liger_exact", "liger_upstream"}:
+        fields.update({"traffic_model", "forward_traffic_model", "work_contract"})
     if plan_family in {"cuda_cluster", "cuda_cluster4"}:
         fields.add("cluster_launch_info")
     elif plan_family == "cuda_register":
@@ -774,8 +836,14 @@ def _expected_traffic_models(
             itemsize=itemsize,
         ).as_dict()
         return _canonical_json(backward), _canonical_json(forward)
-    if name == "liger":
-        return None
+    if name in {"liger_exact", "liger_upstream"}:
+        backward = backward_traffic_estimate(
+            name, n, b, t, d, itemsize=itemsize
+        ).as_dict()
+        forward = forward_traffic_estimate(
+            name, n, b, t, d, itemsize=itemsize
+        ).as_dict()
+        return _canonical_json(backward), _canonical_json(forward)
 
     plan = get_training_plan(name)
     family = plan.backward.family
@@ -902,6 +970,12 @@ def report_completeness_problems(
             problems.append(f"{name} at {shape} has a non-exact result field set")
         if expected_status is None or record.get("status") != expected_status:
             problems.append(f"{name} at {shape} has an invalid result status")
+        expected_work_contract = {
+            "liger_exact": LIGER_EXACT_WORK_CONTRACT,
+            "liger_upstream": LIGER_UPSTREAM_WORK_CONTRACT,
+        }.get(name)
+        if expected_work_contract is not None and record.get("work_contract") != expected_work_contract:
+            problems.append(f"{name} at {shape} has an invalid work contract")
         skipped = record.get("skipped")
         if expected_plan is not None and record.get("training_plan") != expected_plan:
             problems.append(f"{name} at {shape} has the wrong training plan")
@@ -1126,7 +1200,20 @@ def _check_timing_schema(value: object, label: str, problems: list[str]) -> None
 def _check_kernel_schema(value: object, label: str, problems: list[str]) -> None:
     if not isinstance(value, dict):
         return
-    _only_fields(value, {"total_kernels", "total_cuda_us", "by_name", "error"}, label, problems)
+    _only_fields(
+        value,
+        {
+            "total_kernels",
+            "total_cuda_us",
+            "by_name",
+            "total_auxiliary_operations",
+            "total_auxiliary_cuda_us",
+            "auxiliary_by_name",
+            "error",
+        },
+        label,
+        problems,
+    )
     by_name = value.get("by_name", {})
     if isinstance(by_name, dict):
         for name, measurement in by_name.items():
@@ -1134,6 +1221,15 @@ def _check_kernel_schema(value: object, label: str, problems: list[str]) -> None
                 measurement,
                 {"launches_per_call", "cuda_us_per_call"},
                 f"{label}.by_name[{name!r}]",
+                problems,
+            )
+    auxiliary_by_name = value.get("auxiliary_by_name", {})
+    if isinstance(auxiliary_by_name, dict):
+        for name, measurement in auxiliary_by_name.items():
+            _only_fields(
+                measurement,
+                {"launches_per_call", "cuda_us_per_call", "kind"},
+                f"{label}.auxiliary_by_name[{name!r}]",
                 problems,
             )
 
@@ -1234,8 +1330,13 @@ def report_schema_problems(report: dict) -> list[str]:
             "device_id",
             "started_at_utc",
             "ended_at_utc",
+            "first_probe_at_utc",
+            "last_probe_at_utc",
             "interval_seconds",
             "samples",
+            "probe_attempts",
+            "max_probe_gap_seconds",
+            "maximum_allowed_probe_gap_seconds",
             "duration_seconds",
             "collision_detected",
             "collision_events",
@@ -1250,8 +1351,13 @@ def report_schema_problems(report: dict) -> list[str]:
             "device_id",
             "started_at_utc",
             "ended_at_utc",
+            "first_probe_at_utc",
+            "last_probe_at_utc",
             "interval_seconds",
             "samples",
+            "probe_attempts",
+            "max_probe_gap_seconds",
+            "maximum_allowed_probe_gap_seconds",
             "duration_seconds",
             "collision_detected",
             "collision_events",
@@ -1324,10 +1430,10 @@ def report_schema_problems(report: dict) -> list[str]:
             problems,
         )
     comparators = report.get("comparators")
-    _only_fields(comparators, {"liger"}, "comparators", problems)
+    _only_fields(comparators, {"liger_exact", "liger_upstream"}, "comparators", problems)
     if isinstance(comparators, dict):
         _only_fields(
-            comparators.get("liger"),
+            comparators.get("liger_upstream"),
             {
                 "commit",
                 "worktree_dirty",
@@ -1335,7 +1441,19 @@ def report_schema_problems(report: dict) -> list[str]:
                 "source_sha256",
                 "under_pinned_checkout",
             },
-            "comparators.liger",
+            "comparators.liger_upstream",
+            problems,
+        )
+        _only_fields(
+            comparators.get("liger_exact"),
+            {
+                "source_path",
+                "source_sha256",
+                "derived_from",
+                "license",
+                "under_pinned_checkout",
+            },
+            "comparators.liger_exact",
             problems,
         )
     _only_fields(report.get("tolerances"), {"output", "dv", "dw"}, "tolerances", problems)
@@ -1357,6 +1475,12 @@ def report_schema_problems(report: dict) -> list[str]:
             continue
         _only_fields(record.get("shape"), {"n", "b", "t", "d"}, f"{label}.shape", problems)
         _check_plan_schema(record.get("training_plan"), f"{label}.training_plan", problems)
+        _only_fields(
+            record.get("work_contract"),
+            WORK_CONTRACT_FIELDS,
+            f"{label}.work_contract",
+            problems,
+        )
         _check_accuracy_schema(record.get("correctness"), f"{label}.correctness", problems)
         correctness_by_seed = record.get("correctness_by_seed")
         if not isinstance(correctness_by_seed, list):
@@ -1511,7 +1635,7 @@ def validate_report(
         )
     )
     expected = {
-        "schema_version": 3,
+        "schema_version": 4,
         "run_status": "complete",
         "dtype": dtype,
         "shape_set": shape_set,
@@ -1624,7 +1748,8 @@ def validate_report(
     ):
         problems.append("command provenance is not the exact sanitized campaign command")
 
-    liger = _object(_object(report.get("comparators")).get("liger"))
+    comparators = _object(report.get("comparators"))
+    liger = _object(comparators.get("liger_upstream"))
     if (
         liger.get("commit") != PINNED_LIGER_COMMIT
         or liger.get("source_sha256") != PINNED_LIGER_SOURCE_SHA256
@@ -1633,6 +1758,15 @@ def validate_report(
         or liger.get("source_path") != "src/liger_kernel/ops/attn_res.py"
     ):
         problems.append("imported Liger source provenance is incomplete")
+    liger_exact = _object(comparators.get("liger_exact"))
+    if liger_exact != {
+        "source_path": "src/switchyard/_liger_exact.py",
+        "source_sha256": LIGER_EXACT_SOURCE_SHA256,
+        "derived_from": f"Liger-Kernel@{PINNED_LIGER_COMMIT}",
+        "license": "BSD-2-Clause",
+        "under_pinned_checkout": False,
+    }:
+        problems.append("exact-contract Liger-style source provenance is incomplete")
 
     preflight = _object(report.get("gpu_preflight"))
     postflight = _object(report.get("gpu_postflight"))
@@ -1673,6 +1807,8 @@ def validate_report(
     duration = monitor.get("duration_seconds")
     monitor_started = _parse_utc(monitor.get("started_at_utc"))
     monitor_ended = _parse_utc(monitor.get("ended_at_utc"))
+    first_probe = _parse_utc(monitor.get("first_probe_at_utc"))
+    last_probe = _parse_utc(monitor.get("last_probe_at_utc"))
     wall_duration = (
         (monitor_ended - monitor_started).total_seconds()
         if monitor_started is not None and monitor_ended is not None
@@ -1694,6 +1830,9 @@ def validate_report(
         and run_time <= monitor_ended
         and environment_time <= monitor_ended
         and postflight_time <= monitor_ended.replace(microsecond=999999)
+        and first_probe is not None
+        and last_probe is not None
+        and monitor_started <= first_probe <= last_probe <= monitor_ended
     )
     coverage_ok = (
         type(samples) is int
@@ -1705,6 +1844,17 @@ def validate_report(
         and math.isfinite(duration)
         and duration >= interval
         and samples >= max(2, int(duration / (2 * interval)))
+        and monitor.get("probe_attempts") == samples
+        and type(monitor.get("max_probe_gap_seconds")) is float
+        and math.isfinite(monitor["max_probe_gap_seconds"])
+        and 0 <= monitor["max_probe_gap_seconds"] <= 0.25
+        and type(monitor.get("maximum_allowed_probe_gap_seconds")) is float
+        and math.isclose(
+            monitor["maximum_allowed_probe_gap_seconds"],
+            0.25,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
     )
     if (
         monitor.get("device_id") != device_id

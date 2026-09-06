@@ -61,11 +61,23 @@ SOURCE_SERIAL = {
     (32, 2048, 16, True, True, 8, 1),
     (32, 4096, 16, True, True, 8, 1),
 }
+LIGER_EXACT = {
+    (8192, 4, 16, 1),
+    (4096, 8, 8, 1),
+    (8192, 8, 16, 1),
+    (2048, 16, 8, 1),
+    (4096, 16, 8, 1),
+    (8192, 16, 16, 1),
+    (2048, 32, 8, 1),
+    (4096, 32, 8, 1),
+}
 
 
 def test_matrix_covers_every_campaign_runtime_specialization():
     expected = {}
     for dtype in MODULE.INPUT_POINTER_TYPES:
+        expected[("_liger_exact_fwd_kernel", dtype)] = LIGER_EXACT
+        expected[("_liger_exact_bwd_kernel", dtype)] = LIGER_EXACT
         for kernel, configs in STANDARD_FORWARD.items():
             expected[(kernel, dtype)] = configs
         expected[("_bwd_resident", dtype)] = {
@@ -108,7 +120,7 @@ def test_matrix_covers_every_campaign_runtime_specialization():
     expected[("_reduce_dw_partials", "float32")] = {(8, 128, 4, 1)}
 
     assert _inventory() == expected
-    assert sum(map(len, expected.values())) == 90
+    assert sum(map(len, expected.values())) == 138
 
 
 def test_matrix_names_are_unique_sorted_and_repeatable():
@@ -116,7 +128,7 @@ def test_matrix_names_are_unique_sorted_and_repeatable():
     second = MODULE.triton_compilation_specs()
     first_names = [spec.name for spec in first]
     assert first_names == sorted(first_names)
-    assert len(first_names) == len(set(first_names)) == 90
+    assert len(first_names) == len(set(first_names)) == 138
     assert first_names == [spec.name for spec in second]
     assert "bwd_source_serial_grouped_bfloat16_bn8_bd4096_t4_saved0_partial0_w8_s1" in first_names
     assert "bwd_source_serial_grouped_float32_bn16_bd2048_t16_saved1_partial1_w8_s1" in first_names
@@ -180,3 +192,13 @@ def test_baseline_specializations_record_existing_spills(monkeypatch):
     record = MODULE._compile_triton(spec)
     assert record["spill_policy"] == "record"
     assert record["resources"] == [resource]
+
+
+def test_exact_contract_comparator_must_be_spill_free():
+    exact_specs = [
+        spec
+        for spec in MODULE.triton_compilation_specs()
+        if spec.kernel_name.startswith("_liger_exact_")
+    ]
+    assert exact_specs
+    assert all(spec.require_spill_free for spec in exact_specs)

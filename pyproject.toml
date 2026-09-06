@@ -9,7 +9,7 @@ description = "High-performance Block Attention Residuals for NVIDIA Blackwell G
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
-license-files = ["LICENSE", "NOTICE"]
+license-files = ["LICENSE", "NOTICE", "licenses/BSD-2-Clause-Liger-Kernel.txt"]
 authors = [{ name = "Ayman Abdul-Majid" }]
 keywords = ["cuda", "triton", "blackwell", "attention-residuals", "gpu", "kernel", "pytorch"]
 classifiers = [
