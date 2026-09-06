@@ -6,12 +6,12 @@
   },
   "gpu_visible": false,
   "provenance": {
-    "repository_commit": "e3be37805d752bdf02aead3b98fe371ab2684575",
+    "repository_commit": "da2adf4d10a8cedddd2bfcea572cc4a20b455f60",
     "worktree_clean": true,
     "torch": "2.9.0+cu128",
     "triton": "3.5.0",
     "nvcc": "Build cuda_12.8.r12.8/compiler.35583870_0",
-    "cuda_source_sha256": "a89730b2aec5e3e94695754da2ae1e9b9db7f78a8fca91d1b7f68cefb0854ecf"
+    "cuda_source_sha256": "1c81d1f050988bfeda0acdbc16462272a4b1911b3e3a596e5ef4a2e3fac1c0ae"
   },
   "plans": [
     {
@@ -97,6 +97,20 @@
       },
       "production": false,
       "rationale": "fixed-shape persistent CTA with packed register-resident sources"
+    },
+    {
+      "name": "cuda_register_cluster",
+      "forward": {
+        "family": "standard",
+        "saved_state": "backward_coefficients"
+      },
+      "backward": {
+        "family": "cuda_register_cluster",
+        "tokens_per_cta": 1,
+        "dw_reduction": "persistent_atomics"
+      },
+      "production": false,
+      "rationale": "shape-specialized register residency with only scalar DSM exchange"
     }
   ],
   "compilations": [
@@ -279,15 +293,51 @@
         "shared_backward_kernel": 2,
         "feature_cluster_backward_kernel_2block": 2,
         "feature_cluster_backward_kernel_4block": 2,
-        "register_backward_kernel": 2
+        "register_backward_kernel": 2,
+        "register_cluster_backward_kernel_bfloat16_n9_d8192_c4": 1,
+        "register_cluster_backward_kernel_bfloat16_n32_d2048_c2": 1,
+        "register_cluster_backward_kernel_float16_n9_d8192_c4": 1,
+        "register_cluster_backward_kernel_float16_n32_d2048_c2": 1
       },
       "register_limits": {
         "shared_backward_kernel": 64,
         "feature_cluster_backward_kernel_2block": 64,
         "feature_cluster_backward_kernel_4block": 80,
-        "register_backward_kernel": 128
+        "register_backward_kernel": 128,
+        "register_cluster_backward_kernel_bfloat16_n9_d8192_c4": 128,
+        "register_cluster_backward_kernel_bfloat16_n32_d2048_c2": 128,
+        "register_cluster_backward_kernel_float16_n9_d8192_c4": 128,
+        "register_cluster_backward_kernel_float16_n32_d2048_c2": 128
       },
       "resources": [
+        {
+          "kernel": "register_cluster_backward_kernel_bfloat16_n32_d2048_c2",
+          "registers": 128,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        },
+        {
+          "kernel": "register_cluster_backward_kernel_bfloat16_n9_d8192_c4",
+          "registers": 128,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        },
+        {
+          "kernel": "register_cluster_backward_kernel_float16_n32_d2048_c2",
+          "registers": 128,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        },
+        {
+          "kernel": "register_cluster_backward_kernel_float16_n9_d8192_c4",
+          "registers": 128,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0
+        },
         {
           "kernel": "register_backward_kernel",
           "registers": 128,
