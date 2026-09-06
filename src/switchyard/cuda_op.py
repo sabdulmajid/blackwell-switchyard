@@ -43,7 +43,7 @@ def cuda_shared_backward(
     grad_out: torch.Tensor,
     eps: float,
     *,
-    clustered: bool,
+    cluster_blocks: int,
     saved_state: tuple[torch.Tensor, ...] = (),
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return ``(dv, dw_fp32)`` from a one-read shared-memory candidate.
@@ -53,6 +53,9 @@ def cuda_shared_backward(
     recomputes those coefficients while its source values remain in shared
     memory.
     """
+    if cluster_blocks not in {1, 2, 4}:
+        raise ValueError("cluster_blocks must be 1, 2, or 4")
+    clustered = cluster_blocks > 1
     if clustered and len(saved_state) != 3:
         raise ValueError("clustered backward requires alpha, rstd, and norm coefficient")
     if not clustered and saved_state:
@@ -69,12 +72,14 @@ def cuda_shared_backward(
         saved_rstd,
         saved_norm,
         eps,
-        clustered,
+        cluster_blocks,
     )
     return dv, dw
 
 
-def cuda_cluster_launch_info(values: torch.Tensor) -> dict[str, int]:
+def cuda_cluster_launch_info(
+    values: torch.Tensor, *, cluster_blocks: int
+) -> dict[str, int]:
     """Return the runtime occupancy inputs for a feature-sharded cluster."""
     fields = (
         "active_clusters",
@@ -83,6 +88,40 @@ def cuda_cluster_launch_info(values: torch.Tensor) -> dict[str, int]:
         "max_shared_bytes",
         "multiprocessors",
         "threads_per_block",
+        "cluster_blocks",
     )
     values = values.contiguous()
-    return dict(zip(fields, _load_extension().cluster_launch_info(values), strict=True))
+    return dict(
+        zip(
+            fields,
+            _load_extension().cluster_launch_info(values, cluster_blocks),
+            strict=True,
+        )
+    )
+
+
+def cuda_register_backward(
+    values: torch.Tensor,
+    query: torch.Tensor,
+    grad_out: torch.Tensor,
+    *,
+    saved_state: tuple[torch.Tensor, ...],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return gradients from the fixed-shape packed-register candidate."""
+    if len(saved_state) != 3:
+        raise ValueError("register backward requires alpha, rstd, and norm coefficient")
+    dv, dw = _load_extension().register_backward(values, query, grad_out, *saved_state)
+    return dv, dw
+
+
+def cuda_register_launch_info(values: torch.Tensor) -> dict[str, int]:
+    """Return occupancy inputs for the fixed-shape register candidate."""
+    fields = (
+        "active_blocks",
+        "dynamic_shared_bytes",
+        "static_shared_bytes",
+        "multiprocessors",
+        "threads_per_block",
+    )
+    values = values.contiguous()
+    return dict(zip(fields, _load_extension().register_launch_info(values), strict=True))

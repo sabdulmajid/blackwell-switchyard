@@ -43,6 +43,7 @@ import math
 import torch
 import triton
 import triton.language as tl
+from torch.autograd.function import once_differentiable
 
 from .reference import DEFAULT_EPS
 from .training_plan import RESIDENT_TILE_MAX, TrainingPlan, get_training_plan
@@ -602,6 +603,7 @@ class _BlockAttnResTriton(torch.autograd.Function):
         return out
 
     @staticmethod
+    @once_differentiable
     def backward(ctx, grad_out):
         plan = get_training_plan(ctx.plan_name)
         v, w, *saved = ctx.saved_tensors
@@ -613,17 +615,31 @@ class _BlockAttnResTriton(torch.autograd.Function):
         n_tokens = b * t
 
         family = plan.backward.family
-        if family in {"cuda_shared", "cuda_cluster"}:
-            from .cuda_op import cuda_shared_backward
+        if family in {
+            "cuda_shared",
+            "cuda_cluster",
+            "cuda_cluster4",
+            "cuda_register",
+        }:
+            from .cuda_op import cuda_register_backward, cuda_shared_backward
 
-            dv, dw = cuda_shared_backward(
-                v,
-                w,
-                grad_out,
-                ctx.eps,
-                clustered=family == "cuda_cluster",
-                saved_state=tuple(saved),
-            )
+            if family == "cuda_register":
+                dv, dw = cuda_register_backward(
+                    v, w, grad_out, saved_state=tuple(saved)
+                )
+            else:
+                dv, dw = cuda_shared_backward(
+                    v,
+                    w,
+                    grad_out,
+                    ctx.eps,
+                    cluster_blocks={
+                        "cuda_shared": 1,
+                        "cuda_cluster": 2,
+                        "cuda_cluster4": 4,
+                    }[family],
+                    saved_state=tuple(saved),
+                )
             return dv, dw.to(w.dtype), None, None
 
         if family == "source_serial":
@@ -727,6 +743,20 @@ def _block_attn_res_cuda_cluster(
 ) -> torch.Tensor:
     """Run the private persistent feature-sharded cluster candidate."""
     return _block_attn_res_with_plan(v, w, eps, plan_name="cuda_cluster")
+
+
+def _block_attn_res_cuda_cluster4(
+    v: torch.Tensor, w: torch.Tensor, eps: float = DEFAULT_EPS
+) -> torch.Tensor:
+    """Run the private four-block feature-sharded cluster candidate."""
+    return _block_attn_res_with_plan(v, w, eps, plan_name="cuda_cluster4")
+
+
+def _block_attn_res_cuda_register(
+    v: torch.Tensor, w: torch.Tensor, eps: float = DEFAULT_EPS
+) -> torch.Tensor:
+    """Run the private packed-register persistent backward candidate."""
+    return _block_attn_res_with_plan(v, w, eps, plan_name="cuda_register")
 
 
 class BlockAttnResTriton(torch.nn.Module):

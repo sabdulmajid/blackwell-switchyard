@@ -65,6 +65,8 @@ def backward_traffic_estimate(
         "source_serial_saved",
         "cuda_shared",
         "cuda_cluster",
+        "cuda_cluster4",
+        "cuda_register",
     }:
         raise ValueError(f"unknown backward strategy: {strategy}")
     if min(
@@ -147,11 +149,20 @@ def backward_traffic_estimate(
         dram = minimum
         saved_state = 3 * n * b * t * 4
         atomics = min(b * t, persistent_clusters) * d
+        ownership = (
+            "one persistent block owns packed register-resident source pairs"
+            if strategy == "cuda_register"
+            else (
+                "four cluster blocks own disjoint feature shards"
+                if strategy == "cuda_cluster4"
+                else "two cluster blocks own disjoint feature shards"
+            )
+        )
         assumptions = (
-            "two cluster blocks own disjoint feature shards",
+            ownership,
             "every source and output-gradient element has one global reader",
             "FP32 forward coefficients are served from cache",
-            "one dw contribution is issued per persistent cluster and feature",
+            "one dw contribution is issued per persistent worker and feature",
         )
 
     return BackwardTrafficEstimate(

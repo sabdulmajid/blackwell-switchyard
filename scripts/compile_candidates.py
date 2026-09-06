@@ -49,11 +49,18 @@ TARGET = GPUTarget("cuda", 120, 32)
 CUOBJDUMP = Path(os.environ.get("CUDA_HOME", "/usr/local/cuda-12.8")) / "bin/cuobjdump"
 CUDA_INSTANCE_COUNTS = {
     "shared_backward_kernel": 2,
-    "feature_cluster_backward_kernel": 2,
+    "feature_cluster_backward_kernel_2block": 2,
+    "feature_cluster_backward_kernel_4block": 2,
+    "register_backward_kernel": 2,
 }
 CUDA_REGISTER_LIMITS = {
     "shared_backward_kernel": 64,
-    "feature_cluster_backward_kernel": 64,
+    "feature_cluster_backward_kernel_2block": 64,
+    # The four-block tile uses at most two blocks per SM because of shared
+    # memory. 80 registers still clears that occupancy limit on the target's
+    # 65,536-register SM while leaving eight registers of compiler headroom.
+    "feature_cluster_backward_kernel_4block": 80,
+    "register_backward_kernel": 128,
 }
 
 POINTER_SIGNATURE = {
@@ -118,6 +125,7 @@ def _resource_usage(binary: Path) -> list[dict[str, int | str]]:
         normalized_name = name
         for known_name in (
             "feature_cluster_backward_kernel",
+            "register_backward_kernel",
             "shared_backward_kernel",
             "_bwd_source_serial_grouped",
             "_reduce_dw_partials",
@@ -128,10 +136,14 @@ def _resource_usage(binary: Path) -> list[dict[str, int | str]]:
         ):
             if known_name in name:
                 normalized_name = known_name
+                if known_name == "feature_cluster_backward_kernel":
+                    cluster_blocks = 4 if "Li4E" in name else 2
+                    normalized_name = f"{known_name}_{cluster_blocks}block"
                 break
         records.append(
             {
                 "kernel": normalized_name,
+                "symbol": name,
                 "registers": int(registers),
                 "stack_bytes": int(stack),
                 "static_shared_bytes": int(shared),
@@ -161,7 +173,7 @@ def _compile_triton(
         binary.write(compiled.asm["cubin"])
         binary.flush()
         resources = _resource_usage(Path(binary.name))
-    if any(item["local_bytes"] for item in resources):
+    if any(item["local_bytes"] or item["stack_bytes"] for item in resources):
         raise RuntimeError(f"{name} has compiler-reported local storage: {resources}")
     return {
         "name": name,
@@ -178,7 +190,8 @@ def compile_all() -> dict:
     records = []
     for name, n, d, tokens, saved, partial, warps in (
         ("serial_recompute_atomic_t4_n9_d4096", 16, 4096, 4, False, False, 8),
-        ("serial_saved_partials_t16_n9_d8192", 16, 8192, 16, True, True, 16),
+        ("serial_saved_partials_t16_n9_d4096", 16, 4096, 16, True, True, 8),
+        ("serial_saved_partials_t16_n32_d4096", 32, 4096, 16, True, True, 8),
         ("serial_saved_partials_t16_n32_d2048", 32, 2048, 16, True, True, 8),
     ):
         records.append(
@@ -257,7 +270,7 @@ def compile_all() -> dict:
         limit = CUDA_REGISTER_LIMITS[item["kernel"]]
         if item["registers"] > limit:
             raise RuntimeError(
-                f"{item['kernel']} uses {item['registers']} registers; budget is {limit}"
+                f"{item['kernel']} uses {item['registers']} registers; budget is {limit}: {item}"
             )
     records.append(
         {
@@ -306,6 +319,8 @@ def compile_all() -> dict:
                 "serial_saved_partials_t16",
                 "cuda_shared",
                 "cuda_cluster",
+                "cuda_cluster4",
+                "cuda_register",
             )
         ],
         "compilations": records,
