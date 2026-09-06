@@ -27,6 +27,14 @@ def test_nvidia_smi_parsers_keep_physical_identity():
     assert MODULE._parse_compute_apps("GPU-b, 42\n") == [
         {"gpu_uuid": "GPU-b", "pid": 42}
     ]
+    activity = MODULE._parse_activity("0, 0, 2\n1, 0, 3\n")
+    assert activity[1] == {"utilization_percent": 0, "memory_used_mib": 3}
+    assert MODULE._is_idle_activity(activity, {0: "GPU-a", 1: "GPU-b"})
+    activity[0]["utilization_percent"] = 1
+    assert not MODULE._is_idle_activity(activity, {0: "GPU-a", 1: "GPU-b"})
+    activity[0] = {"utilization_percent": 0, "memory_used_mib": 65}
+    assert not MODULE._is_idle_activity(activity, {0: "GPU-a", 1: "GPU-b"})
+    assert not MODULE._is_idle_activity({0: activity[0]}, {0: "GPU-a", 1: "GPU-b"})
 
 
 def test_descendant_check_walks_process_tree_and_stops_cycles():
@@ -53,6 +61,15 @@ def test_inventory_parser_fails_closed(text):
 def test_compute_process_parser_fails_closed(text):
     with pytest.raises(ValueError):
         MODULE._parse_compute_apps(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["", "0, 0\n", "0, busy, 2\n", "0, 101, 2\n", "0, 0, 2\n0, 0, 2\n"],
+)
+def test_activity_parser_fails_closed(text):
+    with pytest.raises(ValueError):
+        MODULE._parse_activity(text)
 
 
 def test_state_recorder_resumes_attempt_count_without_process_data(tmp_path):
@@ -83,6 +100,8 @@ def test_runner_source_exports_idle_attestation_without_process_ids():
     assert "SWITCHYARD_GUARD_IDLE_STARTED_AT" in source
     assert "SWITCHYARD_GUARD_LAUNCH_AT" in source
     assert "SWITCHYARD_GUARD_IDLE_PROBE_COUNT" in source
+    assert "SWITCHYARD_GUARD_MAX_IDLE_GPU_UTILIZATION_PERCENT" in source
+    assert "SWITCHYARD_GUARD_MAX_IDLE_MEMORY_MIB" in source
     assert "SWITCHYARD_GUARD_GPU_COUNT" in source
     assert "SWITCHYARD_PUBLIC_DEVICE_ID" in source
 

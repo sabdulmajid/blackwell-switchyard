@@ -165,6 +165,8 @@ def _valid_bundle(monkeypatch):
                 "launch_at": "2026-09-05T23:30:00-04:00",
                 "idle_seconds": 1800,
                 "idle_probe_count": 31,
+                "max_idle_gpu_utilization_percent": 0,
+                "max_idle_memory_mib": 2,
                 "wait_poll_seconds": 60,
                 "watchdog_seconds": 0.25,
                 "finalize_seconds": 1800,
@@ -207,6 +209,8 @@ def test_bundle_rejects_weakened_collision_guards(monkeypatch):
         "wait_poll_seconds": MODULE.MIN_WAIT_POLL_SECONDS - 1,
         "watchdog_seconds": MODULE.MAX_WATCHDOG_SECONDS + 0.01,
         "finalize_seconds": MODULE.MIN_FINALIZE_SECONDS - 1,
+        "max_idle_gpu_utilization_percent": 1,
+        "max_idle_memory_mib": 65,
     }
     for field, value in unsafe_values.items():
         prefix, by_path, arguments = _valid_bundle(monkeypatch)

@@ -15,6 +15,8 @@ cd "$repo_dir"
 : "${SWITCHYARD_GUARD_IDLE_STARTED_AT:?the idle runner must attest idle start}"
 : "${SWITCHYARD_GUARD_LAUNCH_AT:?the idle runner must attest launch time}"
 : "${SWITCHYARD_GUARD_IDLE_PROBE_COUNT:?the idle runner must attest idle probes}"
+: "${SWITCHYARD_GUARD_MAX_IDLE_GPU_UTILIZATION_PERCENT:?the runner must attest idle utilization}"
+: "${SWITCHYARD_GUARD_MAX_IDLE_MEMORY_MIB:?the runner must attest idle memory}"
 : "${SWITCHYARD_GUARD_GPU_COUNT:?the idle runner must attest GPU inventory size}"
 : "${THIRD_PARTY_DIR:?set THIRD_PARTY_DIR to the pinned dependency directory}"
 : "${SWITCHYARD_TOOLCHAIN_DIR:?set SWITCHYARD_TOOLCHAIN_DIR to the local Python headers}"
@@ -229,6 +231,10 @@ attempt = {
     "launch_at": os.environ["SWITCHYARD_GUARD_LAUNCH_AT"],
     "idle_seconds": int(os.environ["SWITCHYARD_GUARD_IDLE_SECONDS"]),
     "idle_probe_count": int(os.environ["SWITCHYARD_GUARD_IDLE_PROBE_COUNT"]),
+    "max_idle_gpu_utilization_percent": int(
+        os.environ["SWITCHYARD_GUARD_MAX_IDLE_GPU_UTILIZATION_PERCENT"]
+    ),
+    "max_idle_memory_mib": int(os.environ["SWITCHYARD_GUARD_MAX_IDLE_MEMORY_MIB"]),
     "wait_poll_seconds": int(os.environ["SWITCHYARD_GUARD_WAIT_POLL_SECONDS"]),
     "watchdog_seconds": float(os.environ["SWITCHYARD_GUARD_WATCHDOG_SECONDS"]),
     "finalize_seconds": int(os.environ["SWITCHYARD_GUARD_FINALIZE_SECONDS"]),
@@ -286,6 +292,8 @@ if (
     or not 0 < attestation["watchdog_seconds"] <= 0.25
     or attestation["finalize_seconds"] < 1800
     or attestation["gpu_count"] < 1
+    or attestation["max_idle_gpu_utilization_percent"] != 0
+    or not 0 <= attestation["max_idle_memory_mib"] <= 64
     or attestation["device_id"] != os.environ["SWITCHYARD_PUBLIC_DEVICE_ID"]
     or attestation["target_gpu_uuid"] != os.environ["SWITCHYARD_TARGET_GPU_UUID"]
     or launch < not_before

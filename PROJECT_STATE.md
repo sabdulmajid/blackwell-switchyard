@@ -93,8 +93,10 @@ Ordered by how much the measurements say they are worth.
    uses a 50 ms sampled process monitor. Every reusable phase must contain the complete result,
    schedule, timing, profiler, memory, and correctness matrices. The validator reconstructs
    timing statistics and trial order from the raw samples. Public evidence uses an opaque
-   campaign device ID. It binds each reused phase to its guarded attempt. Production dispatch
-   is unchanged. GPU correctness, occupancy, and latency are still pending.
+   campaign device ID. It binds each reused phase to its guarded attempt. The launch guard
+   requires empty process tables, zero utilization, and at most 64 MiB of background memory
+   on every GPU for 30 minutes. Production dispatch is unchanged. GPU correctness, occupancy,
+   and latency are still pending.
 2. **Complete the batched training contract.** The current batched API does not return
    merge statistics and does not implement backward. The resident forward is useful, but
    it is not the complete paper schedule.

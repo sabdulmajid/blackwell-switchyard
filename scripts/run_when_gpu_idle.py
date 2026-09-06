@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Run one command after all GPUs have been idle for a sustained interval.
 
-The runner uses no GPU while it waits. It checks NVIDIA's process table at a
-low frequency. During the command, it monitors only the selected GPU. If an
-unrelated process appears there, it stops its own process group and waits for a
-new idle interval before the next bounded attempt.
+The runner uses no GPU while it waits. At a low frequency, it checks NVIDIA's
+process table, utilization, and allocated memory. During the command, it
+monitors only the selected GPU. If an unrelated process appears there, it stops
+its own process group and waits for a new idle interval before the next bounded
+attempt.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from datetime import datetime
 from pathlib import Path
 
 CPU_RECOVERY_EXIT = 74
+MAX_IDLE_MEMORY_MIB = 64
 PUBLIC_DEVICE_ID_PATTERN = re.compile(r"device-[0-9a-f]{16}")
 
 
@@ -59,6 +61,23 @@ def _parse_compute_apps(text: str) -> list[dict[str, str | int]]:
                 "pid": int(row[1].strip()),
             }
         )
+    return result
+
+
+def _parse_activity(text: str) -> dict[int, dict[str, int]]:
+    result: dict[int, dict[str, int]] = {}
+    for row in csv.reader(line for line in text.splitlines() if line.strip()):
+        if len(row) != 3 or any(not field.strip().isdigit() for field in row):
+            raise ValueError(f"malformed GPU activity row: {row!r}")
+        index, utilization, memory_used = (int(field.strip()) for field in row)
+        if index in result or not 0 <= utilization <= 100:
+            raise ValueError(f"invalid GPU activity row: {row!r}")
+        result[index] = {
+            "utilization_percent": utilization,
+            "memory_used_mib": memory_used,
+        }
+    if not result:
+        raise ValueError("nvidia-smi returned an empty GPU activity table")
     return result
 
 
@@ -110,6 +129,25 @@ def _compute_apps() -> list[dict[str, str | int]]:
             "--query-compute-apps=gpu_uuid,pid",
             "--format=csv,noheader,nounits",
         )
+    )
+
+
+def _activity() -> dict[int, dict[str, int]]:
+    return _parse_activity(
+        _smi(
+            "--query-gpu=index,utilization.gpu,memory.used",
+            "--format=csv,noheader,nounits",
+        )
+    )
+
+
+def _is_idle_activity(
+    activity: dict[int, dict[str, int]], inventory: dict[int, str]
+) -> bool:
+    return set(activity) == set(inventory) and all(
+        values["utilization_percent"] == 0
+        and values["memory_used_mib"] <= MAX_IDLE_MEMORY_MIB
+        for values in activity.values()
     )
 
 
@@ -375,21 +413,25 @@ def main() -> int:
     idle_since: float | None = None
     idle_since_wall: float | None = None
     idle_probe_count = 0
+    max_idle_memory_mib = 0
     while time.time() < deadline and attempt < args.max_attempts:
         try:
             apps = _compute_apps()
+            activity = _activity()
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             idle_since = None
             idle_since_wall = None
             idle_probe_count = 0
+            max_idle_memory_mib = 0
             recorder.write("wait_probe_failed", error=f"{type(exc).__name__}: {exc}"[:300])
             time.sleep(args.wait_poll_seconds)
             continue
 
-        if apps:
+        if apps or not _is_idle_activity(activity, inventory):
             idle_since = None
             idle_since_wall = None
             idle_probe_count = 0
+            max_idle_memory_mib = 0
             time.sleep(args.wait_poll_seconds)
             continue
         if idle_since is None:
@@ -397,6 +439,10 @@ def main() -> int:
             idle_since_wall = time.time()
             recorder.write("idle_grace_started")
         idle_probe_count += 1
+        max_idle_memory_mib = max(
+            max_idle_memory_mib,
+            *(values["memory_used_mib"] for values in activity.values()),
+        )
         elapsed = time.monotonic() - idle_since
         if elapsed < args.idle_seconds:
             time.sleep(min(args.wait_poll_seconds, args.idle_seconds - elapsed))
@@ -406,21 +452,28 @@ def main() -> int:
         # preflight as a second independent check.
         try:
             final_apps = _compute_apps()
+            final_activity = _activity()
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             idle_since = None
             idle_since_wall = None
             idle_probe_count = 0
+            max_idle_memory_mib = 0
             recorder.write("final_probe_failed", error=f"{type(exc).__name__}: {exc}"[:300])
             time.sleep(args.wait_poll_seconds)
             continue
-        if final_apps:
+        if final_apps or not _is_idle_activity(final_activity, inventory):
             idle_since = None
             idle_since_wall = None
             idle_probe_count = 0
+            max_idle_memory_mib = 0
             continue
 
         attempt += 1
         idle_probe_count += 1
+        max_idle_memory_mib = max(
+            max_idle_memory_mib,
+            *(values["memory_used_mib"] for values in final_activity.values()),
+        )
         launch_time = time.time()
         if idle_since_wall is None:
             recorder.write("failed", reason="idle wall-clock evidence is missing")
@@ -444,6 +497,8 @@ def main() -> int:
             launch_time
         ).astimezone().isoformat()
         environment["SWITCHYARD_GUARD_IDLE_PROBE_COUNT"] = str(idle_probe_count)
+        environment["SWITCHYARD_GUARD_MAX_IDLE_GPU_UTILIZATION_PERCENT"] = "0"
+        environment["SWITCHYARD_GUARD_MAX_IDLE_MEMORY_MIB"] = str(max_idle_memory_mib)
         environment["SWITCHYARD_GUARD_GPU_COUNT"] = str(len(inventory))
         if args.gpu_complete_marker is not None:
             args.gpu_complete_marker.unlink(missing_ok=True)
@@ -530,6 +585,7 @@ def main() -> int:
             idle_since = None
             idle_since_wall = None
             idle_probe_count = 0
+            max_idle_memory_mib = 0
             continue
         if deadline_reached:
             recorder.write("expired", attempts=attempt)
@@ -551,6 +607,7 @@ def main() -> int:
                 idle_since = None
                 idle_since_wall = None
                 idle_probe_count = 0
+                max_idle_memory_mib = 0
                 continue
             return recovery_code
         if return_code == 0:
@@ -580,6 +637,7 @@ def main() -> int:
                 idle_since = None
                 idle_since_wall = None
                 idle_probe_count = 0
+                max_idle_memory_mib = 0
                 continue
             return recovery_code
         if return_code == 75:
@@ -587,6 +645,7 @@ def main() -> int:
             idle_since = None
             idle_since_wall = None
             idle_probe_count = 0
+            max_idle_memory_mib = 0
             continue
         recorder.write("failed", attempt=attempt, return_code=return_code)
         return return_code or 1

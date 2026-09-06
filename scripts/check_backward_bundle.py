@@ -481,6 +481,8 @@ def validate_bundle(
         "launch_at",
         "idle_seconds",
         "idle_probe_count",
+        "max_idle_gpu_utilization_percent",
+        "max_idle_memory_mib",
         "wait_poll_seconds",
         "watchdog_seconds",
         "finalize_seconds",
@@ -535,6 +537,22 @@ def validate_bundle(
             problems.append(
                 f"manifest guard {index} idle_seconds must be at least {MIN_IDLE_SECONDS}"
             )
+        idle_utilization = guard["max_idle_gpu_utilization_percent"]
+        if isinstance(idle_utilization, bool) or not isinstance(idle_utilization, int):
+            problems.append(
+                f"manifest guard {index} max_idle_gpu_utilization_percent must be an integer"
+            )
+        elif idle_utilization != 0:
+            problems.append(
+                f"manifest guard {index} max_idle_gpu_utilization_percent must be zero"
+            )
+        idle_memory = guard["max_idle_memory_mib"]
+        if isinstance(idle_memory, bool) or not isinstance(idle_memory, int) or idle_memory < 0:
+            problems.append(
+                f"manifest guard {index} max_idle_memory_mib must be a nonnegative integer"
+            )
+        elif idle_memory > 64:
+            problems.append(f"manifest guard {index} max_idle_memory_mib exceeds 64 MiB")
         wait_poll = guard["wait_poll_seconds"]
         if isinstance(wait_poll, int | float) and not (
             MIN_WAIT_POLL_SECONDS <= wait_poll <= MAX_WAIT_POLL_SECONDS

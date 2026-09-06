@@ -237,8 +237,10 @@ must meet both checks.
 
 [`run_when_gpu_idle.py`](../scripts/run_when_gpu_idle.py) can wait for the shared host without
 using a GPU. The configured campaign does not trust an estimated finish time. It requires all
-GPUs to have no compute process at every 60-second sample for 30 minutes. It then makes only
-one GPU visible to the campaign.
+GPUs to have no compute process at every 60-second sample for 30 minutes. All GPUs must also
+stay at zero utilization and use no more than 64 MiB of background memory. A final process and
+activity query closes the launch race. The runner then makes only one GPU visible to the
+campaign.
 
 The benchmark samples the selected GPU every 0.05 seconds while it runs. It exits immediately
 if a sample sees an unrelated process. The outer runner also samples every 0.25 seconds. It stops
