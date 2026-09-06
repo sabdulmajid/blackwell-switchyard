@@ -52,6 +52,10 @@ CUDA_INSTANCE_COUNTS = {
     "feature_cluster_backward_kernel_2block": 2,
     "feature_cluster_backward_kernel_4block": 2,
     "register_backward_kernel": 2,
+    "register_cluster_backward_kernel_bfloat16_n9_d8192_c4": 1,
+    "register_cluster_backward_kernel_bfloat16_n32_d2048_c2": 1,
+    "register_cluster_backward_kernel_float16_n9_d8192_c4": 1,
+    "register_cluster_backward_kernel_float16_n32_d2048_c2": 1,
 }
 CUDA_REGISTER_LIMITS = {
     "shared_backward_kernel": 64,
@@ -61,6 +65,10 @@ CUDA_REGISTER_LIMITS = {
     # 65,536-register SM while leaving eight registers of compiler headroom.
     "feature_cluster_backward_kernel_4block": 80,
     "register_backward_kernel": 128,
+    "register_cluster_backward_kernel_bfloat16_n9_d8192_c4": 128,
+    "register_cluster_backward_kernel_bfloat16_n32_d2048_c2": 128,
+    "register_cluster_backward_kernel_float16_n9_d8192_c4": 128,
+    "register_cluster_backward_kernel_float16_n32_d2048_c2": 128,
 }
 
 POINTER_SIGNATURE = {
@@ -125,6 +133,7 @@ def _resource_usage(binary: Path) -> list[dict[str, int | str]]:
         normalized_name = name
         for known_name in (
             "feature_cluster_backward_kernel",
+            "register_cluster_backward_kernel",
             "register_backward_kernel",
             "shared_backward_kernel",
             "_bwd_source_serial_grouped",
@@ -139,6 +148,18 @@ def _resource_usage(binary: Path) -> list[dict[str, int | str]]:
                 if known_name == "feature_cluster_backward_kernel":
                     cluster_blocks = 4 if "Li4E" in name else 2
                     normalized_name = f"{known_name}_{cluster_blocks}block"
+                elif known_name == "register_cluster_backward_kernel":
+                    shape = re.search(r"Li(\d+)ELi(\d+)ELi(\d+)E", name)
+                    dtype = (
+                        "bfloat16"
+                        if "__nv_bfloat16" in name
+                        else "float16" if "__half" in name else "unknown"
+                    )
+                    if shape is not None:
+                        n, d, cluster_blocks = shape.groups()
+                        normalized_name = (
+                            f"{known_name}_{dtype}_n{n}_d{d}_c{cluster_blocks}"
+                        )
                 break
         records.append(
             {
@@ -262,7 +283,7 @@ def compile_all() -> dict:
     instance_counts = Counter(item["kernel"] for item in cuda_resources)
     if instance_counts != Counter(CUDA_INSTANCE_COUNTS):
         raise RuntimeError(
-            "CUDA build must contain bf16 and fp16 instances of both candidates: "
+            "CUDA build does not contain the exact required template instances: "
             f"{dict(instance_counts)}"
         )
     for item in cuda_resources:
@@ -320,6 +341,7 @@ def compile_all() -> dict:
                 "cuda_cluster",
                 "cuda_cluster4",
                 "cuda_register",
+                "cuda_register_cluster",
             )
         ],
         "compilations": records,

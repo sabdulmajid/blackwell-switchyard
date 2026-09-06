@@ -112,7 +112,7 @@ def validate_report(
         or monitor.get("probe_errors")
         or not coverage_ok
     ):
-        problems.append("continuous GPU monitor was incomplete or contaminated")
+        problems.append("sampled GPU monitor was incomplete or contaminated")
     return problems
 
 

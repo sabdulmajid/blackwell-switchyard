@@ -45,7 +45,15 @@ def test_minimum_and_estimates_scale_linearly_with_tokens():
 
 
 @pytest.mark.parametrize(
-    "strategy", ["resident", "tiled", "source_serial", "cuda_shared", "cuda_cluster"]
+    "strategy",
+    [
+        "resident",
+        "tiled",
+        "source_serial",
+        "cuda_shared",
+        "cuda_cluster",
+        "cuda_register_cluster",
+    ],
 )
 def test_estimate_never_beats_the_information_minimum(strategy):
     estimate = backward_traffic_estimate(strategy, 32, 2, 17, 777, itemsize=4)

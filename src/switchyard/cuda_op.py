@@ -125,3 +125,41 @@ def cuda_register_launch_info(values: torch.Tensor) -> dict[str, int]:
     )
     values = values.contiguous()
     return dict(zip(fields, _load_extension().register_launch_info(values), strict=True))
+
+
+def cuda_register_cluster_backward(
+    values: torch.Tensor,
+    query: torch.Tensor,
+    grad_out: torch.Tensor,
+    *,
+    saved_state: tuple[torch.Tensor, ...],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return gradients from a shape-specialized packed-register cluster."""
+    if len(saved_state) != 3:
+        raise ValueError("register-cluster backward requires complete saved coefficients")
+    dv, dw = _load_extension().register_cluster_backward(
+        values, query, grad_out, *saved_state
+    )
+    return dv, dw
+
+
+def cuda_register_cluster_launch_info(values: torch.Tensor) -> dict[str, int]:
+    """Return occupancy inputs for a packed-register cluster specialization."""
+    fields = (
+        "active_clusters",
+        "dynamic_shared_bytes",
+        "static_shared_bytes",
+        "registers_per_thread",
+        "max_shared_bytes",
+        "multiprocessors",
+        "threads_per_block",
+        "cluster_blocks",
+    )
+    values = values.contiguous()
+    return dict(
+        zip(
+            fields,
+            _load_extension().register_cluster_launch_info(values),
+            strict=True,
+        )
+    )

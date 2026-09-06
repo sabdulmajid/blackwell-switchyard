@@ -22,6 +22,7 @@ BackwardFamily = Literal[
     "cuda_cluster",
     "cuda_cluster4",
     "cuda_register",
+    "cuda_register_cluster",
 ]
 DwReduction = Literal["grouped_atomics", "partials", "persistent_atomics"]
 SavedState = Literal["none", "backward_coefficients"]
@@ -57,11 +58,17 @@ class BackwardPlan:
             "cuda_cluster",
             "cuda_cluster4",
             "cuda_register",
+            "cuda_register_cluster",
         } and self.tokens_per_cta != 1:
             raise ValueError(f"{self.family} manages its own token ownership")
         if self.family == "source_serial" and self.dw_reduction == "persistent_atomics":
             raise ValueError("source_serial does not use persistent atomics")
-        if self.family in {"cuda_cluster", "cuda_cluster4", "cuda_register"} and self.dw_reduction != "persistent_atomics":
+        if self.family in {
+            "cuda_cluster",
+            "cuda_cluster4",
+            "cuda_register",
+            "cuda_register_cluster",
+        } and self.dw_reduction != "persistent_atomics":
             raise ValueError(f"{self.family} requires persistent atomics")
         if self.family in {"auto", "cuda_shared"} and self.dw_reduction != "grouped_atomics":
             raise ValueError(f"{self.family} requires grouped atomics")
@@ -148,6 +155,13 @@ EXPERIMENTAL_PLANS = (
         production=False,
         rationale="fixed-shape persistent CTA with packed register-resident sources",
     ),
+    TrainingPlan(
+        name="cuda_register_cluster",
+        forward=ForwardPlan(saved_state="backward_coefficients"),
+        backward=BackwardPlan("cuda_register_cluster", 1, "persistent_atomics"),
+        production=False,
+        rationale="shape-specialized register residency with only scalar DSM exchange",
+    ),
 )
 
 _PLANS = {plan.name: plan for plan in (AUTO_PLAN, *EXPERIMENTAL_PLANS)}
@@ -179,6 +193,16 @@ def _feature_sharded_shared_bytes(
     query_gradient = local_width * 4
     # Five final fields plus one g-dot-v partial per warp and source.
     return aligned_values + query_gradient + 4 * (5 + 8) * n
+
+
+def _register_cluster_shared_bytes(
+    n: int, d: int, itemsize: int, cluster_blocks: int
+) -> int:
+    local_width = d // cluster_blocks
+    warp_partials_and_stats = 4 * (16 + 5) * n
+    query_gradient = 4 * local_width
+    output_gradient = itemsize * local_width
+    return warp_partials_and_stats + query_gradient + output_gradient
 
 
 def plan_supports(
@@ -222,6 +246,17 @@ def plan_supports(
         if (n, d) not in supported_shapes:
             return False, "register plan has no compiled specialization for this (N,D)"
         return True, "fixed-shape packed-register specialization"
+
+    if family == "cuda_register_cluster":
+        if not cluster_launch:
+            return False, "device does not support thread-block clusters"
+        cluster_blocks = {(9, 8192): 4, (32, 2048): 2}.get((n, d))
+        if cluster_blocks is None:
+            return False, "register-cluster plan has no compiled specialization for this (N,D)"
+        required = _register_cluster_shared_bytes(n, d, 2, cluster_blocks) + 1024
+        if required > optin_shared_bytes:
+            return False, f"needs {required} shared bytes, limit is {optin_shared_bytes}"
+        return True, f"needs {required} shared bytes in a {cluster_blocks}-block cluster"
 
     if family == "cuda_shared" and n > 16:
         return False, "one-block shared plan supports at most 16 sources"

@@ -240,6 +240,13 @@ def _expected_kernel_contract(
     if plan.backward.family == "cuda_register":
         backward_launches = 2 + cast_launches
         return ("register_backward_kernel",), backward_launches, backward_launches + 1
+    if plan.backward.family == "cuda_register_cluster":
+        backward_launches = 2 + cast_launches
+        return (
+            ("register_cluster_backward_kernel",),
+            backward_launches,
+            backward_launches + 1,
+        )
     if plan.backward.family == "cuda_shared":
         backward_launches = 2 + cast_launches
         return ("shared_backward_kernel",), backward_launches, backward_launches + 1
@@ -306,6 +313,38 @@ def _check_current_kernel_contract(
         for name in names:
             if name not in observed:
                 problems.append(f"{label}: current {field} did not contain {name}")
+
+
+def _check_register_cluster_launch_info(
+    shape: tuple[int, int, int, int],
+    launch_info: dict,
+    problems: list[str],
+    label: str,
+) -> None:
+    """Require the exact launch-resource contract used by each specialization."""
+    if launch_info.get("active_clusters", 0) <= 0:
+        problems.append(f"{label}: active register-cluster count is missing")
+    expected_blocks = 4 if (shape[0], shape[3]) == (9, 8192) else 2
+    if launch_info.get("cluster_blocks") != expected_blocks:
+        problems.append(f"{label}: expected a {expected_blocks}-block register cluster")
+    local_width = shape[3] // expected_blocks
+    expected_dynamic = 4 * (21 * shape[0] + local_width) + 2 * local_width
+    if launch_info.get("dynamic_shared_bytes") != expected_dynamic:
+        problems.append(f"{label}: register-cluster dynamic memory is wrong")
+    if launch_info.get("static_shared_bytes") != 1024:
+        problems.append(f"{label}: register-cluster static memory is wrong")
+    if launch_info.get("registers_per_thread") != 128:
+        problems.append(f"{label}: register-cluster register count is wrong")
+    if launch_info.get("threads_per_block") != 512:
+        problems.append(f"{label}: register cluster must use 512 threads")
+    if launch_info.get("multiprocessors", 0) <= 0:
+        problems.append(f"{label}: GPU multiprocessor count is missing")
+    if (
+        launch_info.get("dynamic_shared_bytes", 0)
+        + launch_info.get("static_shared_bytes", 0)
+        > launch_info.get("max_shared_bytes", 0)
+    ):
+        problems.append(f"{label}: register-cluster shared memory exceeds the device limit")
 
 
 def evaluate_reports(
@@ -411,9 +450,9 @@ def evaluate_reports(
             problems.append(f"{prefix}: another compute process appeared during the run")
         monitor = report.get("gpu_process_monitor", {})
         if monitor.get("device_uuid") != preflight.get("resolved_uuid"):
-            problems.append(f"{prefix}: continuous GPU process monitor is missing")
+            problems.append(f"{prefix}: sampled GPU process monitor is missing")
         if monitor.get("collision_detected") is not False or monitor.get("collision_events"):
-            problems.append(f"{prefix}: continuous monitor observed a competing process")
+            problems.append(f"{prefix}: sampled monitor observed a competing process")
         samples = monitor.get("samples")
         interval = monitor.get("interval_seconds")
         duration = monitor.get("duration_seconds")
@@ -427,7 +466,7 @@ def evaluate_reports(
             and samples >= max(2, int(duration / (2 * interval)))
         )
         if monitor.get("probe_errors") or not monitor_coverage_ok:
-            problems.append(f"{prefix}: continuous GPU monitor was incomplete")
+            problems.append(f"{prefix}: sampled GPU monitor was incomplete")
         if report.get("candidate_reachable_from_production") is not False:
             problems.append(f"{prefix}: candidate isolation flag is missing or true")
         if report.get("correctness_seeds") != [0, 1, 2]:
@@ -669,6 +708,13 @@ def evaluate_reports(
                 launch_info = measured.get("register_launch_info", {})
                 if launch_info.get("active_blocks", 0) <= 0:
                     problems.append(f"{label}: active register-worker count is missing")
+            if plan.backward.family == "cuda_register_cluster":
+                _check_register_cluster_launch_info(
+                    shape,
+                    measured.get("register_cluster_launch_info", {}),
+                    problems,
+                    label,
+                )
 
             if shape in ANCHOR_SHAPES:
                 anchor_speedups.append(speedup)
@@ -788,7 +834,8 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    reports = [json.loads(path.read_text()) for path in args.results]
+    report_bytes = [path.read_bytes() for path in args.results]
+    reports = [json.loads(raw) for raw in report_bytes]
     decision = evaluate_reports(
         reports,
         candidate=args.candidate,
@@ -800,9 +847,9 @@ def main() -> int:
     )
     decision["input_reports"] = [
         {
-            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "sha256": hashlib.sha256(raw).hexdigest(),
         }
-        for path in args.results
+        for raw in report_bytes
     ]
     if args.json:
         print(json.dumps(decision, indent=2, default=str))

@@ -70,6 +70,7 @@ The plans are:
 | `cuda_cluster` | **one** | three FP32 source scalars | one contribution per persistent cluster | primary candidate |
 | `cuda_cluster4` | **one** | three FP32 source scalars | one contribution per persistent cluster | lower shared-memory pressure |
 | `cuda_register` | **one** | three FP32 source scalars | one contribution per persistent CTA | fixed-shape register candidate |
+| `cuda_register_cluster` | **one** | three FP32 source scalars | one contribution per persistent cluster | register candidate for wide gaps |
 
 The saved fields are `alpha`, `rstd`, and:
 
@@ -111,7 +112,7 @@ the extension. The current extension contains `sm_120` code and rejects other GP
 explicitly. The custom operator supports first-order training gradients. Use the framework
 reference when an application requires second-order gradients.
 
-## Packed-register candidate
+## Packed-register candidates
 
 The `cuda_register` plan removes the cluster's source-sized shared-memory tile.
 A persistent 512-thread CTA keeps raw bf16 or fp16 source pairs in registers.
@@ -122,6 +123,20 @@ specialization is spill-free. The compiler spilled the `(9,8192)` and `(32,2048)
 those variants were removed before GPU measurement. The offline compiler gate rejects any
 future specialization that spills retained values to local memory.
 
+The `cuda_register_cluster` plan covers the two remaining gap shapes. It uses four 512-thread
+blocks for `(N=9, D=8192)` and two blocks for `(N=32, D=2048)`. Each block holds one feature
+shard in registers. Only source-sized FP32 reductions cross distributed shared memory. The
+output gradient and the persistent query-gradient accumulator use local shared memory. This
+keeps each source value in registers across both gradient equations without exceeding the
+128-register limit. It also avoids the source-sized shared-memory tile used by the general
+feature-cluster plans.
+
+The packed kernels load two low-precision values at a time. They require four-byte base
+alignment. A valid contiguous tensor can start at an odd two-byte storage offset, so the Python
+operator makes an aligned copy only in that case. The CUDA entry point also rejects a misaligned
+base pointer. Adversarial tests cover odd offsets, `B>1`, tied logits, saturated logits, and both
+supported dtypes.
+
 The offline `sm_120` compiler gate reports:
 
 | Kernel | Registers per thread | Stack | Local memory | Static shared memory |
@@ -130,6 +145,8 @@ The offline `sm_120` compiler gate reports:
 | two-block feature cluster, bf16/fp16 | 64 | 0 | 0 | 1024 bytes |
 | four-block feature cluster, bf16/fp16 | 72 | 0 | 0 | 1024 bytes |
 | `(9,4096)` register CTA, bf16/fp16 | 128 | 0 | 0 | 1024 bytes |
+| `(9,8192)` four-block register cluster, bf16/fp16 | 128 | 0 | 0 | 1024 bytes |
+| `(32,2048)` two-block register cluster, bf16/fp16 | 128 | 0 | 0 | 1024 bytes |
 
 Dynamic shared memory depends on `N` and `D`. The runtime adds static and dynamic memory before
 it accepts a launch.
@@ -188,9 +205,9 @@ using a GPU. The configured campaign does not trust an estimated finish time. It
 GPUs to have no compute process at every 60-second sample for 30 minutes. It then makes only
 one GPU visible to the campaign.
 
-The benchmark checks the selected GPU every 0.05 seconds while it runs. It exits immediately
-if an unrelated process appears. The outer runner also checks every 0.25 seconds and stops its
-process group within a two-second grace period. It then waits for a new 30-minute sampled idle
+The benchmark samples the selected GPU every 0.05 seconds while it runs. It exits immediately
+if a sample sees an unrelated process. The outer runner also samples every 0.25 seconds. It stops
+its process group within a two-second grace period. It then waits for a new 30-minute sampled idle
 interval. It makes at most three
 attempts. A retry keeps each clean, complete benchmark phase and reruns only the interrupted
 phase and later phases. State and logs stay outside the repository, so they cannot make
@@ -198,6 +215,21 @@ benchmark provenance dirty. The monitor stores a timestamp and a foreign-process
 does not store process names or process identifiers. Committed command arguments redact
 external absolute paths. The runner gives result validation, commit, and push up to 30 minutes
 after GPU work.
+
+The runner keeps its attempt count across process restarts. Each decision hashes the exact byte
+buffers that it parsed. Before commit, the campaign reconstructs every decision from the staged
+Git blobs. It repeats that check against the committed blobs before it pushes. Recovery accepts
+only the exact 15-file bundle for one campaign ID. It reconstructs every gate and decision before
+it retries a push. Publication uses the literal canonical repository URL after checking that the
+configured remote has one matching fetch URL and one matching push URL.
+
+A deterministic smoke, correctness, schema, or provenance failure stops the campaign. It does
+not spend another GPU attempt on the same inputs. Only a collision, interrupted phase, or
+measured statistical instability can request a fresh idle interval and another attempt.
+
+This is high-frequency sampled detection, not hardware-enforced exclusive mode. A foreign CUDA
+context that exists for less than one sample interval could escape detection. The reports mean
+that no competing process appeared in any preflight, postflight, or monitor sample.
 
 The campaign is fail-fast and uses this order:
 

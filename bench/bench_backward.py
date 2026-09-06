@@ -348,6 +348,10 @@ def build_implementations(v: torch.Tensor) -> tuple[dict, list[str]]:
             "cuda_register",
             "private persistent packed-register one-read candidate",
         ),
+        "cuda_register_cluster": plan_spec(
+            "cuda_register_cluster",
+            "private shape-specialized packed-register cluster candidate",
+        ),
     }
     notes: list[str] = []
     try:
@@ -471,9 +475,15 @@ def bench_one(
     elif plan is not None:
         family = plan.backward.family
         traffic_options = {}
-        if family in {"cuda_cluster", "cuda_cluster4", "cuda_register"}:
+        if family in {
+            "cuda_cluster",
+            "cuda_cluster4",
+            "cuda_register",
+            "cuda_register_cluster",
+        }:
             from switchyard.cuda_op import (
                 cuda_cluster_launch_info,
+                cuda_register_cluster_launch_info,
                 cuda_register_launch_info,
             )
 
@@ -483,10 +493,14 @@ def bench_one(
                 )
                 record["cluster_launch_info"] = launch_info
                 active_workers = launch_info["active_clusters"]
-            else:
+            elif family == "cuda_register":
                 launch_info = cuda_register_launch_info(v)
                 record["register_launch_info"] = launch_info
                 active_workers = launch_info["active_blocks"]
+            else:
+                launch_info = cuda_register_cluster_launch_info(v)
+                record["register_cluster_launch_info"] = launch_info
+                active_workers = launch_info["active_clusters"]
             traffic_options["persistent_clusters"] = min(
                 shape.b * shape.t, active_workers
             )
@@ -498,6 +512,7 @@ def bench_one(
             "cuda_cluster": "cuda_cluster",
             "cuda_cluster4": "cuda_cluster4",
             "cuda_register": "cuda_register",
+            "cuda_register_cluster": "cuda_register_cluster",
         }[family]
         record["traffic_model"] = backward_traffic_estimate(
             model_name,
@@ -528,7 +543,8 @@ def main() -> None:
         "--impls",
         default=(
             "current,serial_recompute_atomic_t4,serial_saved_partials_t16,"
-            "cuda_shared,cuda_cluster,cuda_cluster4,cuda_register,liger"
+            "cuda_shared,cuda_cluster,cuda_cluster4,cuda_register,"
+            "cuda_register_cluster,liger"
         ),
     )
     parser.add_argument("--quick", action="store_true")

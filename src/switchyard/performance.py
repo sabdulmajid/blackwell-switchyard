@@ -67,6 +67,7 @@ def backward_traffic_estimate(
         "cuda_cluster",
         "cuda_cluster4",
         "cuda_register",
+        "cuda_register_cluster",
     }:
         raise ValueError(f"unknown backward strategy: {strategy}")
     if min(
@@ -153,9 +154,13 @@ def backward_traffic_estimate(
             "one persistent block owns packed register-resident source pairs"
             if strategy == "cuda_register"
             else (
-                "four cluster blocks own disjoint feature shards"
-                if strategy == "cuda_cluster4"
-                else "two cluster blocks own disjoint feature shards"
+                "a shape-specialized cluster owns packed register-resident source pairs"
+                if strategy == "cuda_register_cluster"
+                else (
+                    "four cluster blocks own disjoint feature shards"
+                    if strategy == "cuda_cluster4"
+                    else "two cluster blocks own disjoint feature shards"
+                )
             )
         )
         assumptions = (

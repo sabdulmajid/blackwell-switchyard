@@ -4,7 +4,7 @@
 The runner uses no GPU while it waits. It checks NVIDIA's process table at a
 low frequency. During the command, it monitors only the selected GPU. If an
 unrelated process appears there, it stops its own process group and waits for a
-new idle interval before one bounded retry.
+new idle interval before the next bounded attempt.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import csv
 import fcntl
+import hashlib
 import json
 import os
 import signal
@@ -108,9 +109,38 @@ def _compute_apps() -> list[dict[str, str | int]]:
 
 
 class StateRecorder:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, campaign_identity: str):
         self.path = path
+        self.campaign_identity = campaign_identity
         self.events: list[dict] = []
+        self._attempts = 0
+        if path.exists():
+            payload = json.loads(path.read_text())
+            if payload.get("campaign_identity") != campaign_identity:
+                raise ValueError("runner state belongs to a different campaign")
+            events = payload.get("events")
+            if not isinstance(events, list) or not all(
+                isinstance(event, dict) for event in events
+            ):
+                raise ValueError("runner state has an invalid event history")
+            self.events = events[-200:]
+            recorded_attempts = payload.get("attempts", 0)
+            if not isinstance(recorded_attempts, int) or recorded_attempts < 0:
+                raise ValueError("runner state has an invalid attempt count")
+            event_attempts = [
+                event.get("attempt")
+                for event in self.events
+                if isinstance(event.get("attempt"), int)
+            ]
+            self._attempts = max(recorded_attempts, *event_attempts, 0)
+
+    @property
+    def last_phase(self) -> str | None:
+        return self.events[-1].get("phase") if self.events else None
+
+    @property
+    def attempts(self) -> int:
+        return self._attempts
 
     def write(self, phase: str, **fields) -> None:
         event = {
@@ -118,13 +148,53 @@ class StateRecorder:
             "phase": phase,
             **fields,
         }
+        attempt = event.get("attempt")
+        if isinstance(attempt, int):
+            self._attempts = max(self._attempts, attempt)
         self.events.append(event)
-        payload = {"current": event, "events": self.events[-200:]}
+        payload = {
+            "campaign_identity": self.campaign_identity,
+            "attempts": self._attempts,
+            "current": event,
+            "events": self.events[-200:],
+        }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         temporary.write_text(json.dumps(payload, indent=2) + "\n")
         os.replace(temporary, self.path)
         print(json.dumps(event, sort_keys=True), flush=True)
+
+
+def _campaign_identity(args: argparse.Namespace, command: list[str]) -> str:
+    environment_keys = (
+        "SWITCHYARD_EXPECTED_HEAD",
+        "SWITCHYARD_CAMPAIGN_BRANCH",
+        "SWITCHYARD_CAMPAIGN_DIR",
+        "SWITCHYARD_RESULT_BRANCH",
+        "THIRD_PARTY_DIR",
+        "SWITCHYARD_TOOLCHAIN_DIR",
+    )
+    payload = {
+        "command": command,
+        "cwd": str(args.cwd.resolve()),
+        "deadline_hours": args.deadline_hours,
+        "finalize_seconds": args.finalize_seconds,
+        "gpu_complete_marker": (
+            str(args.gpu_complete_marker.resolve())
+            if args.gpu_complete_marker is not None
+            else None
+        ),
+        "gpu_index": args.gpu_index,
+        "gpu_lock_dir": str(args.gpu_lock_dir.resolve()),
+        "idle_seconds": args.idle_seconds,
+        "max_attempts": args.max_attempts,
+        "not_before": args.not_before,
+        "wait_poll_seconds": args.wait_poll_seconds,
+        "watchdog_seconds": args.watchdog_seconds,
+        "environment": {key: os.environ.get(key) for key in environment_keys},
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _terminate_group(process: subprocess.Popen, recorder: StateRecorder, reason: str) -> None:
@@ -193,7 +263,17 @@ def main() -> int:
     lock_handle.write(f"{os.getpid()}\n")
     lock_handle.flush()
 
-    recorder = StateRecorder(args.state)
+    try:
+        recorder = StateRecorder(args.state, _campaign_identity(args, command))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"cannot resume runner state: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    if recorder.last_phase == "complete":
+        return 0
+    attempt = recorder.attempts
+    if attempt >= args.max_attempts:
+        recorder.write("expired", attempts=attempt)
+        return 75
     if time.time() < args.not_before:
         recorder.write(
             "sleeping_until_not_before",
@@ -226,7 +306,6 @@ def main() -> int:
     )
 
     idle_since: float | None = None
-    attempt = 0
     while time.time() < deadline and attempt < args.max_attempts:
         try:
             apps = _compute_apps()
@@ -275,6 +354,7 @@ def main() -> int:
         environment["SWITCHYARD_GUARD_FINALIZE_SECONDS"] = str(args.finalize_seconds)
         if args.gpu_complete_marker is not None:
             args.gpu_complete_marker.unlink(missing_ok=True)
+        recorder.write("launching_workload", attempt=attempt, target_uuid=target_uuid)
         args.log.parent.mkdir(parents=True, exist_ok=True)
         with args.log.open("a") as log:
             process = subprocess.Popen(
@@ -294,9 +374,14 @@ def main() -> int:
             blind_probes = 0
             foreign_apps: list[dict[str, str | int]] = []
             gpu_complete_since: float | None = None
+            deadline_reached = False
             while process.poll() is None:
                 time.sleep(args.watchdog_seconds)
                 if process.poll() is not None:
+                    break
+                if time.time() >= deadline:
+                    _terminate_group(process, recorder, "campaign deadline reached")
+                    deadline_reached = True
                     break
                 if (
                     args.gpu_complete_marker is not None
@@ -349,6 +434,9 @@ def main() -> int:
             )
             idle_since = None
             continue
+        if deadline_reached:
+            recorder.write("expired", attempts=attempt)
+            return 75
         if return_code == 0:
             recorder.write("complete", attempt=attempt, return_code=return_code)
             return 0

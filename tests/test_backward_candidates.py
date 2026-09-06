@@ -13,7 +13,9 @@ if torch.cuda.get_device_capability() != (12, 0):  # pragma: no cover
     pytest.skip("one-read candidates require sm_120", allow_module_level=True)
 
 from switchyard.cuda_op import (  # noqa: E402
+    _load_extension,
     cuda_cluster_launch_info,
+    cuda_register_cluster_launch_info,
     cuda_register_launch_info,
 )
 from switchyard.reference import DEFAULT_EPS, block_attn_res_oracle  # noqa: E402
@@ -35,6 +37,8 @@ def _compare_plan(
     query64: torch.Tensor,
     grad64: torch.Tensor,
     dtype: torch.dtype,
+    *,
+    odd_storage_offset: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     # Compare every implementation with the same representable low-precision
     # problem. The prior oracle used the unrounded random tensors, which mixed
@@ -51,9 +55,18 @@ def _compare_plan(
         grad_low.to(torch.float64),
     )
 
-    values = values_low.cuda().requires_grad_(True)
-    query = query_low.cuda().requires_grad_(True)
-    grad = grad_low.cuda()
+    def cuda_input(source):
+        if not odd_storage_offset:
+            return source.cuda()
+        storage = torch.empty(source.numel() + 1, device="cuda", dtype=dtype)
+        result = storage[1:].view(source.shape)
+        result.copy_(source)
+        assert result.is_contiguous() and result.data_ptr() % 4 == 2
+        return result
+
+    values = cuda_input(values_low).requires_grad_(True)
+    query = cuda_input(query_low).requires_grad_(True)
+    grad = cuda_input(grad_low)
     output = _block_attn_res_with_plan(
         values,
         query,
@@ -98,6 +111,8 @@ def _compare_plan(
         ("cuda_cluster", (17, 1, 3, 2049)),
         ("cuda_cluster4", (17, 1, 3, 2049)),
         ("cuda_register", (9, 1, 3, 4096)),
+        ("cuda_register_cluster", (9, 1, 3, 8192)),
+        ("cuda_register_cluster", (32, 1, 3, 2048)),
     ],
 )
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
@@ -112,18 +127,20 @@ def test_candidates_match_float64_oracle_on_masked_tails(plan_name, shape, dtype
 
 
 @pytest.mark.parametrize(
-    ("plan_name", "d"),
+    ("plan_name", "n", "d"),
     [
-        ("serial_saved_partials_t16", 512),
-        ("cuda_shared", 512),
-        ("cuda_cluster", 512),
-        ("cuda_cluster4", 512),
-        ("cuda_register", 4096),
+        ("serial_saved_partials_t16", 9, 512),
+        ("cuda_shared", 9, 512),
+        ("cuda_cluster", 9, 512),
+        ("cuda_cluster4", 9, 512),
+        ("cuda_register", 9, 4096),
+        ("cuda_register_cluster", 9, 8192),
+        ("cuda_register_cluster", 32, 2048),
     ],
 )
-def test_candidates_handle_uniform_ties_with_nonzero_gradient(plan_name, d):
+def test_candidates_handle_uniform_ties_with_nonzero_gradient(plan_name, n, d):
     generator = torch.Generator().manual_seed(23)
-    values = torch.randn(9, 1, 3, d, generator=generator, dtype=torch.float64)
+    values = torch.randn(n, 1, 3, d, generator=generator, dtype=torch.float64)
     query = torch.zeros(d, dtype=torch.float64)
     grad = torch.randn(1, 3, d, generator=generator, dtype=torch.float64)
     dv, dw = _compare_plan(plan_name, values, query, grad, torch.bfloat16)
@@ -206,6 +223,62 @@ def test_register_candidate_reuses_state_across_persistent_loop(dtype):
     _compare_plan("cuda_register", values, query, grad, dtype)
 
 
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("n,d", [(9, 8192), (32, 2048)])
+def test_register_cluster_reuses_state_across_persistent_loop(dtype, n, d):
+    probe = torch.empty(n, 1, 1, d, device="cuda", dtype=dtype)
+    launch = cuda_register_cluster_launch_info(probe)
+    assert launch["cluster_blocks"] == (4 if (n, d) == (9, 8192) else 2)
+    tokens = launch["active_clusters"] + 3
+    del probe
+    generator = torch.Generator().manual_seed(42)
+    values = torch.randn(n, 1, tokens, d, generator=generator, dtype=torch.float64)
+    query = torch.randn(d, generator=generator, dtype=torch.float64)
+    query /= query.norm()
+    grad = torch.randn(1, tokens, d, generator=generator, dtype=torch.float64)
+    _compare_plan("cuda_register_cluster", values, query, grad, dtype)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize(
+    ("plan_name", "shape"),
+    [
+        ("cuda_register", (9, 2, 3, 4096)),
+        ("cuda_register_cluster", (9, 2, 3, 8192)),
+        ("cuda_register_cluster", (32, 2, 3, 2048)),
+    ],
+)
+def test_register_candidates_copy_odd_offset_contiguous_inputs(plan_name, shape, dtype):
+    generator = torch.Generator().manual_seed(44)
+    n, b, t, d = shape
+    values = torch.randn(n, b, t, d, generator=generator, dtype=torch.float64)
+    query = torch.randn(d, generator=generator, dtype=torch.float64)
+    query /= query.norm()
+    grad = torch.randn(b, t, d, generator=generator, dtype=torch.float64)
+    _compare_plan(
+        plan_name,
+        values,
+        query,
+        grad,
+        dtype,
+        odd_storage_offset=True,
+    )
+
+
+def test_direct_cuda_register_entry_rejects_unaligned_base():
+    n, b, t, d = 9, 1, 1, 4096
+    storage = torch.empty(n * b * t * d + 1, device="cuda", dtype=torch.float16)
+    values = storage[1:].view(n, b, t, d)
+    assert values.is_contiguous() and values.data_ptr() % 4 == 2
+    query = torch.zeros(d, device="cuda", dtype=torch.float16)
+    grad = torch.zeros(b, t, d, device="cuda", dtype=torch.float16)
+    saved = tuple(
+        torch.zeros(n, b * t, device="cuda", dtype=torch.float32) for _ in range(3)
+    )
+    with pytest.raises(RuntimeError, match="four-byte-aligned tensor bases"):
+        _load_extension().register_backward(values, query, grad, *saved)
+
+
 def test_register_candidate_handles_saturated_logits():
     generator = torch.Generator().manual_seed(43)
     values = torch.randn(9, 1, 3, 4096, generator=generator, dtype=torch.float64)
@@ -213,3 +286,14 @@ def test_register_candidate_handles_saturated_logits():
     query = 16.0 * query / query.norm()
     grad = torch.randn(1, 3, 4096, generator=generator, dtype=torch.float64)
     _compare_plan("cuda_register", values, query, grad, torch.bfloat16)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("n,d", [(9, 8192), (32, 2048)])
+def test_register_cluster_handles_saturated_logits(dtype, n, d):
+    generator = torch.Generator().manual_seed(45)
+    values = torch.randn(n, 1, 3, d, generator=generator, dtype=torch.float64)
+    query = torch.randn(d, generator=generator, dtype=torch.float64)
+    query = 16.0 * query / query.norm()
+    grad = torch.randn(1, 3, d, generator=generator, dtype=torch.float64)
+    _compare_plan("cuda_register_cluster", values, query, grad, dtype)

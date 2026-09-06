@@ -17,7 +17,8 @@ def test_campaign_reuses_only_valid_complete_phases():
 def test_campaign_rejects_nonterminal_evaluator_results():
     assert "0:DROP|0:READY_FOR_DISPATCH_REVIEW|1:REJECT" in SCRIPT
     assert "2:MORE_DATA" in SCRIPT
-    assert "evaluator requested fresh full evidence" in SCRIPT
+    assert "statistical instability requires fresh full evidence" in SCRIPT
+    assert "deterministic incomplete evidence contract" in SCRIPT
 
 
 def test_campaign_audits_identity_and_committed_content():
@@ -35,6 +36,8 @@ def test_campaign_binds_decisions_and_copies_exact_bytes():
 
 def test_campaign_publishes_only_to_exact_origin_and_recovers_pushes():
     assert "https://github.com/sabdulmajid/blackwell-switchyard.git" in SCRIPT
-    assert "git remote get-url --push origin" in SCRIPT
+    assert "git remote get-url --push --all origin" in SCRIPT
     assert "push_result_commit" in SCRIPT
     assert "Recover a fully audited local result commit" in SCRIPT
+    assert 'check_result_bundle "$result_prefix" :' in SCRIPT
+    assert 'check_result_bundle "$result_prefix" HEAD' in SCRIPT

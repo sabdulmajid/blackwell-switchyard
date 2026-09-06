@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -50,3 +51,24 @@ def test_inventory_parser_fails_closed(text):
 def test_compute_process_parser_fails_closed(text):
     with pytest.raises(ValueError):
         MODULE._parse_compute_apps(text)
+
+
+def test_state_recorder_resumes_attempt_count_without_process_data(tmp_path):
+    state = tmp_path / "state.json"
+    recorder = MODULE.StateRecorder(state, "campaign-a")
+    recorder.write("launching_workload", attempt=2, target_uuid="GPU-test")
+    resumed = MODULE.StateRecorder(state, "campaign-a")
+    assert resumed.attempts == 2
+    assert resumed.last_phase == "launching_workload"
+    assert "pid" not in state.read_text().lower()
+    with pytest.raises(ValueError, match="different campaign"):
+        MODULE.StateRecorder(state, "campaign-b")
+
+
+def test_state_recorder_rejects_malformed_history(tmp_path):
+    state = tmp_path / "state.json"
+    state.write_text(
+        json.dumps({"campaign_identity": "campaign-a", "events": "not-a-list"})
+    )
+    with pytest.raises(ValueError, match="event history"):
+        MODULE.StateRecorder(state, "campaign-a")

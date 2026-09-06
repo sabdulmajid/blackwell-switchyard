@@ -689,8 +689,8 @@ __global__ __launch_bounds__(kRegisterThreads, 1) void register_backward_kernel(
   }
 }
 
-// Two 512-thread blocks shard D while retaining their source pairs in
-// registers. This extends the spill-free register design to the wide and
+// Two or four 512-thread blocks shard D while retaining their source pairs
+// in registers. This extends the spill-free register design to the wide and
 // many-source gap shapes. Only per-source scalar reductions cross DSM.
 template <typename scalar_t, int NSources, int Width, int ClusterBlocks>
 __global__ __cluster_dims__(ClusterBlocks, 1, 1) __launch_bounds__(kRegisterThreads, 1)
@@ -934,8 +934,11 @@ std::vector<int64_t> register_cluster_occupancy(int device) {
       &attributes,
       register_cluster_backward_kernel<scalar_t, NSources, Width, ClusterBlocks>));
   int multiprocessors = 0;
+  int max_shared = 0;
   C10_CUDA_CHECK(cudaDeviceGetAttribute(
       &multiprocessors, cudaDevAttrMultiProcessorCount, device));
+  C10_CUDA_CHECK(cudaDeviceGetAttribute(
+      &max_shared, cudaDevAttrMaxSharedMemoryPerBlockOptin, device));
   cudaLaunchConfig_t config{};
   config.gridDim = dim3(multiprocessors * ClusterBlocks, 1, 1);
   config.blockDim = dim3(kRegisterThreads, 1, 1);
@@ -950,6 +953,8 @@ std::vector<int64_t> register_cluster_occupancy(int device) {
       static_cast<int64_t>(active_clusters),
       static_cast<int64_t>(dynamic_shared),
       static_cast<int64_t>(attributes.sharedSizeBytes),
+      static_cast<int64_t>(attributes.numRegs),
+      static_cast<int64_t>(max_shared),
       static_cast<int64_t>(multiprocessors),
       kRegisterThreads,
       ClusterBlocks,
@@ -1316,27 +1321,41 @@ std::vector<torch::Tensor> shared_backward(
   return {grad_values, grad_query};
 }
 
-std::vector<torch::Tensor> register_backward(
-    torch::Tensor values,
-    torch::Tensor query,
-    torch::Tensor grad_out,
-    torch::Tensor saved_alpha,
-    torch::Tensor saved_rstd,
-    torch::Tensor saved_norm) {
-  TORCH_CHECK(values.is_cuda() && query.is_cuda() && grad_out.is_cuda(), "all tensors must be CUDA tensors");
-  const c10::cuda::CUDAGuard device_guard(values.device());
-  TORCH_CHECK(values.device() == query.device() && values.device() == grad_out.device(), "all tensors must share one device");
-  TORCH_CHECK(values.is_contiguous() && query.is_contiguous() && grad_out.is_contiguous(), "all tensors must be contiguous");
+void validate_register_inputs(
+    const torch::Tensor& values,
+    const torch::Tensor& query,
+    const torch::Tensor& grad_out,
+    const torch::Tensor& saved_alpha,
+    const torch::Tensor& saved_rstd,
+    const torch::Tensor& saved_norm,
+    bool require_cluster) {
+  TORCH_CHECK(
+      values.device() == query.device() && values.device() == grad_out.device(),
+      "all tensors must share one device");
+  TORCH_CHECK(
+      values.is_contiguous() && query.is_contiguous() && grad_out.is_contiguous(),
+      "all tensors must be contiguous");
+  TORCH_CHECK(
+      reinterpret_cast<uintptr_t>(values.data_ptr()) % alignof(uint32_t) == 0 &&
+          reinterpret_cast<uintptr_t>(query.data_ptr()) % alignof(uint32_t) == 0 &&
+          reinterpret_cast<uintptr_t>(grad_out.data_ptr()) % alignof(uint32_t) == 0,
+      "packed register candidates require four-byte-aligned tensor bases");
   TORCH_CHECK(values.dim() == 4, "values must be [N, B, T, D]");
   TORCH_CHECK(query.dim() == 1 && query.size(0) == values.size(3), "query must be [D]");
   TORCH_CHECK(
       grad_out.sizes() == torch::IntArrayRef({values.size(1), values.size(2), values.size(3)}),
       "grad_out must be [B, T, D]");
-  TORCH_CHECK(values.scalar_type() == query.scalar_type() && values.scalar_type() == grad_out.scalar_type(), "all tensors must have one dtype");
+  TORCH_CHECK(
+      values.scalar_type() == query.scalar_type() &&
+          values.scalar_type() == grad_out.scalar_type(),
+      "all tensors must have one dtype");
   TORCH_CHECK(
       values.scalar_type() == torch::kFloat16 || values.scalar_type() == torch::kBFloat16,
-      "register backward supports float16 and bfloat16");
-  TORCH_CHECK(values.size(0) > 0 && values.size(1) > 0 && values.size(2) > 0 && values.size(3) > 0, "all dimensions must be positive");
+      "register candidates support float16 and bfloat16");
+  TORCH_CHECK(
+      values.size(0) > 0 && values.size(1) > 0 &&
+          values.size(2) > 0 && values.size(3) > 0,
+      "all dimensions must be positive");
   constexpr int64_t kIntMax = std::numeric_limits<int>::max();
   TORCH_CHECK(
       values.size(0) <= kIntMax && values.size(3) <= kIntMax &&
@@ -1345,9 +1364,13 @@ std::vector<torch::Tensor> register_backward(
   const int64_t n_tokens = values.size(1) * values.size(2);
   const std::vector<int64_t> expected{values.size(0), n_tokens};
   for (const auto& saved : {saved_alpha, saved_rstd, saved_norm}) {
-    TORCH_CHECK(saved.is_cuda() && saved.device() == values.device(), "saved state must use the values device");
+    TORCH_CHECK(
+        saved.is_cuda() && saved.device() == values.device(),
+        "saved state must use the values device");
     TORCH_CHECK(saved.scalar_type() == torch::kFloat32, "saved state must be fp32");
-    TORCH_CHECK(saved.is_contiguous() && saved.sizes() == expected, "saved state must be contiguous [N, B*T]");
+    TORCH_CHECK(
+        saved.is_contiguous() && saved.sizes() == expected,
+        "saved state must be contiguous [N, B*T]");
   }
   int compute_major = 0;
   int compute_minor = 0;
@@ -1357,19 +1380,54 @@ std::vector<torch::Tensor> register_backward(
       &compute_minor, cudaDevAttrComputeCapabilityMinor, values.get_device()));
   TORCH_CHECK(
       compute_major == 12 && compute_minor == 0,
-      "register backward was compiled for sm_120 but received sm_",
+      "register candidate was compiled for sm_120 but received sm_",
       compute_major,
       compute_minor);
+  if (require_cluster) {
+    int cluster_launch = 0;
+    C10_CUDA_CHECK(cudaDeviceGetAttribute(
+        &cluster_launch, cudaDevAttrClusterLaunch, values.get_device()));
+    TORCH_CHECK(cluster_launch, "device does not support thread-block clusters");
+  }
+}
+
+std::vector<torch::Tensor> register_backward(
+    torch::Tensor values,
+    torch::Tensor query,
+    torch::Tensor grad_out,
+    torch::Tensor saved_alpha,
+    torch::Tensor saved_rstd,
+    torch::Tensor saved_norm) {
+  TORCH_CHECK(
+      values.is_cuda() && query.is_cuda() && grad_out.is_cuda(),
+      "all tensors must be CUDA tensors");
+  const c10::cuda::CUDAGuard device_guard(values.device());
+  validate_register_inputs(
+      values, query, grad_out, saved_alpha, saved_rstd, saved_norm, false);
 
   auto grad_values = torch::empty_like(values);
   auto grad_query = torch::zeros(
       {values.size(3)}, values.options().dtype(torch::kFloat32));
   if (values.scalar_type() == torch::kFloat16) {
     dispatch_register_backward<__half>(
-        values, query, grad_out, saved_alpha, saved_rstd, saved_norm, grad_values, grad_query);
+        values,
+        query,
+        grad_out,
+        saved_alpha,
+        saved_rstd,
+        saved_norm,
+        grad_values,
+        grad_query);
   } else {
     dispatch_register_backward<__nv_bfloat16>(
-        values, query, grad_out, saved_alpha, saved_rstd, saved_norm, grad_values, grad_query);
+        values,
+        query,
+        grad_out,
+        saved_alpha,
+        saved_rstd,
+        saved_norm,
+        grad_values,
+        grad_query);
   }
   return {grad_values, grad_query};
 }
@@ -1381,57 +1439,36 @@ std::vector<torch::Tensor> register_cluster_backward(
     torch::Tensor saved_alpha,
     torch::Tensor saved_rstd,
     torch::Tensor saved_norm) {
-  TORCH_CHECK(values.is_cuda() && query.is_cuda() && grad_out.is_cuda(), "all tensors must be CUDA tensors");
+  TORCH_CHECK(
+      values.is_cuda() && query.is_cuda() && grad_out.is_cuda(),
+      "all tensors must be CUDA tensors");
   const c10::cuda::CUDAGuard device_guard(values.device());
-  TORCH_CHECK(values.device() == query.device() && values.device() == grad_out.device(), "all tensors must share one device");
-  TORCH_CHECK(values.is_contiguous() && query.is_contiguous() && grad_out.is_contiguous(), "all tensors must be contiguous");
-  TORCH_CHECK(values.dim() == 4, "values must be [N, B, T, D]");
-  TORCH_CHECK(query.dim() == 1 && query.size(0) == values.size(3), "query must be [D]");
-  TORCH_CHECK(
-      grad_out.sizes() == torch::IntArrayRef({values.size(1), values.size(2), values.size(3)}),
-      "grad_out must be [B, T, D]");
-  TORCH_CHECK(values.scalar_type() == query.scalar_type() && values.scalar_type() == grad_out.scalar_type(), "all tensors must have one dtype");
-  TORCH_CHECK(
-      values.scalar_type() == torch::kFloat16 || values.scalar_type() == torch::kBFloat16,
-      "register cluster supports float16 and bfloat16");
-  TORCH_CHECK(values.size(0) > 0 && values.size(1) > 0 && values.size(2) > 0 && values.size(3) > 0, "all dimensions must be positive");
-  constexpr int64_t kIntMax = std::numeric_limits<int>::max();
-  TORCH_CHECK(
-      values.size(0) <= kIntMax && values.size(3) <= kIntMax &&
-          values.size(1) <= kIntMax / values.size(2),
-      "N, B*T, and D must fit in signed 32-bit kernel indices");
-  const int64_t n_tokens = values.size(1) * values.size(2);
-  const std::vector<int64_t> expected{values.size(0), n_tokens};
-  for (const auto& saved : {saved_alpha, saved_rstd, saved_norm}) {
-    TORCH_CHECK(saved.is_cuda() && saved.device() == values.device(), "saved state must use the values device");
-    TORCH_CHECK(saved.scalar_type() == torch::kFloat32, "saved state must be fp32");
-    TORCH_CHECK(saved.is_contiguous() && saved.sizes() == expected, "saved state must be contiguous [N, B*T]");
-  }
-  int compute_major = 0;
-  int compute_minor = 0;
-  int cluster_launch = 0;
-  C10_CUDA_CHECK(cudaDeviceGetAttribute(
-      &compute_major, cudaDevAttrComputeCapabilityMajor, values.get_device()));
-  C10_CUDA_CHECK(cudaDeviceGetAttribute(
-      &compute_minor, cudaDevAttrComputeCapabilityMinor, values.get_device()));
-  C10_CUDA_CHECK(cudaDeviceGetAttribute(
-      &cluster_launch, cudaDevAttrClusterLaunch, values.get_device()));
-  TORCH_CHECK(
-      compute_major == 12 && compute_minor == 0,
-      "register cluster was compiled for sm_120 but received sm_",
-      compute_major,
-      compute_minor);
-  TORCH_CHECK(cluster_launch, "device does not support thread-block clusters");
+  validate_register_inputs(
+      values, query, grad_out, saved_alpha, saved_rstd, saved_norm, true);
 
   auto grad_values = torch::empty_like(values);
   auto grad_query = torch::zeros(
       {values.size(3)}, values.options().dtype(torch::kFloat32));
   if (values.scalar_type() == torch::kFloat16) {
     dispatch_register_cluster_backward<__half>(
-        values, query, grad_out, saved_alpha, saved_rstd, saved_norm, grad_values, grad_query);
+        values,
+        query,
+        grad_out,
+        saved_alpha,
+        saved_rstd,
+        saved_norm,
+        grad_values,
+        grad_query);
   } else {
     dispatch_register_cluster_backward<__nv_bfloat16>(
-        values, query, grad_out, saved_alpha, saved_rstd, saved_norm, grad_values, grad_query);
+        values,
+        query,
+        grad_out,
+        saved_alpha,
+        saved_rstd,
+        saved_norm,
+        grad_values,
+        grad_query);
   }
   return {grad_values, grad_query};
 }

@@ -595,6 +595,13 @@ class _BlockAttnResTriton(torch.autograd.Function):
         # silently producing wrong results on a transposed input.
         v = v.contiguous()
         w = w.contiguous()
+        if plan.backward.family in {"cuda_register", "cuda_register_cluster"}:
+            # Packed pair loads require four-byte base alignment. A contiguous
+            # odd-offset view can still be only two-byte aligned.
+            if v.data_ptr() % 4:
+                v = v.clone(memory_format=torch.contiguous_format)
+            if w.data_ptr() % 4:
+                w = w.clone(memory_format=torch.contiguous_format)
         out = torch.empty(b, t, d, device=v.device, dtype=v.dtype)
         saved = _launch_training_forward(v, w, out, eps, plan)
         ctx.save_for_backward(v, w, *saved)
@@ -612,6 +619,10 @@ class _BlockAttnResTriton(torch.autograd.Function):
         usable, tokens, warps, stages = _bwd_launch(n_pow2, d)
 
         grad_out = grad_out.contiguous()
+        if plan.backward.family in {"cuda_register", "cuda_register_cluster"} and (
+            grad_out.data_ptr() % 4
+        ):
+            grad_out = grad_out.clone(memory_format=torch.contiguous_format)
         n_tokens = b * t
 
         family = plan.backward.family
@@ -620,11 +631,20 @@ class _BlockAttnResTriton(torch.autograd.Function):
             "cuda_cluster",
             "cuda_cluster4",
             "cuda_register",
+            "cuda_register_cluster",
         }:
-            from .cuda_op import cuda_register_backward, cuda_shared_backward
+            from .cuda_op import (
+                cuda_register_backward,
+                cuda_register_cluster_backward,
+                cuda_shared_backward,
+            )
 
             if family == "cuda_register":
                 dv, dw = cuda_register_backward(
+                    v, w, grad_out, saved_state=tuple(saved)
+                )
+            elif family == "cuda_register_cluster":
+                dv, dw = cuda_register_cluster_backward(
                     v, w, grad_out, saved_state=tuple(saved)
                 )
             else:
@@ -757,6 +777,13 @@ def _block_attn_res_cuda_register(
 ) -> torch.Tensor:
     """Run the private packed-register persistent backward candidate."""
     return _block_attn_res_with_plan(v, w, eps, plan_name="cuda_register")
+
+
+def _block_attn_res_cuda_register_cluster(
+    v: torch.Tensor, w: torch.Tensor, eps: float = DEFAULT_EPS
+) -> torch.Tensor:
+    """Run the private shape-specialized packed-register cluster candidate."""
+    return _block_attn_res_with_plan(v, w, eps, plan_name="cuda_register_cluster")
 
 
 class BlockAttnResTriton(torch.nn.Module):

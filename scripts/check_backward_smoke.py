@@ -35,6 +35,7 @@ EXPECTED = {
     "cuda_cluster",
     "cuda_cluster4",
     "cuda_register",
+    "cuda_register_cluster",
     "liger",
 }
 CANDIDATES = EXPECTED - {"current", "liger"}
@@ -138,7 +139,7 @@ def check_reports(
             or monitor.get("probe_errors")
             or not monitor_coverage_ok
         ):
-            problems.append(f"{prefix}: continuous GPU monitor is incomplete or contaminated")
+            problems.append(f"{prefix}: sampled GPU monitor is incomplete or contaminated")
 
         execution_order = report.get("execution_order", [])
         schedule_shapes = [_shape(item) for item in execution_order]
@@ -278,17 +279,18 @@ def main() -> int:
     parser.add_argument("--expected-branch", required=True)
     parser.add_argument("--expected-tree", required=True)
     args = parser.parse_args()
+    report_bytes = [path.read_bytes() for path in args.reports]
     decision = check_reports(
-        [json.loads(path.read_text()) for path in args.reports],
+        [json.loads(raw) for raw in report_bytes],
         expected_commit=args.expected_commit,
         expected_branch=args.expected_branch,
         expected_tree=args.expected_tree,
     )
     decision["input_reports"] = [
         {
-            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "sha256": hashlib.sha256(raw).hexdigest(),
         }
-        for path in args.reports
+        for raw in report_bytes
     ]
     rendered = json.dumps(decision, indent=2) + "\n"
     if args.out:

@@ -74,16 +74,17 @@ Ordered by how much the measurements say they are worth.
    `codex/backward-architecture` branch replaces the backward-only experiment switch with
    complete immutable training plans. It contains grouped Triton paths, saved FP32 forward
    coefficients, hierarchical `dw` reduction, a one-block CUDA traffic control, two-block and
-   four-block feature-sharded CUDA clusters, and one fixed-shape packed-register CTA. The CUDA
+   four-block feature-sharded CUDA clusters, and one fixed-shape packed-register CTA. It also
+   contains packed-register clusters for the two remaining gap shapes. The CUDA
    paths target the one-read source traffic lower bound. Source reductions now use balanced
    warp waves instead of two full-block barriers per source. The four-block cluster lowers
    per-block shared-memory pressure and parallelizes the DSM scalar reduction. The offline
    `sm_120` gate reports 64 registers for the two-block cluster, 72 for the four-block cluster,
-   and 128 for the `(N=9,D=4096)` register CTA. All CUDA candidates have zero stack and zero
-   local-memory use. Wider register variants and larger source-serial tiles were removed
-   because the compiler spilled them. The benchmark stores raw paired trials and uses a
-   continuous process monitor. Production dispatch is unchanged. GPU correctness, occupancy,
-   and latency are still pending.
+   and 128 for each packed-register specialization. All CUDA candidates have zero stack and zero
+   local-memory use. The register clusters use four blocks for `(N=9,D=8192)` and two blocks for
+   `(N=32,D=2048)`. Larger source-serial tiles were removed because the compiler spilled them.
+   The benchmark stores raw paired trials and uses a 50 ms sampled process monitor. Production
+   dispatch is unchanged. GPU correctness, occupancy, and latency are still pending.
 2. **Complete the batched training contract.** The current batched API does not return
    merge statistics and does not implement backward. The resident forward is useful, but
    it is not the complete paper schedule.
@@ -148,3 +149,4 @@ Decisions that changed direction, with the evidence that forced them. Append-onl
 | 2026-09-02 | Measure allocator peaks relative to live allocations. | The old method charged the 384 MiB L2 flush buffer and live oracle storage to operator workspace. The corrected representative workspaces are 0.312 MiB for max-autotuned Inductor and 0 MiB for switchyard forward. |
 | 2026-09-03 | Stop tuning the split backward and prepare a one-read architecture. | The split path moves `(3N+2)X` large-tensor bytes while the exact lower bound is `(2N+1)X`. The 288–576 MiB source stacks do not fit in 128 MiB of L2. Liger is already within about 2.5–4 percent of the two-read bandwidth model, so tile changes cannot create a material lead. The new feature-sharded cluster retains source values in distributed shared memory and compiles for `sm_120` without spills. |
 | 2026-09-05 | Add four-block and fixed-shape one-read candidates; reject every spilling specialization. | The four-block cluster cuts per-block source storage and compiles at 72 registers with zero stack or local memory. The `(N=9,D=4096)` packed-register CTA compiles at 128 registers with zero stack or local memory. Wider packed-register and source-serial tiles produced 72–984 bytes of stack per thread, so those shapes are not eligible for GPU measurement. |
+| 2026-09-05 | Shard packed registers across clusters for the two remaining gap shapes. | A four-block `(N=9,D=8192)` specialization and a two-block `(N=32,D=2048)` specialization retain every source pair across both gradient equations. Both dtypes compile at 128 registers with zero stack and zero local memory. Only source-sized scalar reductions use DSM. |

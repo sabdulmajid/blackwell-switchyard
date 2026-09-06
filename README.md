@@ -291,6 +291,7 @@ The private experiment branch now contains complete training plans.
 It includes a grouped Triton path and two feature-sharded CUDA cluster paths.
 The CUDA clusters use two or four blocks.
 It also includes one fixed-shape register path for `N=9 D=4096`.
+Register-cluster paths cover `N=9 D=8192` and `N=32 D=2048`.
 These CUDA paths keep source values on the chip.
 They target the one-read backward traffic limit.
 They compile for `sm_120` without local-memory spills.

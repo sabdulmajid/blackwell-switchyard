@@ -14,21 +14,63 @@ cd "$repo_dir"
 : "${SWITCHYARD_TOOLCHAIN_DIR:?set SWITCHYARD_TOOLCHAIN_DIR to the local Python headers}"
 
 result_branch=${SWITCHYARD_RESULT_BRANCH:-codex/backward-architecture}
-expected_origin=${SWITCHYARD_EXPECTED_ORIGIN:-https://github.com/sabdulmajid/blackwell-switchyard.git}
+expected_origin=https://github.com/sabdulmajid/blackwell-switchyard.git
 forbidden_metadata='co-authored-by|claude|anthropic|wizchem|chatgpt|openai\.com|session[-_/][[:alnum:]]|file://|/(home|tmp|pub[0-9]+)/'
+all_impls=current,serial_recompute_atomic_t4,serial_saved_partials_t16,cuda_shared,cuda_cluster,cuda_cluster4,cuda_register,cuda_register_cluster,liger
+portable_impls=current,serial_recompute_atomic_t4,serial_saved_partials_t16,liger
+candidates=(
+  serial_recompute_atomic_t4
+  serial_saved_partials_t16
+  cuda_shared
+  cuda_cluster
+  cuda_cluster4
+  cuda_register
+  cuda_register_cluster
+)
+if [[ ! "$SWITCHYARD_EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] ||
+   [[ ! "$SWITCHYARD_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] ||
+   [[ ! "$SWITCHYARD_TARGET_GPU_UUID" =~ ^GPU-[A-Za-z0-9-]+$ ]] ||
+   ! git check-ref-format --branch "$SWITCHYARD_CAMPAIGN_BRANCH" >/dev/null ||
+   ! git check-ref-format --branch "$result_branch" >/dev/null; then
+  echo "campaign identity or Git reference is malformed" >&2
+  exit 2
+fi
+
+verify_origin() {
+  local fetch_urls
+  local push_urls
+  mapfile -t fetch_urls < <(git remote get-url --all origin)
+  mapfile -t push_urls < <(git remote get-url --push --all origin)
+  if [[ ${#fetch_urls[@]} -ne 1 || ${fetch_urls[0]:-} != "$expected_origin" ||
+        ${#push_urls[@]} -ne 1 || ${push_urls[0]:-} != "$expected_origin" ]]; then
+    echo "origin must have exactly one canonical fetch URL and push URL" >&2
+    return 1
+  fi
+}
+
+read_result_branch() {
+  verify_origin || return 1
+  git ls-remote --heads "$expected_origin" "refs/heads/$result_branch" | awk '{print $1}'
+}
 
 push_result_commit() {
+  local result_commit=$1
   local delay
   local observed
   for delay in 0 5 15 30 60 120 240 480; do
     if ((delay > 0)); then
       sleep "$delay"
     fi
-    if git push origin "HEAD:refs/heads/$result_branch"; then
+    verify_origin || return 1
+    if ! git cat-file -e "$result_commit^{commit}"; then
+      echo "local result commit disappeared" >&2
+      return 1
+    fi
+    if git push "$expected_origin" "$result_commit:refs/heads/$result_branch"; then
       return 0
     fi
-    if observed=$(git ls-remote --heads origin "refs/heads/$result_branch" | awk '{print $1}'); then
-      if [[ "$observed" == "$(git rev-parse HEAD)" ]]; then
+    if observed=$(read_result_branch); then
+      if [[ "$observed" == "$result_commit" ]]; then
         return 0
       fi
       if [[ "$observed" != "$SWITCHYARD_EXPECTED_HEAD" ]]; then
@@ -70,6 +112,19 @@ git_index=$(git rev-parse --path-format=absolute --git-path index)
 expected_tree=$(git rev-parse "$SWITCHYARD_EXPECTED_HEAD^{tree}")
 export SWITCHYARD_EXPECTED_TREE="$expected_tree"
 export SWITCHYARD_EXPECTED_ORIGIN="$expected_origin"
+
+check_result_bundle() {
+  local prefix=$1
+  local ref=$2
+  python scripts/check_backward_bundle.py "$prefix" \
+    --git-ref "$ref" \
+    --expected-commit "$SWITCHYARD_EXPECTED_HEAD" \
+    --expected-tree "$expected_tree" \
+    --expected-branch "$SWITCHYARD_CAMPAIGN_BRANCH" \
+    --result-branch "$result_branch" \
+    --expected-origin "$expected_origin" \
+    --expected-gpu-uuid "$SWITCHYARD_TARGET_GPU_UUID"
+}
 if [[ "$git_dir" == "$git_common_dir" || "$git_index" != "$git_dir/index" ]]; then
   echo "campaign must run from a dedicated linked worktree and index" >&2
   exit 2
@@ -87,12 +142,11 @@ if [[ $(git config --local user.name) != "Ayman" ]] ||
   echo "refusing to commit with unexpected Git identity" >&2
   exit 2
 fi
-if [[ $(git remote get-url origin) != "$expected_origin" ]] ||
-   [[ $(git remote get-url --push origin) != "$expected_origin" ]]; then
+if ! verify_origin; then
   echo "refusing to publish to an unexpected origin" >&2
   exit 2
 fi
-if ! remote_head=$(git ls-remote --heads origin "refs/heads/$result_branch" | awk '{print $1}'); then
+if ! remote_head=$(read_result_branch); then
   echo "cannot read the result branch" >&2
   exit 75
 fi
@@ -100,22 +154,24 @@ fi
 # Recover a fully audited local result commit if a prior push or post-push
 # verification was interrupted. No GPU phase needs to run again.
 if [[ "$git_head" != "$SWITCHYARD_EXPECTED_HEAD" ]]; then
-  mapfile -t recovery_files < <(git diff-tree --no-commit-id --name-only -r HEAD)
-  recovery_paths_ok=true
-  if [[ ${#recovery_files[@]} -lt 8 ]]; then
-    recovery_paths_ok=false
-  fi
+  mapfile -t recovery_files < <(git diff-tree --no-commit-id --name-only -r "$git_head")
+  recovery_prefix=""
   for path in "${recovery_files[@]}"; do
-    if [[ ! "$path" =~ ^results/backward_campaign_[0-9]{8}T[0-9]{6}Z_[a-z0-9_]+\.json$ ]]; then
-      recovery_paths_ok=false
+    if [[ "$path" =~ ^(results/backward_campaign_[0-9]{8}T[0-9]{6}Z)_manifest\.json$ ]]; then
+      if [[ -n "$recovery_prefix" ]]; then
+        recovery_prefix="invalid"
+        break
+      fi
+      recovery_prefix=${BASH_REMATCH[1]}
     fi
   done
-  if [[ $(git rev-parse HEAD^) != "$SWITCHYARD_EXPECTED_HEAD" ]] ||
-     [[ $(git show -s --format=%an%n%ae%n%cn%n%ce HEAD) != $'Ayman\nayman.hasib@outlook.com\nAyman\nayman.hasib@outlook.com' ]] ||
-     [[ $(git show -s --format=%s HEAD) != "Record guarded backward campaign" ]] ||
-     [[ "$recovery_paths_ok" != true ]] ||
-     git show -s --format=%B HEAD | rg -qi "$forbidden_metadata" ||
-     git grep -IinE "$forbidden_metadata" HEAD -- "${recovery_files[@]}"; then
+  if [[ $(git rev-parse "$git_head^") != "$SWITCHYARD_EXPECTED_HEAD" ]] ||
+     [[ $(git show -s --format=%an%n%ae%n%cn%n%ce "$git_head") != $'Ayman\nayman.hasib@outlook.com\nAyman\nayman.hasib@outlook.com' ]] ||
+     [[ $(git show -s --format=%s "$git_head") != "Record guarded backward campaign" ]] ||
+     [[ -z "$recovery_prefix" || "$recovery_prefix" == invalid ]] ||
+     git show -s --format=%B "$git_head" | rg -qi "$forbidden_metadata" ||
+     git grep -IinE "$forbidden_metadata" "$git_head" -- "${recovery_files[@]}" ||
+     ! check_result_bundle "$recovery_prefix" "$git_head"; then
     echo "repository HEAD changed and is not a recoverable result commit" >&2
     exit 2
   fi
@@ -123,11 +179,11 @@ if [[ "$git_head" != "$SWITCHYARD_EXPECTED_HEAD" ]]; then
     exit 0
   fi
   if [[ "$remote_head" != "$SWITCHYARD_EXPECTED_HEAD" ]] ||
-     ! push_result_commit; then
+     ! push_result_commit "$git_head"; then
     echo "recoverable result commit still needs publication" >&2
     exit 75
   fi
-  remote_head=$(git ls-remote --heads origin "refs/heads/$result_branch" | awk '{print $1}')
+  remote_head=$(read_result_branch) || exit 75
   [[ "$remote_head" == "$git_head" ]] && exit 0
   exit 75
 fi
@@ -172,9 +228,6 @@ CUDA_VISIBLE_DEVICES="" timeout --foreground 30m \
   python scripts/compile_candidates.py --out "$compile_report"
 timeout --foreground 30m python -m pytest tests/test_backward_candidates.py -q
 
-all_impls=current,serial_recompute_atomic_t4,serial_saved_partials_t16,cuda_shared,cuda_cluster,cuda_cluster4,cuda_register,liger
-portable_impls=current,serial_recompute_atomic_t4,serial_saved_partials_t16,liger
-
 report_reusable() {
   local report=$1
   local dtype=$2
@@ -215,9 +268,8 @@ set -e
 if [[ $smoke_exit -ne 0 ]] ||
    ! python scripts/check_evidence_binding.py \
      "$smoke_decision" "$smoke_bf16" "$smoke_fp16"; then
-  rm -f -- "$smoke_bf16" "$smoke_fp16" "$smoke_decision"
-  echo "smoke evidence did not pass; regenerate it after a new idle interval" >&2
-  exit 75
+  echo "smoke evidence failed a deterministic correctness or structure gate" >&2
+  exit 3
 fi
 
 if report_reusable "$full_bf16" bfloat16 full "$all_impls"; then
@@ -247,14 +299,6 @@ fi
 # project may safely start while this campaign finalizes its evidence.
 touch "$gpu_complete_marker"
 
-candidates=(
-  serial_recompute_atomic_t4
-  serial_saved_partials_t16
-  cuda_shared
-  cuda_cluster
-  cuda_cluster4
-  cuda_register
-)
 decision_files=()
 for candidate in "${candidates[@]}"; do
   decision="$run_dir/decision_${candidate}.json"
@@ -280,10 +324,17 @@ for candidate in "${candidates[@]}"; do
   case "$evaluation_exit:$decision_status" in
     0:DROP|0:READY_FOR_DISPATCH_REVIEW|1:REJECT) ;;
     2:MORE_DATA)
-      rm -f -- "$full_bf16" "$full_fp16" "$full_fp32" \
-        "$decision" "${decision_files[@]}"
-      echo "evaluator requested fresh full evidence for $candidate" >&2
-      exit 75
+      retryable=$(python -c \
+        'import json,sys; d=json.load(open(sys.argv[1])); print(int(not d["problems"] and bool(d["unstable"])))' \
+        "$decision")
+      if [[ "$retryable" == 1 ]]; then
+        rm -f -- "$full_bf16" "$full_fp16" "$full_fp32" \
+          "$decision" "${decision_files[@]}"
+        echo "statistical instability requires fresh full evidence for $candidate" >&2
+        exit 75
+      fi
+      echo "evaluator found a deterministic incomplete evidence contract for $candidate" >&2
+      exit 3
       ;;
     *)
       echo "evaluator exit and status disagree for $candidate: $evaluation_exit:$decision_status" >&2
@@ -303,7 +354,7 @@ if [[ $(git rev-parse HEAD) != "$SWITCHYARD_EXPECTED_HEAD" ]] ||
   echo "campaign worktree changed during measurement; results remain external" >&2
   exit 2
 fi
-if ! remote_head=$(git ls-remote --heads origin "refs/heads/$result_branch" | awk '{print $1}'); then
+if ! remote_head=$(read_result_branch); then
   echo "cannot recheck the result branch; results remain external" >&2
   exit 75
 fi
@@ -440,6 +491,7 @@ result_files+=("$manifest_destination")
 
 git add -- "${result_files[@]}"
 git diff --cached --check
+check_result_bundle "$result_prefix" :
 mapfile -t staged_files < <(git diff --cached --name-only)
 mapfile -t expected_files < <(printf '%s\n' "${result_files[@]}" | sort)
 mapfile -t actual_files < <(printf '%s\n' "${staged_files[@]}" | sort)
@@ -476,12 +528,13 @@ if git grep -IinE "$forbidden_metadata" HEAD -- "${result_files[@]}"; then
   echo "forbidden authorship, task, or host metadata found after commit" >&2
   exit 2
 fi
+check_result_bundle "$result_prefix" HEAD
 
-if ! push_result_commit; then
+if ! push_result_commit "$result_commit"; then
   echo "result commit is local and will be retried without rerunning GPU work" >&2
   exit 75
 fi
-if ! remote_head=$(git ls-remote --heads origin "refs/heads/$result_branch" | awk '{print $1}'); then
+if ! remote_head=$(read_result_branch); then
   echo "result commit was pushed but remote verification must be retried" >&2
   exit 75
 fi

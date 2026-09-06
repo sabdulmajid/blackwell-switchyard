@@ -252,6 +252,11 @@ def test_cuda_plan_does_not_require_unsupported_float32_run():
 
 def test_kernel_contract_counts_support_work_not_only_main_kernels():
     assert MODULE._expected_kernel_contract("cuda_cluster", "bfloat16")[1:] == (3, 4)
+    assert MODULE._expected_kernel_contract("cuda_register_cluster", "float16") == (
+        ("register_cluster_backward_kernel",),
+        3,
+        4,
+    )
     assert MODULE._expected_kernel_contract("serial_saved_partials_t16", "float16")[1:] == (
         3,
         4,
@@ -260,6 +265,44 @@ def test_kernel_contract_counts_support_work_not_only_main_kernels():
         2,
         3,
     )
+
+
+def test_register_cluster_launch_contract_rejects_each_resource_mismatch():
+    shape = (9, 1, 4096, 8192)
+    blocks = 4
+    local_width = shape[3] // blocks
+    dynamic = 4 * (21 * shape[0] + local_width) + 2 * local_width
+    valid = {
+        "active_clusters": 1,
+        "cluster_blocks": blocks,
+        "dynamic_shared_bytes": dynamic,
+        "static_shared_bytes": 1024,
+        "registers_per_thread": 128,
+        "threads_per_block": 512,
+        "multiprocessors": 192,
+        "max_shared_bytes": dynamic + 1024,
+    }
+    problems = []
+    MODULE._check_register_cluster_launch_info(shape, valid, problems, "probe")
+    assert problems == []
+
+    invalid_values = {
+        "active_clusters": 0,
+        "cluster_blocks": 2,
+        "dynamic_shared_bytes": dynamic - 4,
+        "static_shared_bytes": 0,
+        "registers_per_thread": 127,
+        "threads_per_block": 256,
+        "multiprocessors": 0,
+        "max_shared_bytes": dynamic,
+    }
+    for field, value in invalid_values.items():
+        launch_info = valid | {field: value}
+        field_problems = []
+        MODULE._check_register_cluster_launch_info(
+            shape, launch_info, field_problems, "probe"
+        )
+        assert field_problems, field
 
 
 def test_incomplete_dtype_matrix_requests_more_data():
