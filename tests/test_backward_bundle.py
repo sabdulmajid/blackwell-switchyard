@@ -60,7 +60,7 @@ def test_compile_gate_binds_plan_and_triton_compiler_contracts():
         lambda report: report["plans"][0].update(rationale="different"),
         lambda report: report["compilations"][0]["constants"].update(BLOCK_D=2048),
         lambda report: report["compilations"][0]["resources"][0].update(registers=1),
-        lambda report: report["compilations"][0].update(spill_policy="record"),
+        lambda report: report["compilations"][0].update(spill_policy="forbid"),
         lambda report: report["target"].update(backend="not-cuda"),
         lambda report: report["provenance"].update(triton="different"),
     ]

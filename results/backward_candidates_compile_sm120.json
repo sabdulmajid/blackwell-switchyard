@@ -6,7 +6,7 @@
   },
   "gpu_visible": false,
   "provenance": {
-    "repository_commit": "176e4645e66ed51f43dbad8897e296c2ef361087",
+    "repository_commit": "f1dc96091fa891b11615e1fade7a3ae1ef7fc374",
     "worktree_clean": true,
     "torch": "2.9.0+cu128",
     "triton": "3.5.0",
@@ -14,6 +14,20 @@
     "cuda_source_sha256": "a863be2f04afd7df61d6ad56d69d5b7d712ae439c4ba354417b8894a0577a533"
   },
   "plans": [
+    {
+      "name": "auto",
+      "forward": {
+        "family": "standard",
+        "saved_state": "none"
+      },
+      "backward": {
+        "family": "auto",
+        "tokens_per_cta": 1,
+        "dw_reduction": "grouped_atomics"
+      },
+      "production": true,
+      "rationale": "accepted resident-or-split dispatch"
+    },
     {
       "name": "serial_recompute_atomic_t4",
       "forward": {
@@ -129,11 +143,471 @@
   ],
   "compilations": [
     {
-      "name": "serial_recompute_atomic_t4_n9_d4096",
+      "name": "bwd_apply_bfloat16_bn16_bd1024_t32_w8_s1",
       "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "record",
       "constants": {
         "BLOCK_N": 16,
+        "BLOCK_D": 1024,
+        "TOKENS": 32
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 16384,
+      "resources": [
+        {
+          "kernel": "_bwd_apply",
+          "registers": 255,
+          "stack_bytes": 976,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 106
+        }
+      ]
+    },
+    {
+      "name": "bwd_apply_bfloat16_bn32_bd1024_t32_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 32,
+        "BLOCK_D": 1024,
+        "TOKENS": 32
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32768,
+      "resources": [
+        {
+          "kernel": "_bwd_apply",
+          "registers": 255,
+          "stack_bytes": 2064,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 202
+        }
+      ]
+    },
+    {
+      "name": "bwd_apply_bfloat16_bn8_bd1024_t32_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 1024,
+        "TOKENS": 32
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 8192,
+      "resources": [
+        {
+          "kernel": "_bwd_apply",
+          "registers": 255,
+          "stack_bytes": 64,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 58
+        }
+      ]
+    },
+    {
+      "name": "bwd_apply_float16_bn16_bd1024_t32_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 1024,
+        "TOKENS": 32
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 16384,
+      "resources": [
+        {
+          "kernel": "_bwd_apply",
+          "registers": 255,
+          "stack_bytes": 976,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 106
+        }
+      ]
+    },
+    {
+      "name": "bwd_apply_float16_bn32_bd1024_t32_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 32,
+        "BLOCK_D": 1024,
+        "TOKENS": 32
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32768,
+      "resources": [
+        {
+          "kernel": "_bwd_apply",
+          "registers": 255,
+          "stack_bytes": 2064,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 202
+        }
+      ]
+    },
+    {
+      "name": "bwd_apply_float16_bn8_bd1024_t32_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 1024,
+        "TOKENS": 32
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 8192,
+      "resources": [
+        {
+          "kernel": "_bwd_apply",
+          "registers": 255,
+          "stack_bytes": 64,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 58
+        }
+      ]
+    },
+    {
+      "name": "bwd_apply_float32_bn16_bd1024_t32_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 1024,
+        "TOKENS": 32
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 16384,
+      "resources": [
+        {
+          "kernel": "_bwd_apply",
+          "registers": 255,
+          "stack_bytes": 968,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 106
+        }
+      ]
+    },
+    {
+      "name": "bwd_apply_float32_bn32_bd1024_t32_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 32,
+        "BLOCK_D": 1024,
+        "TOKENS": 32
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32768,
+      "resources": [
+        {
+          "kernel": "_bwd_apply",
+          "registers": 255,
+          "stack_bytes": 2120,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 202
+        }
+      ]
+    },
+    {
+      "name": "bwd_apply_float32_bn8_bd1024_t32_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 1024,
+        "TOKENS": 32
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 8192,
+      "resources": [
+        {
+          "kernel": "_bwd_apply",
+          "registers": 255,
+          "stack_bytes": 56,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 58
+        }
+      ]
+    },
+    {
+      "name": "bwd_resident_bfloat16_bn16_bd2048_t4_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048,
+        "TOKENS": 4
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_bwd_resident",
+          "registers": 40,
+          "stack_bytes": 5560,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 552
+        }
+      ]
+    },
+    {
+      "name": "bwd_resident_bfloat16_bn4_bd8192_t4_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 4,
+        "BLOCK_D": 8192,
+        "TOKENS": 4
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_bwd_resident",
+          "registers": 40,
+          "stack_bytes": 6384,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 672
+        }
+      ]
+    },
+    {
+      "name": "bwd_resident_bfloat16_bn8_bd4096_t4_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 8,
         "BLOCK_D": 4096,
+        "TOKENS": 4
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_bwd_resident",
+          "registers": 40,
+          "stack_bytes": 5688,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 592
+        }
+      ]
+    },
+    {
+      "name": "bwd_resident_float16_bn16_bd2048_t4_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048,
+        "TOKENS": 4
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_bwd_resident",
+          "registers": 40,
+          "stack_bytes": 5624,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 552
+        }
+      ]
+    },
+    {
+      "name": "bwd_resident_float16_bn4_bd8192_t4_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 4,
+        "BLOCK_D": 8192,
+        "TOKENS": 4
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_bwd_resident",
+          "registers": 40,
+          "stack_bytes": 6504,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 672
+        }
+      ]
+    },
+    {
+      "name": "bwd_resident_float16_bn8_bd4096_t4_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 4096,
+        "TOKENS": 4
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_bwd_resident",
+          "registers": 40,
+          "stack_bytes": 5896,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 592
+        }
+      ]
+    },
+    {
+      "name": "bwd_resident_float32_bn16_bd2048_t4_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048,
+        "TOKENS": 4
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_bwd_resident",
+          "registers": 40,
+          "stack_bytes": 6488,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 552
+        }
+      ]
+    },
+    {
+      "name": "bwd_resident_float32_bn4_bd8192_t4_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 4,
+        "BLOCK_D": 8192,
+        "TOKENS": 4
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_bwd_resident",
+          "registers": 40,
+          "stack_bytes": 6464,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 672
+        }
+      ]
+    },
+    {
+      "name": "bwd_resident_float32_bn8_bd4096_t4_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 4096,
+        "TOKENS": 4
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_bwd_resident",
+          "registers": 40,
+          "stack_bytes": 6456,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 592
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_bfloat16_bn16_bd2048_t16_saved1_partial1_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048,
+        "TOKENS": 16,
+        "USE_SAVED": true,
+        "WRITE_PARTIAL": true
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 128,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 275
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_bfloat16_bn16_bd2048_t4_saved0_partial0_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048,
         "TOKENS": 4,
         "USE_SAVED": false,
         "WRITE_PARTIAL": false
@@ -144,17 +618,19 @@
       "resources": [
         {
           "kernel": "_bwd_source_serial_grouped",
-          "registers": 241,
+          "registers": 171,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
           "local_bytes": 0,
-          "global_load_instructions": 544
+          "global_load_instructions": 272
         }
       ]
     },
     {
-      "name": "serial_saved_partials_t16_n9_d4096",
+      "name": "bwd_source_serial_grouped_bfloat16_bn16_bd4096_t16_saved1_partial1_w8_s1",
       "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
       "constants": {
         "BLOCK_N": 16,
         "BLOCK_D": 4096,
@@ -177,14 +653,16 @@
       ]
     },
     {
-      "name": "serial_saved_partials_t16_n32_d4096",
+      "name": "bwd_source_serial_grouped_bfloat16_bn16_bd4096_t4_saved0_partial0_w8_s1",
       "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
       "constants": {
-        "BLOCK_N": 32,
+        "BLOCK_N": 16,
         "BLOCK_D": 4096,
-        "TOKENS": 16,
-        "USE_SAVED": true,
-        "WRITE_PARTIAL": true
+        "TOKENS": 4,
+        "USE_SAVED": false,
+        "WRITE_PARTIAL": false
       },
       "num_warps": 8,
       "num_stages": 1,
@@ -192,17 +670,19 @@
       "resources": [
         {
           "kernel": "_bwd_source_serial_grouped",
-          "registers": 255,
+          "registers": 241,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
           "local_bytes": 0,
-          "global_load_instructions": 1059
+          "global_load_instructions": 544
         }
       ]
     },
     {
-      "name": "serial_saved_partials_t16_n32_d2048",
+      "name": "bwd_source_serial_grouped_bfloat16_bn32_bd2048_t16_saved1_partial1_w8_s1",
       "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
       "constants": {
         "BLOCK_N": 32,
         "BLOCK_D": 2048,
@@ -225,29 +705,1076 @@
       ]
     },
     {
-      "name": "saved_training_forward_n9_d8192",
+      "name": "bwd_source_serial_grouped_bfloat16_bn32_bd4096_t16_saved1_partial1_w8_s1",
       "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 32,
+        "BLOCK_D": 4096,
+        "TOKENS": 16,
+        "USE_SAVED": true,
+        "WRITE_PARTIAL": true
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 255,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 1059
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_bfloat16_bn8_bd4096_t16_saved1_partial1_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 4096,
+        "TOKENS": 16,
+        "USE_SAVED": true,
+        "WRITE_PARTIAL": true
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 225,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 291
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_bfloat16_bn8_bd4096_t4_saved0_partial0_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 4096,
+        "TOKENS": 4,
+        "USE_SAVED": false,
+        "WRITE_PARTIAL": false
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 237,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 288
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_float16_bn16_bd2048_t16_saved1_partial1_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048,
+        "TOKENS": 16,
+        "USE_SAVED": true,
+        "WRITE_PARTIAL": true
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 128,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 275
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_float16_bn16_bd2048_t4_saved0_partial0_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048,
+        "TOKENS": 4,
+        "USE_SAVED": false,
+        "WRITE_PARTIAL": false
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 171,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 272
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_float16_bn16_bd4096_t16_saved1_partial1_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 4096,
+        "TOKENS": 16,
+        "USE_SAVED": true,
+        "WRITE_PARTIAL": true
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 204,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 547
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_float16_bn16_bd4096_t4_saved0_partial0_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 4096,
+        "TOKENS": 4,
+        "USE_SAVED": false,
+        "WRITE_PARTIAL": false
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 241,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 544
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_float16_bn32_bd2048_t16_saved1_partial1_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 32,
+        "BLOCK_D": 2048,
+        "TOKENS": 16,
+        "USE_SAVED": true,
+        "WRITE_PARTIAL": true
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 255,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 531
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_float16_bn32_bd4096_t16_saved1_partial1_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 32,
+        "BLOCK_D": 4096,
+        "TOKENS": 16,
+        "USE_SAVED": true,
+        "WRITE_PARTIAL": true
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 255,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 1059
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_float16_bn8_bd4096_t16_saved1_partial1_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 4096,
+        "TOKENS": 16,
+        "USE_SAVED": true,
+        "WRITE_PARTIAL": true
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 225,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 291
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_float16_bn8_bd4096_t4_saved0_partial0_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 4096,
+        "TOKENS": 4,
+        "USE_SAVED": false,
+        "WRITE_PARTIAL": false
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 237,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 288
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_float32_bn16_bd2048_t16_saved1_partial1_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048,
+        "TOKENS": 16,
+        "USE_SAVED": true,
+        "WRITE_PARTIAL": true
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 128,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 275
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_float32_bn16_bd2048_t4_saved0_partial0_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048,
+        "TOKENS": 4,
+        "USE_SAVED": false,
+        "WRITE_PARTIAL": false
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 188,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 272
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_float32_bn16_bd4096_t16_saved1_partial1_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 4096,
+        "TOKENS": 16,
+        "USE_SAVED": true,
+        "WRITE_PARTIAL": true
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 216,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 547
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_float32_bn16_bd4096_t4_saved0_partial0_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 4096,
+        "TOKENS": 4,
+        "USE_SAVED": false,
+        "WRITE_PARTIAL": false
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 254,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 544
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_float32_bn32_bd2048_t16_saved1_partial1_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 32,
+        "BLOCK_D": 2048,
+        "TOKENS": 16,
+        "USE_SAVED": true,
+        "WRITE_PARTIAL": true
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 255,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 531
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_float32_bn8_bd4096_t16_saved1_partial1_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 4096,
+        "TOKENS": 16,
+        "USE_SAVED": true,
+        "WRITE_PARTIAL": true
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 246,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 291
+        }
+      ]
+    },
+    {
+      "name": "bwd_source_serial_grouped_float32_bn8_bd4096_t4_saved0_partial0_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 4096,
+        "TOKENS": 4,
+        "USE_SAVED": false,
+        "WRITE_PARTIAL": false
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 32,
+      "resources": [
+        {
+          "kernel": "_bwd_source_serial_grouped",
+          "registers": 254,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 288
+        }
+      ]
+    },
+    {
+      "name": "bwd_stats_bfloat16_bn16_bd1024_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 1024
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 2048,
+      "resources": [
+        {
+          "kernel": "_bwd_stats",
+          "registers": 128,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 72
+        }
+      ]
+    },
+    {
+      "name": "bwd_stats_bfloat16_bn32_bd1024_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 32,
+        "BLOCK_D": 1024
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 2048,
+      "resources": [
+        {
+          "kernel": "_bwd_stats",
+          "registers": 254,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 136
+        }
+      ]
+    },
+    {
+      "name": "bwd_stats_bfloat16_bn8_bd1024_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 1024
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 2048,
+      "resources": [
+        {
+          "kernel": "_bwd_stats",
+          "registers": 79,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 40
+        }
+      ]
+    },
+    {
+      "name": "bwd_stats_float16_bn16_bd1024_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 1024
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 2048,
+      "resources": [
+        {
+          "kernel": "_bwd_stats",
+          "registers": 128,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 72
+        }
+      ]
+    },
+    {
+      "name": "bwd_stats_float16_bn32_bd1024_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 32,
+        "BLOCK_D": 1024
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 2048,
+      "resources": [
+        {
+          "kernel": "_bwd_stats",
+          "registers": 255,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 136
+        }
+      ]
+    },
+    {
+      "name": "bwd_stats_float16_bn8_bd1024_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 1024
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 2048,
+      "resources": [
+        {
+          "kernel": "_bwd_stats",
+          "registers": 79,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 40
+        }
+      ]
+    },
+    {
+      "name": "bwd_stats_float32_bn16_bd1024_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 1024
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_bwd_stats",
+          "registers": 156,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 72
+        }
+      ]
+    },
+    {
+      "name": "bwd_stats_float32_bn32_bd1024_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 32,
+        "BLOCK_D": 1024
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_bwd_stats",
+          "registers": 255,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 136
+        }
+      ]
+    },
+    {
+      "name": "bwd_stats_float32_bn8_bd1024_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 1024
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_bwd_stats",
+          "registers": 95,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 40
+        }
+      ]
+    },
+    {
+      "name": "fwd_resident_bfloat16_bn16_bd2048_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
       "constants": {
         "BLOCK_N": 16,
         "BLOCK_D": 2048
       },
       "num_warps": 8,
-      "num_stages": 3,
+      "num_stages": 1,
       "shared_bytes": 4096,
       "resources": [
         {
-          "kernel": "_fwd_tiled_saved",
-          "registers": 241,
+          "kernel": "_fwd_resident",
+          "registers": 220,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
           "local_bytes": 0,
-          "global_load_instructions": 264
+          "global_load_instructions": 136
         }
       ]
     },
     {
-      "name": "accepted_tiled_forward_n9_d4096",
+      "name": "fwd_resident_bfloat16_bn4_bd8192_w8_s1",
       "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 4,
+        "BLOCK_D": 8192
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_resident",
+          "registers": 248,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 160
+        }
+      ]
+    },
+    {
+      "name": "fwd_resident_bfloat16_bn8_bd4096_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 4096
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_resident",
+          "registers": 254,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 144
+        }
+      ]
+    },
+    {
+      "name": "fwd_resident_float16_bn16_bd2048_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_resident",
+          "registers": 220,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 136
+        }
+      ]
+    },
+    {
+      "name": "fwd_resident_float16_bn4_bd8192_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 4,
+        "BLOCK_D": 8192
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_resident",
+          "registers": 248,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 160
+        }
+      ]
+    },
+    {
+      "name": "fwd_resident_float16_bn8_bd4096_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 4096
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_resident",
+          "registers": 252,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 144
+        }
+      ]
+    },
+    {
+      "name": "fwd_resident_float32_bn16_bd2048_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_resident",
+          "registers": 222,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 136
+        }
+      ]
+    },
+    {
+      "name": "fwd_resident_float32_bn4_bd8192_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 4,
+        "BLOCK_D": 8192
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_resident",
+          "registers": 255,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 160
+        }
+      ]
+    },
+    {
+      "name": "fwd_resident_float32_bn8_bd4096_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 4096
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_resident",
+          "registers": 232,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 144
+        }
+      ]
+    },
+    {
+      "name": "fwd_resident_saved_bfloat16_bn16_bd2048_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_resident_saved",
+          "registers": 220,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 136
+        }
+      ]
+    },
+    {
+      "name": "fwd_resident_saved_bfloat16_bn4_bd8192_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 4,
+        "BLOCK_D": 8192
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_resident_saved",
+          "registers": 247,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 160
+        }
+      ]
+    },
+    {
+      "name": "fwd_resident_saved_bfloat16_bn8_bd4096_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 4096
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_resident_saved",
+          "registers": 254,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 144
+        }
+      ]
+    },
+    {
+      "name": "fwd_resident_saved_float16_bn16_bd2048_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_resident_saved",
+          "registers": 220,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 136
+        }
+      ]
+    },
+    {
+      "name": "fwd_resident_saved_float16_bn4_bd8192_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 4,
+        "BLOCK_D": 8192
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_resident_saved",
+          "registers": 247,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 160
+        }
+      ]
+    },
+    {
+      "name": "fwd_resident_saved_float16_bn8_bd4096_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 4096
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_resident_saved",
+          "registers": 252,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 144
+        }
+      ]
+    },
+    {
+      "name": "fwd_resident_saved_float32_bn16_bd2048_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_resident_saved",
+          "registers": 222,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 136
+        }
+      ]
+    },
+    {
+      "name": "fwd_resident_saved_float32_bn8_bd4096_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 4096
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_resident_saved",
+          "registers": 230,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 144
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_bfloat16_bn16_bd2048_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
       "constants": {
         "BLOCK_N": 16,
         "BLOCK_D": 2048
@@ -267,29 +1794,493 @@
       ]
     },
     {
-      "name": "saved_resident_forward_n8_d1024",
+      "name": "fwd_tiled_bfloat16_bn16_bd2048_w8_s3",
       "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "record",
       "constants": {
-        "BLOCK_N": 8,
-        "BLOCK_D": 1024
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048
       },
-      "num_warps": 4,
-      "num_stages": 1,
-      "shared_bytes": 2048,
+      "num_warps": 8,
+      "num_stages": 3,
+      "shared_bytes": 4096,
       "resources": [
         {
-          "kernel": "_fwd_resident_saved",
-          "registers": 126,
+          "kernel": "_fwd_tiled",
+          "registers": 237,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
           "local_bytes": 0,
-          "global_load_instructions": 72
+          "global_load_instructions": 264
         }
       ]
     },
     {
-      "name": "dw_partial_reduction",
+      "name": "fwd_tiled_bfloat16_bn32_bd2048_w8_s1",
       "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 32,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled",
+          "registers": 255,
+          "stack_bytes": 720,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 520
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_bfloat16_bn8_bd2048_w8_s3",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 3,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled",
+          "registers": 136,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 136
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_float16_bn16_bd2048_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled",
+          "registers": 231,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 264
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_float16_bn16_bd2048_w8_s3",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 3,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled",
+          "registers": 231,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 264
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_float16_bn32_bd2048_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 32,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled",
+          "registers": 255,
+          "stack_bytes": 720,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 520
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_float16_bn8_bd2048_w8_s3",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 3,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled",
+          "registers": 134,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 136
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_float32_bn16_bd2048_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled",
+          "registers": 254,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 264
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_float32_bn16_bd2048_w8_s3",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 3,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled",
+          "registers": 254,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 264
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_float32_bn32_bd2048_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 32,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled",
+          "registers": 255,
+          "stack_bytes": 544,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 520
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_float32_bn8_bd2048_w8_s3",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "record",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 3,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled",
+          "registers": 128,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 136
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_saved_bfloat16_bn16_bd2048_w8_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled_saved",
+          "registers": 241,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 264
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_saved_bfloat16_bn16_bd2048_w8_s3",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 3,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled_saved",
+          "registers": 241,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 264
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_saved_bfloat16_bn32_bd1024_w16_s1",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 32,
+        "BLOCK_D": 1024
+      },
+      "num_warps": 16,
+      "num_stages": 1,
+      "shared_bytes": 2048,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled_saved",
+          "registers": 104,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 130
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_saved_bfloat16_bn8_bd2048_w8_s3",
+      "kind": "triton",
+      "input_dtype": "bfloat16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 3,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled_saved",
+          "registers": 128,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 136
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_saved_float16_bn16_bd2048_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled_saved",
+          "registers": 233,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 264
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_saved_float16_bn16_bd2048_w8_s3",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 3,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled_saved",
+          "registers": 233,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 264
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_saved_float16_bn32_bd1024_w16_s1",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 32,
+        "BLOCK_D": 1024
+      },
+      "num_warps": 16,
+      "num_stages": 1,
+      "shared_bytes": 2048,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled_saved",
+          "registers": 104,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 130
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_saved_float16_bn8_bd2048_w8_s3",
+      "kind": "triton",
+      "input_dtype": "float16",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 8,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 3,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled_saved",
+          "registers": 134,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 136
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_saved_float32_bn16_bd2048_w8_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 16,
+        "BLOCK_D": 2048
+      },
+      "num_warps": 8,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled_saved",
+          "registers": 254,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 264
+        }
+      ]
+    },
+    {
+      "name": "fwd_tiled_saved_float32_bn32_bd1024_w16_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "forbid",
+      "constants": {
+        "BLOCK_N": 32,
+        "BLOCK_D": 1024
+      },
+      "num_warps": 16,
+      "num_stages": 1,
+      "shared_bytes": 4096,
+      "resources": [
+        {
+          "kernel": "_fwd_tiled_saved",
+          "registers": 127,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 130
+        }
+      ]
+    },
+    {
+      "name": "reduce_dw_partials_float32_bp8_bd128_w4_s1",
+      "kind": "triton",
+      "input_dtype": "float32",
+      "spill_policy": "forbid",
       "constants": {
         "BLOCK_P": 8,
         "BLOCK_D": 128
