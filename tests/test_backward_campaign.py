@@ -14,6 +14,11 @@ def test_campaign_reuses_only_valid_complete_phases():
     assert '--expected-tree "$expected_tree"' in SCRIPT
 
 
+def test_campaign_activates_the_declared_local_toolchain():
+    assert "source scripts/env.sh" in SCRIPT
+    assert "SWITCHYARD_TOOLCHAIN_DIR" in SCRIPT
+
+
 def test_campaign_rejects_nonterminal_evaluator_results():
     assert "0:DROP|0:READY_FOR_DISPATCH_REVIEW|1:REJECT" in SCRIPT
     assert "2:MORE_DATA" in SCRIPT

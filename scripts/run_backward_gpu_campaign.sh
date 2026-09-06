@@ -123,6 +123,9 @@ if [[ ! -f "$SWITCHYARD_TOOLCHAIN_DIR/usr/include/python3.12/Python.h" ]]; then
   echo "repo-scoped Python headers are missing" >&2
   exit 2
 fi
+# Activate the declared headers, CUDA toolkit, Python path, and local caches.
+# This host intentionally has no system Python development package.
+source scripts/env.sh
 
 mkdir -p "$campaign_dir"
 exec 9>"$campaign_dir/repository.lock"

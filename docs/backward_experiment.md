@@ -324,6 +324,9 @@ python scripts/run_when_gpu_idle.py \
   -- bash scripts/run_backward_gpu_campaign.sh
 ```
 
+The campaign validates `SWITCHYARD_TOOLCHAIN_DIR` and then activates `scripts/env.sh`. This step
+adds the local Python headers, CUDA toolkit, project source, and local compiler caches.
+
 A deterministic smoke, correctness, schema, or provenance failure stops the campaign. It does
 not spend another GPU attempt on the same inputs. Only a collision, interrupted phase, or
 measured statistical instability can request a fresh idle interval and another attempt.
