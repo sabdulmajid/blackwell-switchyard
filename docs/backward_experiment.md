@@ -108,10 +108,10 @@ measurement.
 
 The CUDA source is in
 [`shared_backward.cu`](../src/switchyard/csrc/shared_backward.cu). The package builds it only
-when a private candidate entry point runs. Public imports and production dispatch do not build
-the extension. The current extension contains `sm_120` code and rejects other GPU architectures
-explicitly. The custom operator supports first-order training gradients. Use the framework
-reference when an application requires second-order gradients.
+when an experimental candidate entry point runs. Public imports and production dispatch do not
+build the extension. The current extension contains `sm_120` code and rejects other GPU
+architectures explicitly. The custom operator supports first-order training gradients. Use the
+framework reference when an application requires second-order gradients.
 
 ## Packed-register candidates
 

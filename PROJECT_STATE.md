@@ -31,7 +31,7 @@ has rounding-floor accuracy. See [`docs/batched_queries.md`](docs/batched_querie
 
 `src/switchyard/triton_op.py` contains the accepted single-query forward and backward
 strategies. It also contains one output-only batched forward strategy. Dispatch uses a
-measured tile budget. Private training plans now isolate the next backward architectures from
+measured tile budget. Experimental training plans isolate the next backward architectures from
 production dispatch.
 
 ---
@@ -92,11 +92,15 @@ Ordered by how much the measurements say they are worth.
    were removed because the compiler spilled them. The benchmark stores raw paired trials and
    uses a 50 ms sampled process monitor. Every reusable phase must contain the complete result,
    schedule, timing, profiler, memory, and correctness matrices. The validator reconstructs
-   timing statistics and trial order from the raw samples. Public evidence uses an opaque
-   campaign device ID. It binds each reused phase to its guarded attempt. The launch guard
+   timing statistics and trial order from the raw samples. It also binds the exact software,
+   GPU model, method status, training-plan body, compiler resources, and sanitized command.
+   Public evidence uses an opaque campaign device ID. It binds each reused phase to its guarded
+   attempt. The launch guard
    requires empty process tables, zero utilization, and at most 64 MiB of background memory
-   on every GPU for 30 minutes. Production dispatch is unchanged. GPU correctness, occupancy,
-   and latency are still pending.
+   on every GPU for 30 minutes. The runner can resume CPU-only validation and publication after
+   a restart. Its locks remain active while a child campaign is alive. Production dispatch is
+   unchanged. The revised GPU campaign has not started. GPU correctness, occupancy, and latency
+   are still pending.
 2. **Complete the batched training contract.** The current batched API does not return
    merge statistics and does not implement backward. The resident forward is useful, but
    it is not the complete paper schedule.
@@ -162,3 +166,4 @@ Decisions that changed direction, with the evidence that forced them. Append-onl
 | 2026-09-03 | Stop tuning the split backward and prepare a one-read architecture. | The split path moves `(3N+2)X` large-tensor bytes while the exact lower bound is `(2N+1)X`. The 288–576 MiB source stacks do not fit in 128 MiB of L2. Liger is already within about 2.5–4 percent of the two-read bandwidth model, so tile changes cannot create a material lead. The new feature-sharded cluster retains source values in distributed shared memory and compiles for `sm_120` without spills. |
 | 2026-09-05 | Add four-block and fixed-shape one-read candidates; reject every spilling specialization. | The four-block cluster cuts per-block source storage and compiles at 72 registers with zero stack or local memory. The `(N=9,D=4096)` packed-register CTA compiles at 128 registers with zero stack or local memory. Wider packed-register and source-serial tiles produced 72–984 bytes of stack per thread, so those shapes are not eligible for GPU measurement. |
 | 2026-09-05 | Shard packed registers across clusters for the two remaining gap shapes. | A four-block `(N=9,D=8192)` specialization and a two-block `(N=32,D=2048)` specialization retain every source pair across both gradient equations. Both dtypes compile at 128 registers with zero stack and zero local memory. Only source-sized scalar reductions use DSM. |
+| 2026-09-06 | Make unattended evidence fail closed before the GPU campaign. | An independent audit found that a supervisor restart could rerun GPU work after measurement and that report gates accepted incomplete environment and compiler records. The runner now resumes CPU-only publication before any GPU query, child processes retain both locks, and validators bind exact runtime and compiler contracts. |

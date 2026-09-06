@@ -61,10 +61,10 @@ This second source read can therefore come from device memory.
 - Two production Triton strategies cover register-resident and L2-tiled shapes.
 - A source arena removes repeated source-stack copies from the Transformer integration.
 - One output-only batched kernel reuses each resident source tile across as many as 16 queries.
-- A private CUDA experiment targets the large-shape training traffic limit.
+- An experimental CUDA path targets the large-shape training traffic limit.
 - The benchmark records latency, memory, kernel count, raw trials, and correctness evidence.
 
-The private CUDA experiment addresses the source reread directly.
+The experimental CUDA path addresses the source reread directly.
 Thread-block clusters keep each source shard in registers or shared memory.
 The same on-chip value serves both backward equations before the kernel releases it.
 For backward, this changes the large-tensor traffic target from `(3N+2)X` to the exact
@@ -78,7 +78,7 @@ GPU correctness and performance tests must pass before the project can use them.
 This project does not claim the first fused AttnRes kernel.
 Liger Kernel, Flash Linear Attention, and other projects also contain fused implementations.
 This project contributes an independent Blackwell comparison, a measured hardware model,
-and a complete Transformer training study.
+and a Transformer systems benchmark with a fixed-batch training smoke test.
 
 ## Current result and open gap
 
@@ -105,6 +105,11 @@ synchronization and limited occupancy.
 
 Correctness has priority over speed.
 Each timed implementation must pass a float64 oracle check.
+
+The operator and batched-query numbers below have machine-readable raw results.
+The model and DDP numbers are validated historical results.
+Their files predate the current provenance schema.
+Regenerate them from the selected backward revision before a release.
 
 ## Installation and compatibility
 
@@ -254,9 +259,9 @@ with torch.no_grad():
 |---|---|
 | [`reference.py`](src/switchyard/reference.py) | Defines the operation and the float64 oracle. |
 | [`baselines.py`](src/switchyard/baselines.py) | Defines framework baseline formulations. |
-| [`triton_op.py`](src/switchyard/triton_op.py) | Defines the accepted Triton operator and private experiment paths. |
+| [`triton_op.py`](src/switchyard/triton_op.py) | Defines the accepted Triton operator and experimental paths. |
 | [`training_plan.py`](src/switchyard/training_plan.py) | Defines complete forward and backward experiment contracts. |
-| [`shared_backward.cu`](src/switchyard/csrc/shared_backward.cu) | Defines private one-read CUDA forward and backward candidates. |
+| [`shared_backward.cu`](src/switchyard/csrc/shared_backward.cu) | Defines experimental one-read CUDA forward and backward candidates. |
 | [`model.py`](src/switchyard/model.py) | Defines the Transformer integration and source arena. |
 | [`harness.py`](bench/harness.py) | Defines common timing, memory, accuracy, and kernel-count methods. |
 
@@ -356,7 +361,7 @@ The accepted tiled backward is slower than Liger at three important large shapes
 Its two-kernel schedule reloads source data after a grid boundary.
 The source data does not fit in L2 at these shapes.
 
-The private experiment branch now contains complete training plans.
+The architecture branch now contains complete experimental training plans.
 It includes a grouped Triton path and two feature-sharded CUDA cluster paths.
 The CUDA clusters use two or four blocks.
 It also includes one fixed-shape register path for `N=9 D=4096`.
