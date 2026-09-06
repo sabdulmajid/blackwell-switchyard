@@ -6,12 +6,12 @@
   },
   "gpu_visible": false,
   "provenance": {
-    "repository_commit": "da2adf4d10a8cedddd2bfcea572cc4a20b455f60",
+    "repository_commit": "0cadebffd35222d2b8860adaeee8aa69ebc6f7df",
     "worktree_clean": true,
     "torch": "2.9.0+cu128",
     "triton": "3.5.0",
     "nvcc": "Build cuda_12.8.r12.8/compiler.35583870_0",
-    "cuda_source_sha256": "1c81d1f050988bfeda0acdbc16462272a4b1911b3e3a596e5ef4a2e3fac1c0ae"
+    "cuda_source_sha256": "a863be2f04afd7df61d6ad56d69d5b7d712ae439c4ba354417b8894a0577a533"
   },
   "plans": [
     {
@@ -111,6 +111,20 @@
       },
       "production": false,
       "rationale": "shape-specialized register residency with only scalar DSM exchange"
+    },
+    {
+      "name": "cuda_register_cluster_full",
+      "forward": {
+        "family": "cuda_register_cluster",
+        "saved_state": "backward_coefficients"
+      },
+      "backward": {
+        "family": "cuda_register_cluster",
+        "tokens_per_cta": 1,
+        "dw_reduction": "persistent_atomics"
+      },
+      "production": false,
+      "rationale": "one-read register-cluster forward and backward for fixed gap shapes"
     }
   ],
   "compilations": [
@@ -133,7 +147,8 @@
           "registers": 241,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 544
         }
       ]
     },
@@ -156,7 +171,8 @@
           "registers": 204,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 547
         }
       ]
     },
@@ -179,7 +195,8 @@
           "registers": 255,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 1059
         }
       ]
     },
@@ -202,7 +219,8 @@
           "registers": 255,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 531
         }
       ]
     },
@@ -222,7 +240,8 @@
           "registers": 241,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 264
         }
       ]
     },
@@ -242,7 +261,8 @@
           "registers": 237,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 264
         }
       ]
     },
@@ -262,7 +282,8 @@
           "registers": 126,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 72
         }
       ]
     },
@@ -282,7 +303,8 @@
           "registers": 35,
           "stack_bytes": 0,
           "static_shared_bytes": 0,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 8
         }
       ]
     },
@@ -297,7 +319,11 @@
         "register_cluster_backward_kernel_bfloat16_n9_d8192_c4": 1,
         "register_cluster_backward_kernel_bfloat16_n32_d2048_c2": 1,
         "register_cluster_backward_kernel_float16_n9_d8192_c4": 1,
-        "register_cluster_backward_kernel_float16_n32_d2048_c2": 1
+        "register_cluster_backward_kernel_float16_n32_d2048_c2": 1,
+        "register_cluster_forward_kernel_bfloat16_n9_d8192_c4": 1,
+        "register_cluster_forward_kernel_bfloat16_n32_d2048_c2": 1,
+        "register_cluster_forward_kernel_float16_n9_d8192_c4": 1,
+        "register_cluster_forward_kernel_float16_n32_d2048_c2": 1
       },
       "register_limits": {
         "shared_backward_kernel": 64,
@@ -307,7 +333,71 @@
         "register_cluster_backward_kernel_bfloat16_n9_d8192_c4": 128,
         "register_cluster_backward_kernel_bfloat16_n32_d2048_c2": 128,
         "register_cluster_backward_kernel_float16_n9_d8192_c4": 128,
-        "register_cluster_backward_kernel_float16_n32_d2048_c2": 128
+        "register_cluster_backward_kernel_float16_n32_d2048_c2": 128,
+        "register_cluster_forward_kernel_bfloat16_n9_d8192_c4": 128,
+        "register_cluster_forward_kernel_bfloat16_n32_d2048_c2": 128,
+        "register_cluster_forward_kernel_float16_n9_d8192_c4": 128,
+        "register_cluster_forward_kernel_float16_n32_d2048_c2": 128
+      },
+      "required_global_load_instruction_counts": {
+        "register_cluster_backward_kernel_bfloat16_n9_d8192_c4": 25,
+        "register_cluster_backward_kernel_bfloat16_n32_d2048_c2": 37,
+        "register_cluster_backward_kernel_float16_n9_d8192_c4": 25,
+        "register_cluster_backward_kernel_float16_n32_d2048_c2": 37,
+        "register_cluster_forward_kernel_bfloat16_n9_d8192_c4": 20,
+        "register_cluster_forward_kernel_bfloat16_n32_d2048_c2": 33,
+        "register_cluster_forward_kernel_float16_n9_d8192_c4": 20,
+        "register_cluster_forward_kernel_float16_n32_d2048_c2": 33
+      },
+      "required_global_load_role_counts": {
+        "register_cluster_backward_kernel_bfloat16_n9_d8192_c4": {
+          "grad_output_pairs": 2,
+          "source_pairs": 18,
+          "saved_alpha": 1,
+          "saved_rstd": 1,
+          "saved_norm": 1,
+          "query_pairs": 2
+        },
+        "register_cluster_backward_kernel_float16_n9_d8192_c4": {
+          "grad_output_pairs": 2,
+          "source_pairs": 18,
+          "saved_alpha": 1,
+          "saved_rstd": 1,
+          "saved_norm": 1,
+          "query_pairs": 2
+        },
+        "register_cluster_backward_kernel_bfloat16_n32_d2048_c2": {
+          "grad_output_pairs": 1,
+          "source_pairs": 32,
+          "saved_alpha": 1,
+          "saved_rstd": 1,
+          "saved_norm": 1,
+          "query_pairs": 1
+        },
+        "register_cluster_backward_kernel_float16_n32_d2048_c2": {
+          "grad_output_pairs": 1,
+          "source_pairs": 32,
+          "saved_alpha": 1,
+          "saved_rstd": 1,
+          "saved_norm": 1,
+          "query_pairs": 1
+        },
+        "register_cluster_forward_kernel_bfloat16_n9_d8192_c4": {
+          "query_pairs": 2,
+          "source_pairs": 18
+        },
+        "register_cluster_forward_kernel_float16_n9_d8192_c4": {
+          "query_pairs": 2,
+          "source_pairs": 18
+        },
+        "register_cluster_forward_kernel_bfloat16_n32_d2048_c2": {
+          "query_pairs": 1,
+          "source_pairs": 32
+        },
+        "register_cluster_forward_kernel_float16_n32_d2048_c2": {
+          "query_pairs": 1,
+          "source_pairs": 32
+        }
       },
       "resources": [
         {
@@ -315,84 +405,176 @@
           "registers": 128,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 37,
+          "global_load_instruction_roles": {
+            "grad_output_pairs": 1,
+            "source_pairs": 32,
+            "saved_alpha": 1,
+            "saved_norm": 1,
+            "saved_rstd": 1,
+            "query_pairs": 1
+          }
         },
         {
           "kernel": "register_cluster_backward_kernel_bfloat16_n9_d8192_c4",
           "registers": 128,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 25,
+          "global_load_instruction_roles": {
+            "grad_output_pairs": 2,
+            "source_pairs": 18,
+            "saved_alpha": 1,
+            "saved_norm": 1,
+            "saved_rstd": 1,
+            "query_pairs": 2
+          }
         },
         {
           "kernel": "register_cluster_backward_kernel_float16_n32_d2048_c2",
           "registers": 128,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 37,
+          "global_load_instruction_roles": {
+            "grad_output_pairs": 1,
+            "source_pairs": 32,
+            "saved_alpha": 1,
+            "saved_norm": 1,
+            "saved_rstd": 1,
+            "query_pairs": 1
+          }
         },
         {
           "kernel": "register_cluster_backward_kernel_float16_n9_d8192_c4",
           "registers": 128,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 25,
+          "global_load_instruction_roles": {
+            "grad_output_pairs": 2,
+            "source_pairs": 18,
+            "saved_alpha": 1,
+            "saved_norm": 1,
+            "saved_rstd": 1,
+            "query_pairs": 2
+          }
         },
         {
           "kernel": "register_backward_kernel",
           "registers": 128,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 74
         },
         {
           "kernel": "register_backward_kernel",
           "registers": 128,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 74
+        },
+        {
+          "kernel": "register_cluster_forward_kernel_bfloat16_n32_d2048_c2",
+          "registers": 103,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 33,
+          "global_load_instruction_roles": {
+            "query_pairs": 1,
+            "source_pairs": 32
+          }
+        },
+        {
+          "kernel": "register_cluster_forward_kernel_bfloat16_n9_d8192_c4",
+          "registers": 96,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 20,
+          "global_load_instruction_roles": {
+            "query_pairs": 2,
+            "source_pairs": 18
+          }
+        },
+        {
+          "kernel": "register_cluster_forward_kernel_float16_n32_d2048_c2",
+          "registers": 109,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 33,
+          "global_load_instruction_roles": {
+            "query_pairs": 1,
+            "source_pairs": 32
+          }
+        },
+        {
+          "kernel": "register_cluster_forward_kernel_float16_n9_d8192_c4",
+          "registers": 96,
+          "stack_bytes": 0,
+          "static_shared_bytes": 1024,
+          "local_bytes": 0,
+          "global_load_instructions": 20,
+          "global_load_instruction_roles": {
+            "query_pairs": 2,
+            "source_pairs": 18
+          }
         },
         {
           "kernel": "shared_backward_kernel",
           "registers": 48,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 4
         },
         {
           "kernel": "feature_cluster_backward_kernel_4block",
           "registers": 72,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 12
         },
         {
           "kernel": "feature_cluster_backward_kernel_2block",
           "registers": 64,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 12
         },
         {
           "kernel": "shared_backward_kernel",
           "registers": 48,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 4
         },
         {
           "kernel": "feature_cluster_backward_kernel_4block",
           "registers": 72,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 12
         },
         {
           "kernel": "feature_cluster_backward_kernel_2block",
           "registers": 64,
           "stack_bytes": 0,
           "static_shared_bytes": 1024,
-          "local_bytes": 0
+          "local_bytes": 0,
+          "global_load_instructions": 12
         }
       ]
     }
