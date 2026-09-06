@@ -270,7 +270,7 @@ python scripts/summarize_model.py
 The benchmark drivers record the repository revision, command arguments, random seeds,
 software versions, GPU identity, and GPU process state.
 They remove external absolute paths from the command arguments.
-They do not record prompts, task links, or process names.
+They do not record prompts, task links, process names, or process identifiers.
 They check the process state before and after each accepted run.
 Third-party runs also record pinned upstream revisions.
 Some historical machine, model, and DDP result files predate the expanded provenance fields.

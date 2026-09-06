@@ -162,12 +162,12 @@ def _report(dtype, *, candidate_ms=0.8, candidate_fwd_bwd=None, ok=True, dirty=F
         "correctness_seeds": [0, 1, 2],
         "gpu_preflight": {
             "resolved_uuid": "GPU-test",
-            "compute_processes_at_start": [],
+            "foreign_compute_process_count_at_start": 0,
             "busy_override": False,
         },
         "gpu_postflight": {
             "resolved_uuid": "GPU-test",
-            "compute_processes_at_end": [],
+            "foreign_compute_process_count_at_end": 0,
         },
         "gpu_process_monitor": {
             "device_uuid": "GPU-test",
@@ -372,7 +372,7 @@ def test_gpu_identity_and_postflight_are_mandatory():
     reports = _complete_reports()
     reports[1]["gpu_preflight"]["resolved_uuid"] = "GPU-other"
     reports[1]["gpu_postflight"]["resolved_uuid"] = "GPU-other"
-    reports[0]["gpu_postflight"]["compute_processes_at_end"] = ["123, other, 1024"]
+    reports[0]["gpu_postflight"]["foreign_compute_process_count_at_end"] = 1
     decision = MODULE.evaluate_reports(reports, candidate=CANDIDATE)
     assert decision["status"] == "MORE_DATA"
     assert any("same physical GPU" in problem for problem in decision["problems"])

@@ -77,9 +77,16 @@ def validate_report(
     uuid = preflight.get("resolved_uuid")
     if uuid != expected_gpu_uuid:
         problems.append("physical GPU differs from the campaign device")
-    if not uuid or preflight.get("compute_processes_at_start") or preflight.get("busy_override"):
+    if (
+        not uuid
+        or preflight.get("foreign_compute_process_count_at_start") != 0
+        or preflight.get("busy_override")
+    ):
         problems.append("GPU preflight was not exclusive")
-    if postflight.get("resolved_uuid") != uuid or postflight.get("compute_processes_at_end"):
+    if (
+        postflight.get("resolved_uuid") != uuid
+        or postflight.get("foreign_compute_process_count_at_end") != 0
+    ):
         problems.append("GPU postflight was not exclusive on the same device")
 
     monitor = report.get("gpu_process_monitor", {})

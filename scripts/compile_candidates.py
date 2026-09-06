@@ -143,7 +143,6 @@ def _resource_usage(binary: Path) -> list[dict[str, int | str]]:
         records.append(
             {
                 "kernel": normalized_name,
-                "symbol": name,
                 "registers": int(registers),
                 "stack_bytes": int(stack),
                 "static_shared_bytes": int(shared),

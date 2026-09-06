@@ -34,12 +34,12 @@ def test_incomplete_implementation_set_fails_closed():
         },
         "gpu_preflight": {
             "resolved_uuid": "GPU-test",
-            "compute_processes_at_start": [],
+            "foreign_compute_process_count_at_start": 0,
             "busy_override": False,
         },
         "gpu_postflight": {
             "resolved_uuid": "GPU-test",
-            "compute_processes_at_end": [],
+            "foreign_compute_process_count_at_end": 0,
         },
         "results": [],
         "correctness_only": [],

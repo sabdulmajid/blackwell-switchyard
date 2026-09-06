@@ -386,7 +386,10 @@ def evaluate_reports(
         if "--quick" in provenance.get("argv", []):
             problems.append(f"{prefix}: quick runs cannot produce a production decision")
         preflight = report.get("gpu_preflight", {})
-        if preflight.get("compute_processes_at_start") or preflight.get("busy_override"):
+        if (
+            preflight.get("foreign_compute_process_count_at_start") != 0
+            or preflight.get("busy_override")
+        ):
             problems.append(f"{prefix}: benchmark did not start with exclusive access")
         if not preflight.get("resolved_uuid"):
             problems.append(f"{prefix}: physical GPU UUID was not recorded")
@@ -395,7 +398,7 @@ def evaluate_reports(
         postflight = report.get("gpu_postflight", {})
         if postflight.get("resolved_uuid") != preflight.get("resolved_uuid"):
             problems.append(f"{prefix}: GPU postflight identity is missing or changed")
-        if postflight.get("compute_processes_at_end"):
+        if postflight.get("foreign_compute_process_count_at_end") != 0:
             problems.append(f"{prefix}: another compute process appeared during the run")
         monitor = report.get("gpu_process_monitor", {})
         if monitor.get("device_uuid") != preflight.get("resolved_uuid"):

@@ -153,8 +153,8 @@ def _liger_provenance() -> dict:
     }
 
 
-def _compute_processes(device_uuid: str) -> tuple[list[str], list[str]]:
-    """Return this benchmark's CUDA contexts and all other GPU processes."""
+def _compute_process_counts(device_uuid: str) -> tuple[int, int]:
+    """Return own and foreign CUDA-context counts without retaining process IDs."""
     process_query = [
         "nvidia-smi",
         f"--id={device_uuid}",
@@ -166,8 +166,8 @@ def _compute_processes(device_uuid: str) -> tuple[list[str], list[str]]:
     ).stdout.strip().splitlines()
     rows = [row for row in rows if row.strip()]
     own_pid = str(os.getpid())
-    own_context = [row for row in rows if row.split(",", 1)[0].strip() == own_pid]
-    return own_context, [row for row in rows if row not in own_context]
+    own_contexts = sum(row.split(",", 1)[0].strip() == own_pid for row in rows)
+    return own_contexts, len(rows) - own_contexts
 
 
 def _gpu_preflight(device: torch.device, *, allow_busy: bool) -> dict:
@@ -181,19 +181,16 @@ def _gpu_preflight(device: torch.device, *, allow_busy: bool) -> dict:
         "--format=csv,noheader,nounits",
     ]
     state = subprocess.run(query, check=True, capture_output=True, text=True).stdout.strip()
-    own_context, other_processes = _compute_processes(device_uuid)
-    if other_processes and not allow_busy:
-        raise SystemExit(
-            "selected GPU has active compute processes; stop and rerun only with exclusive access: "
-            + "; ".join(other_processes)
-        )
+    own_contexts, foreign_processes = _compute_process_counts(device_uuid)
+    if foreign_processes and not allow_busy:
+        raise SystemExit("selected GPU has another active compute process")
     return {
         "logical_device": str(device),
         "resolved_uuid": device_uuid,
         "resolved_pci_bus_id": properties.pci_bus_id,
         "device_query": state,
-        "benchmark_process_context": own_context,
-        "compute_processes_at_start": other_processes,
+        "benchmark_process_context_count": own_contexts,
+        "foreign_compute_process_count_at_start": foreign_processes,
         "exclusive_access_required": True,
         "busy_override": allow_busy,
     }
@@ -201,11 +198,11 @@ def _gpu_preflight(device: torch.device, *, allow_busy: bool) -> dict:
 
 def _gpu_postflight(preflight: dict) -> dict:
     """Confirm that no competing process appeared during the benchmark."""
-    own_context, other_processes = _compute_processes(preflight["resolved_uuid"])
+    own_contexts, foreign_processes = _compute_process_counts(preflight["resolved_uuid"])
     return {
         "resolved_uuid": preflight["resolved_uuid"],
-        "benchmark_process_context": own_context,
-        "compute_processes_at_end": other_processes,
+        "benchmark_process_context_count": own_contexts,
+        "foreign_compute_process_count_at_end": foreign_processes,
     }
 
 
@@ -787,7 +784,7 @@ def main() -> None:
     if (
         report["gpu_process_monitor"]["collision_detected"]
         or report["gpu_process_monitor"]["probe_errors"]
-        or report["gpu_postflight"]["compute_processes_at_end"]
+        or report["gpu_postflight"]["foreign_compute_process_count_at_end"]
     ):
         raise SystemExit(75)
 

@@ -98,9 +98,12 @@ def check_reports(
             problems.append(f"{prefix}: imported Liger provenance is incomplete")
         preflight = report.get("gpu_preflight", {})
         postflight = report.get("gpu_postflight", {})
-        if preflight.get("compute_processes_at_start") or preflight.get("busy_override"):
+        if (
+            preflight.get("foreign_compute_process_count_at_start") != 0
+            or preflight.get("busy_override")
+        ):
             problems.append(f"{prefix}: preflight was not exclusive")
-        if postflight.get("compute_processes_at_end"):
+        if postflight.get("foreign_compute_process_count_at_end") != 0:
             problems.append(f"{prefix}: postflight was not exclusive")
         if postflight.get("resolved_uuid") != preflight.get("resolved_uuid"):
             problems.append(f"{prefix}: preflight and postflight GPU differ")

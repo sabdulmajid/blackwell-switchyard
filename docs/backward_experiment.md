@@ -189,8 +189,9 @@ process group. It then waits for a new 30-minute sampled idle interval. It makes
 attempts. A retry keeps each clean, complete benchmark phase and reruns only the interrupted
 phase and later phases. State and logs stay outside the repository, so they cannot make
 benchmark provenance dirty. The monitor stores a timestamp and a foreign-process count. It
-does not store other process names. Committed command arguments redact external absolute
-paths. The runner gives result validation, commit, and push up to 30 minutes after GPU work.
+does not store process names or process identifiers. Committed command arguments redact
+external absolute paths. The runner gives result validation, commit, and push up to 30 minutes
+after GPU work.
 
 The campaign is fail-fast and uses this order:
 
