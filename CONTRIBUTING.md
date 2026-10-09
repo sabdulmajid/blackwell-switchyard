@@ -13,14 +13,14 @@ Preserve these rules:
 - Logits do not use `1/sqrt(D)` scaling.
 - Reduction and `dw` accumulation use fp32.
 
-Do not reduce a correctness tolerance to make a new kernel pass.
+Do not loosen a correctness tolerance to make a new kernel pass.
 
 ## Local checks
 
 Run the CPU checks without access to a GPU:
 
 ```bash
-CUDA_VISIBLE_DEVICES="" PYTHONPATH=src python -m pytest tests/ -q
+env -u SWITCHYARD_TARGET_GPU_UUID CUDA_VISIBLE_DEVICES="" PYTHONPATH=src python -m pytest tests/ -q
 ruff check src bench scripts tests
 ```
 
@@ -51,3 +51,17 @@ make the dispatch change in a separate commit.
 Use your own name and email address.
 Do not add AI co-author trailers, session links, prompts, or private environment data.
 Review the complete commit message before you push it.
+
+## Local verification procedures
+
+Use [Ponytail full](.agents/skills/ponytail/SKILL.md) for small, complete code changes.
+Use the [Blackwell verification skill](.agents/skills/verify-blackwell-switchyard/SKILL.md)
+to select existing tests and benchmark commands. Before a performance claim, use the
+[benchmark checklist](.agents/skills/benchmark-checklist/SKILL.md) and
+[Explain the Number](.agents/skills/principle-explain-the-number/SKILL.md).
+Pinned revisions and license notices are in [.agents/skills/SOURCES.md](.agents/skills/SOURCES.md).
+
+CPU-only tests must also unset `SWITCHYARD_TARGET_GPU_UUID` if it is inherited from a
+guarded GPU run. Hiding CUDA alone does not disable the pytest telemetry fixture.
+Run `python scripts/check_reported_claims.py` to audit the old headline arithmetic
+without a GPU. This does not certify old artifacts against current release gates.
