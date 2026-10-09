@@ -93,11 +93,12 @@ and a Transformer systems benchmark with a fixed-batch training smoke test.
 
 ## Current measured result and remaining gap
 
-At the main operator shape, the accepted switchyard path is 1.70x faster in forward and
-3.71x faster in forward plus backward than max-autotuned Inductor.
-In the 1.3 billion parameter decoder, it reduces the residual mechanism share from 39.1 percent
-to 11.4 percent. This change increases full-step throughput by 1.46x against the framework
-AttnRes implementation.
+The stored bf16 result at `N=9 B=1 T=4096 D=2048` shows a 1.70x forward speedup
+and a 3.71x forward-plus-backward speedup over max-autotuned Inductor.
+In the 1.30 billion parameter decoder, the stored result shows 1.46x full-step
+throughput against the eager framework AttnRes model. Both models use the source arena.
+The full training step decreases from 704.54 ms to 484.21 ms, or 31.3 percent.
+These are separate comparisons. The model result is not a comparison with a compiled model.
 
 Liger Kernel is an open-source Triton kernel library from LinkedIn. The stored upstream Liger
 result remains faster at three important large training shapes:
@@ -123,11 +124,13 @@ synchronization and limited occupancy.
 Correctness has priority over speed.
 Each timed implementation must pass a float64 oracle check.
 
-The operator and batched-query numbers below have machine-readable raw results.
-The model numbers and the DDP scaling numbers are historical results.
-Their files predate the current provenance schema.
+All numbers below are historical measurements, not results for the experimental CUDA path.
+The JSON files contain timing summaries, not the original per-sample times or paired trials.
+The operator and batched-query files record source commits. The model and DDP files do not.
+None of these files meets the full current provenance and repeatability requirements.
 The old DDP correctness check was insufficient.
-Regenerate all of these results from the selected backward revision before a release.
+Keep the unchanged results as historical evidence. Before release, validate the selected
+implementation and its claims with the current procedure. See [the claim audit](docs/claim_audit.md).
 
 ## Installation and compatibility
 
@@ -206,6 +209,9 @@ The following result uses `N=9 B=1 T=4096 D=2048` and eight queries.
 
 The output-only switchyard path is 1.77x faster than max-autotuned Inductor.
 It is 4.70x faster than eight separate switchyard calls.
+Its logical-minimum effective bandwidth is 1.436 TB/s.
+This is 285,245,440 logical bytes divided by 0.198656 ms. It is not a DRAM counter measurement.
+The catswe row also produces merge and backward data. It does more work than the output-only API.
 
 This API has two important limits.
 It does not return the merge statistics that the complete two-phase schedule needs.
@@ -224,16 +230,29 @@ The repository includes a 1.3 billion parameter decoder.
 The test model has 24 layers, a hidden dimension of 2048, and eight blocks.
 The test batch contains four sequences of 2048 tokens.
 
-| Variant | Step time | Tokens per second | Peak memory | Residual mechanism share |
+| Variant | Step time | Tokens per second | Peak memory | Control-difference share of own step |
 |---|---:|---:|---:|---:|
 | Standard PreNorm residual | 428.89 ms | 19,101 | 30.33 GiB | control |
 | Block AttnRes with framework operations | 704.54 ms | 11,627 | 31.87 GiB | 39.1 percent |
 | **Block AttnRes with switchyard** | **484.21 ms** | **16,918** | **31.86 GiB** | **11.4 percent** |
 
-The fused integration is 1.46x faster than the framework integration.
-The residual mechanism is 11.4 percent of the fused step. The complete fused model is
-12.9 percent slower than the standard-residual control.
+The framework row uses eager operations, not `torch.compile`.
+Both AttnRes variants have 1,300,535,296 parameters. The standard control has 1,300,334,592.
+A step includes forward, loss, backward, gradient clearing, and AdamW.
+Tokens per second is 8,192 divided by the step time in seconds.
+
+The last column is `100 * (variant_step - control_step) / variant_step`.
+Thus, 39.1 percent and 11.4 percent have different denominators.
+They are not profiler device-time shares. The stored profiler reports 34.2 percent and 7.4 percent.
+The fused profiler result can count nested regions twice. Do not use it as independent confirmation.
+Relative to the control step, the added time is 64.3 percent and 12.9 percent.
+The fused integration reduces total step time by 31.3 percent and increases throughput by 1.46x.
 It adds 1.53 GiB of peak memory.
+
+The historical run used five warmup steps and 20 timed steps per variant.
+Its step-time p10–p90 intervals are 702.52–705.78 ms for the framework model and
+482.93–485.22 ms for the fused model. These intervals describe samples within one run.
+They do not establish variation across independent runs.
 
 The source arena avoids repeated `torch.stack` operations.
 It reduces peak memory by 6.75 GiB compared with the stacking variant.

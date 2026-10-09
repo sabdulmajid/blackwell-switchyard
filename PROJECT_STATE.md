@@ -3,7 +3,7 @@
 Living status document for `blackwell-switchyard`. The authoritative per-change detail lives
 in the branch descriptions on issue #1; this file is the index.
 
-**Last updated:** 2026-09-06
+**Last updated:** 2026-10-09
 
 ---
 
@@ -12,9 +12,12 @@ in the branch descriptions on issue #1; this file is the index.
 Three numbers, in decreasing order of how much they matter.
 
 **End to end**, 1.3B decoder, batch 4 × seq 2048, bf16, RTX PRO 6000 Blackwell:
-the residual mechanism is **39.1% of the framework step** and **11.4% of the fused step**.
-This is a 3.4× reduction in its share and gives **1.46× training throughput**
-(704.5 → 484.2 ms, 11627 → 16918 tokens/s).
+the historical eager-arena comparison gives **1.46× training throughput**
+(704.5 → 484.2 ms, 11627 → 16918 tokens/s), or a **31.3% step-time reduction**.
+Control-difference shares are **39.1% of the framework step** and **11.4% of the fused step**:
+`(variant - control) / variant`. Overhead relative to the control is 64.3% and 12.9%.
+The stored profiler shares are 34.2% and 7.4%; the fused aggregation can double-count nested
+regions and needs a corrected GPU profile. These measures are not interchangeable.
 
 **Operator**, `N=9 B=1 T=4096 D=2048`, with L2 flushed between measurements:
 forward is **1.70×** faster and forward+backward is **3.71×** faster than
@@ -26,6 +29,12 @@ at 1.00× the bf16 rounding floor. The forward reaches 97% of the traffic-only l
 path takes 0.199 ms. This is 1.77× faster than max-autotuned Inductor and 4.70× faster
 than eight separate switchyard calls. It uses one kernel, no temporary workspace, and
 has rounding-floor accuracy. See [`docs/batched_queries.md`](docs/batched_queries.md).
+Its 1.436 TB/s is logical-minimum effective bandwidth, not measured DRAM traffic.
+
+All three are historical results. They have summary statistics but no raw timing samples
+or independent paired runs. The model file has no recorded source commit. See the
+[artifact audit](docs/claim_audit.md) and the repository-local verification skill.
+No unchanged expensive experiment was rerun for this documentation audit.
 
 ## Current best implementation
 
@@ -33,6 +42,25 @@ has rounding-floor accuracy. See [`docs/batched_queries.md`](docs/batched_querie
 strategies. It also contains one output-only batched forward strategy. Dispatch uses a
 measured tile budget. Experimental training plans isolate the next backward architectures from
 production dispatch.
+
+## Verification integration (2026-10-09)
+
+Repository-local Ponytail full and the relevant pstack procedures are pinned and
+licensed under `.agents/skills/`. `AGENTS.md` routes coding, benchmark review, and
+the project-specific correctness/performance/training map. No model settings,
+shared environment, hardware calibration, or production dispatch were changed.
+
+The audit repairs quick-run median consistency, CPU-only publication recovery and
+owned-process-group cancellation,
+the per-trial backward-win gate, fp32 candidate-test bounds, RNG metadata, and
+nested model-profiler attribution. Historical JSON remains unchanged. The initial
+CPU suite passed 300 tests with three GPU module skips; the skill's own reference
+proof passed 27 tests and retained its JUnit/log evidence outside the worktree.
+The final CPU suite passed **334 tests, with three GPU module skips**. Ruff and
+shell syntax checks passed. All six skill definitions passed schema/link checks;
+the five imported bodies matched their pinned sources plus documented adaptations.
+GPU candidate and DDP results remain pending. See [the claim audit](docs/claim_audit.md)
+for the exact evidence limits.
 
 ---
 
@@ -56,7 +84,7 @@ production dispatch.
   statistics, kernel counting, workspace memory, speed-of-light ceiling.
 - **Third-party comparison on Blackwell.** The report uses each implementation's native input
   format and records the pinned source revision.
-- **Transformer integration**, 1.3B, three residual modes, parameter-matched, with a
+- **Transformer integration**, 1.3B, three residual modes, AttnRes variants parameter-matched, with a
   training smoke test.
 - **Two-GPU DDP benchmark.** The historical run measured 87% scaling efficiency. Its
   correctness check was insufficient. The revised benchmark enforces agreement between a normal
