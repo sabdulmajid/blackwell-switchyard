@@ -1169,6 +1169,10 @@ def evaluate_reports(
                 cell_reasons.append(
                     f"candidate did not beat current in all {FULL_TRIAL_COUNT} trials"
                 )
+            if not all(ratio > 1.0 for ratio in backward_ratios):
+                cell_reasons.append(
+                    f"candidate did not beat current in all {FULL_TRIAL_COUNT} backward trials"
+                )
             if not all(ratio > 1.0 for ratio in liger_exact_trial_ratios):
                 cell_reasons.append(
                     f"candidate did not beat liger_exact in all {FULL_TRIAL_COUNT} training trials"

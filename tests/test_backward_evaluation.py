@@ -733,6 +733,44 @@ def test_unbalanced_trial_order_cannot_promote():
     assert any("order does not balance" in problem for problem in decision["problems"])
 
 
+@pytest.mark.parametrize("current_trial_ms", [0.79, 0.80, 0.81])
+def test_every_current_backward_trial_must_win_despite_qualifying_median(current_trial_ms):
+    reports = _complete_reports()
+    shape = (9, 1, 4096, 8192)
+    current = next(
+        record
+        for record in reports[0]["results"]
+        if record["impl"] == "current" and MODULE._shape(record) == shape
+    )
+    current["backward"] = _timing(0.9, "current")
+    _set_trial_latency(current["backward"], trial_id=0, latency=current_trial_ms)
+
+    decision = MODULE.evaluate_reports(reports, candidate=CANDIDATE)
+    cell = next(
+        item
+        for item in decision["dispatch_cells"]
+        if item["dtype"] == "bfloat16"
+        and tuple(item["shape"].values()) == shape
+    )
+    assert decision["status"] == "READY_FOR_DISPATCH_REVIEW"
+    assert not decision["problems"] and not decision["unstable"]
+    assert cell["backward_speedup_vs_current"] == pytest.approx(0.9 / 0.8)
+    assert cell["all_current_trials_win"] is True
+    assert cell["all_liger_exact_training_trials_win"] is True
+    assert cell["all_liger_exact_backward_trials_win"] is True
+    wins_every_trial = current_trial_ms > 0.8
+    assert cell["status"] == ("READY_FOR_DISPATCH_REVIEW" if wins_every_trial else "FALLBACK")
+    assert (cell in decision["eligible_dispatches"]) is wins_every_trial
+    assert cell["reasons"] == (
+        [] if wins_every_trial else ["candidate did not beat current in all 15 backward trials"]
+    )
+    assert all(
+        other["status"] == "READY_FOR_DISPATCH_REVIEW"
+        for other in decision["dispatch_cells"]
+        if other is not cell
+    )
+
+
 def test_one_losing_training_trial_blocks_that_dispatch_cell():
     reports = _complete_reports()
     shape = (9, 1, 4096, 8192)

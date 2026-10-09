@@ -87,7 +87,11 @@ def _compare_plan(
     )
     candidate_output_error = _relative_l2(output, oracle_output)
     accepted_output_error = _relative_l2(accepted_output, oracle_output)
-    output_tolerance = 0.02 if dtype == torch.bfloat16 else 0.005
+    output_tolerance, dv_tolerance, dw_tolerance = {
+        torch.bfloat16: (0.02, 0.03, 0.06),
+        torch.float16: (0.005, 0.01, 0.03),
+        torch.float32: (2e-5, 1e-4, 1e-3),
+    }[dtype]
     assert candidate_output_error <= output_tolerance
     assert candidate_output_error <= max(1.05 * accepted_output_error, 1e-7)
     dv, dw = torch.autograd.grad(output, (values, query), grad)
@@ -95,8 +99,6 @@ def _compare_plan(
         accepted_output, (accepted_values, accepted_query), grad
     )
 
-    dv_tolerance = 0.03 if dtype == torch.bfloat16 else 0.01
-    dw_tolerance = 0.06 if dtype == torch.bfloat16 else 0.03
     assert torch.isfinite(output).all() and torch.isfinite(dv).all() and torch.isfinite(dw).all()
     candidate_dv_error = _relative_l2(dv, oracle_dv)
     candidate_dw_error = _relative_l2(dw, oracle_dw)
