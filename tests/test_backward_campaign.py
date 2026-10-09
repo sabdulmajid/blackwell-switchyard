@@ -1,10 +1,56 @@
 """CPU-only regression checks for the unattended campaign contract."""
 
+import os
+import subprocess
 from pathlib import Path
+
+import pytest
 
 SCRIPT = (
     Path(__file__).resolve().parents[1] / "scripts" / "run_backward_gpu_campaign.sh"
 ).read_text()
+
+
+@pytest.mark.parametrize("cpu_recovery", ["0", "1"])
+def test_campaign_recovery_preserves_guard_identity_without_gpu_preflight(cpu_recovery):
+    setup = SCRIPT[
+        SCRIPT.index("cpu_recovery=") : SCRIPT.index(': "${SWITCHYARD_EXPECTED_HEAD')
+    ]
+    preflight = SCRIPT[
+        SCRIPT.index('if [[ "$cpu_recovery" == 0 ]]; then\n  CUDA_VISIBLE_DEVICES=') :
+        SCRIPT.index("\nreport_reusable() {")
+    ]
+    result = subprocess.run(
+        ["bash", "-c", """
+set -eu
+timeout() { printf '%s\n' "$*"; }
+""" + setup + """
+if [[ "$cpu_recovery" == 1 ]]; then
+  [[ -z "$CUDA_VISIBLE_DEVICES" && ! -v SWITCHYARD_TARGET_GPU_UUID ]]
+  [[ "$SWITCHYARD_GUARD_TARGET_GPU_UUID" == GPU-attested ]]
+else
+  [[ "$CUDA_VISIBLE_DEVICES" == GPU-inherited ]]
+  [[ "$SWITCHYARD_TARGET_GPU_UUID" == GPU-inherited ]]
+  [[ "$SWITCHYARD_GUARD_TARGET_GPU_UUID" == GPU-inherited ]]
+fi
+compile_report=offline_compile.json
+""" + preflight],
+        env={
+            **os.environ,
+            "SWITCHYARD_CPU_RECOVERY": cpu_recovery,
+            "CUDA_VISIBLE_DEVICES": "GPU-inherited",
+            "SWITCHYARD_TARGET_GPU_UUID": "GPU-inherited",
+            "SWITCHYARD_GUARD_TARGET_GPU_UUID": "GPU-attested",
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if cpu_recovery == "1":
+        assert result.stdout == ""
+    else:
+        assert "python scripts/compile_candidates.py" in result.stdout
+        assert "python -m pytest tests/test_backward_candidates.py" in result.stdout
 
 
 def test_campaign_reuses_only_valid_complete_phases():

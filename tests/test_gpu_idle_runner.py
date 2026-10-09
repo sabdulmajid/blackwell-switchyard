@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import select
+import signal
 import stat
 import subprocess
 import sys
@@ -132,6 +134,104 @@ def test_supervisor_cleanup_terminates_the_active_process_group(tmp_path):
     MODULE._cleanup_active_process()
     assert process.poll() is not None
     assert recorder.last_phase == "stopping_workload"
+
+
+def test_terminate_group_rejects_a_workload_without_its_own_session(tmp_path):
+    recorder = MODULE.StateRecorder(tmp_path / "state.json", "campaign-a")
+    process = subprocess.Popen(["sleep", "60"])
+    try:
+        with pytest.raises(RuntimeError, match="must own the session"):
+            MODULE._terminate_group(process, recorder, "test cleanup")
+        assert process.poll() is None
+    finally:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def test_terminate_group_never_signals_a_reaped_workload(tmp_path, monkeypatch):
+    recorder = MODULE.StateRecorder(tmp_path / "state.json", "campaign-a")
+    process = subprocess.Popen(["true"], start_new_session=True)
+    process.wait(timeout=5)
+    monkeypatch.setattr(
+        MODULE.os, "killpg", lambda *_: pytest.fail("must not signal a recycled group")
+    )
+    MODULE._terminate_group(process, recorder, "test cleanup")
+
+
+@pytest.mark.parametrize("launch", ["direct", "exited_parent", "timeout"])
+def test_cleanup_kills_stubborn_child_after_parent_exits(tmp_path, launch):
+    # Adopt only this test's orphan so it can be reaped even without a helpful init.
+    libc = MODULE.ctypes.CDLL(None, use_errno=True)
+    previous = MODULE.ctypes.c_int()
+    assert libc.prctl(37, MODULE.ctypes.byref(previous), 0, 0, 0) == 0
+    assert libc.prctl(36, 1, 0, 0, 0) == 0
+    child_code = """
+import os, signal, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+print(os.getpid(), flush=True)
+time.sleep(60)
+"""
+    parent_code = """
+import os, signal, subprocess, sys, time
+signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+subprocess.Popen([sys.executable, "-c", sys.argv[1]])
+time.sleep(60)
+"""
+    command = [sys.executable, "-c", parent_code, child_code]
+    if launch == "timeout":
+        command = [
+            "env", "-u", "SWITCHYARD_TARGET_GPU_UUID", "CUDA_VISIBLE_DEVICES=",
+            "timeout", "--kill-after=1s", "30s", *command,
+        ]
+    process = None
+    unrelated = None
+    child_pid = None
+    try:
+        unrelated = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        process = subprocess.Popen(command, start_new_session=True, stdout=subprocess.PIPE)
+        assert select.select([process.stdout], [], [], 5)[0], "child did not become ready"
+        child_pid = int(process.stdout.readline())
+        assert os.getpgid(child_pid) == process.pid
+        assert MODULE._is_descendant(child_pid, process.pid)
+        if launch == "exited_parent":
+            process.send_signal(signal.SIGTERM)
+            deadline = time.monotonic() + 5
+            while os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+                assert time.monotonic() < deadline, "parent did not exit"
+                time.sleep(0.01)
+
+        recorder = MODULE.StateRecorder(tmp_path / "state.json", "campaign-a")
+        MODULE._set_active_process(process, recorder)
+        MODULE._cleanup_active_process()
+        assert process.returncode is not None
+        if launch != "timeout":
+            assert process.returncode == 0
+        assert unrelated.poll() is None
+        deadline = time.monotonic() + 5
+        while True:
+            reaped, status = os.waitpid(child_pid, os.WNOHANG)
+            if reaped:
+                child_pid = None
+                assert os.waitstatus_to_exitcode(status) == -signal.SIGKILL
+                break
+            assert time.monotonic() < deadline, "stubborn child survived cleanup"
+            time.sleep(0.01)
+    finally:
+        if process is not None:
+            MODULE._clear_active_process(process)
+            if process.returncode is None or child_pid is not None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            process.wait(timeout=5)
+            process.stdout.close()
+        if child_pid is not None:
+            os.waitpid(child_pid, 0)
+        if unrelated is not None:
+            unrelated.kill()
+            unrelated.wait(timeout=5)
+        assert libc.prctl(36, previous.value, 0, 0, 0) == 0
 
 
 @pytest.mark.parametrize(
@@ -280,12 +380,19 @@ def test_recovery_context_fails_closed(change):
 def test_recovery_environment_contains_only_reconstructable_guard_values():
     context = _recovery_context()
     environment = MODULE._recovery_environment(
-        {"PATH": "/bin", "UNRELATED": "kept"},
+        {
+            "PATH": "/bin",
+            "UNRELATED": "kept",
+            "SWITCHYARD_TARGET_GPU_UUID": "GPU-inherited",
+            "SWITCHYARD_GUARD_TARGET_GPU_UUID": "GPU-inherited",
+        },
         context,
         "device-0123456789abcdef",
         "campaign-hash",
     )
     assert environment["CUDA_VISIBLE_DEVICES"] == "GPU-test"
+    assert environment["SWITCHYARD_TARGET_GPU_UUID"] == "GPU-test"
+    assert environment["SWITCHYARD_GUARD_TARGET_GPU_UUID"] == "GPU-test"
     assert environment["SWITCHYARD_RUN_ATTEMPT"] == "3"
     assert environment["SWITCHYARD_GUARD_IDLE_PROBE_COUNT"] == "31"
     assert environment["SWITCHYARD_GUARD_MAX_IDLE_MEMORY_MIB"] == "8"
@@ -409,12 +516,44 @@ def test_runner_source_exports_idle_attestation_without_process_ids():
     assert 'f"blackwell-switchyard-{target_uuid}.lock"' not in source
 
 
-def test_cpu_recovery_disables_gpu_visibility_and_preserves_attempt(tmp_path):
+@pytest.mark.parametrize("inherited_target", [None, "GPU-inherited"])
+def test_cpu_recovery_disables_gpu_visibility_and_preserves_attempt(
+    tmp_path, monkeypatch, inherited_target
+):
+    if inherited_target is None:
+        monkeypatch.delenv("SWITCHYARD_TARGET_GPU_UUID", raising=False)
+    else:
+        monkeypatch.setenv("SWITCHYARD_TARGET_GPU_UUID", inherited_target)
+    environment = {
+        **os.environ,
+        "CUDA_VISIBLE_DEVICES": "GPU-private",
+        "SWITCHYARD_GUARD_TARGET_GPU_UUID": "GPU-test",
+    }
+    conftest = SCRIPT.parents[1] / "tests" / "conftest.py"
+    child = """
+import importlib.util
+import os
+import runpy
+import sys
+from types import SimpleNamespace
+
+assert os.environ["CUDA_VISIBLE_DEVICES"] == ""
+assert "SWITCHYARD_TARGET_GPU_UUID" not in os.environ
+assert os.environ["SWITCHYARD_GUARD_TARGET_GPU_UUID"] == "GPU-test"
+assert os.environ["SWITCHYARD_CPU_RECOVERY"] == "1"
+hooks = runpy.run_path(sys.argv[1])
+def forbid_monitor(*args, **kwargs):
+    raise AssertionError("CPU recovery must not load the GPU monitor")
+importlib.util.spec_from_file_location = forbid_monitor
+config = SimpleNamespace()
+hooks["pytest_configure"](config)
+hooks["pytest_unconfigure"](config)
+"""
     recorder = MODULE.StateRecorder(tmp_path / "state.json", "campaign-a")
     result = MODULE._run_cpu_recovery(
-        ["/bin/sh", "-c", 'test -z "$CUDA_VISIBLE_DEVICES"'],
+        [sys.executable, "-c", child, str(conftest)],
         cwd=tmp_path,
-        environment={**os.environ, "CUDA_VISIBLE_DEVICES": "GPU-private"},
+        environment=environment,
         log_path=tmp_path / "runner.log",
         recorder=recorder,
         attempt=3,
@@ -423,6 +562,8 @@ def test_cpu_recovery_disables_gpu_visibility_and_preserves_attempt(tmp_path):
         retry_seconds=1,
     )
     assert result == 0
+    assert environment["CUDA_VISIBLE_DEVICES"] == "GPU-private"
+    assert environment.get("SWITCHYARD_TARGET_GPU_UUID") == inherited_target
     assert recorder.attempts == 3
     assert recorder.last_phase == "complete"
     assert stat.S_IMODE((tmp_path / "runner.log").stat().st_mode) == 0o600

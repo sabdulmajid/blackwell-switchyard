@@ -12,10 +12,18 @@ trap terminate_process_group TERM INT
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_dir"
 
+cpu_recovery=${SWITCHYARD_CPU_RECOVERY:-0}
+if [[ "$cpu_recovery" == 1 ]]; then
+  export CUDA_VISIBLE_DEVICES=""
+  unset SWITCHYARD_TARGET_GPU_UUID
+else
+  export SWITCHYARD_GUARD_TARGET_GPU_UUID="${SWITCHYARD_TARGET_GPU_UUID:?the idle runner must select one GPU UUID}"
+fi
+
 : "${SWITCHYARD_EXPECTED_HEAD:?set SWITCHYARD_EXPECTED_HEAD}"
 : "${SWITCHYARD_CAMPAIGN_BRANCH:?set SWITCHYARD_CAMPAIGN_BRANCH}"
 : "${SWITCHYARD_CAMPAIGN_DIR:?set SWITCHYARD_CAMPAIGN_DIR outside the repository}"
-: "${SWITCHYARD_TARGET_GPU_UUID:?the idle runner must select one GPU UUID}"
+: "${SWITCHYARD_GUARD_TARGET_GPU_UUID:?the runner must attest its target GPU}"
 : "${SWITCHYARD_PUBLIC_DEVICE_ID:?the idle runner must select one public device ID}"
 : "${SWITCHYARD_GUARD_IDLE_ACTIVITY_SCOPE:?the runner must attest its activity scope}"
 : "${SWITCHYARD_GUARD_PROCESS_SCOPE:?the runner must attest its process scope}"
@@ -42,7 +50,6 @@ cd "$repo_dir"
 : "${SWITCHYARD_TOOLCHAIN_DIR:?set SWITCHYARD_TOOLCHAIN_DIR to the local Python headers}"
 
 result_branch=${SWITCHYARD_RESULT_BRANCH:-codex/backward-architecture}
-cpu_recovery=${SWITCHYARD_CPU_RECOVERY:-0}
 expected_origin=https://github.com/sabdulmajid/blackwell-switchyard.git
 forbidden_metadata='co-authored-by|claude|anthropic|wizchem|chatgpt|openai\.com|session[-_/][[:alnum:]]|file://|/(home|tmp|pub[0-9]+|mnt|scratch|workspace)/|[[:alpha:]]:[\\/](Users|home|tmp|workspace)[\\/]|([[:alnum:]-]+\.)+(internal|local)([^[:alnum:]_]|$)|GPU-[[:alnum:]-]+'
 all_impls=current,serial_recompute_atomic_t4,serial_saved_partials_t16,cuda_shared,cuda_cluster,cuda_cluster4,cuda_register,cuda_register_cluster,cuda_register_cluster_full,liger_exact,liger_upstream
@@ -58,7 +65,7 @@ candidates=(
 )
 if [[ ! "$SWITCHYARD_EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] ||
    [[ ! "$SWITCHYARD_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] ||
-   [[ ! "$SWITCHYARD_TARGET_GPU_UUID" =~ ^GPU-[A-Za-z0-9-]+$ ]] ||
+   [[ ! "$SWITCHYARD_GUARD_TARGET_GPU_UUID" =~ ^GPU-[A-Za-z0-9-]+$ ]] ||
    [[ ! "$SWITCHYARD_PUBLIC_DEVICE_ID" =~ ^device-[0-9a-f]{16}$ ]] ||
    [[ ! "$SWITCHYARD_GUARD_IDLE_ACTIVITY_SCOPE" =~ ^(all_gpus|target_gpu)$ ]] ||
    [[ "$SWITCHYARD_GUARD_PROCESS_SCOPE" != all_gpus ]] ||
@@ -298,7 +305,7 @@ attempt = {
     "finalize_seconds": int(os.environ["SWITCHYARD_GUARD_FINALIZE_SECONDS"]),
     "gpu_count": int(os.environ["SWITCHYARD_GUARD_GPU_COUNT"]),
     "device_id": os.environ["SWITCHYARD_PUBLIC_DEVICE_ID"],
-    "target_gpu_uuid": os.environ["SWITCHYARD_TARGET_GPU_UUID"],
+    "target_gpu_uuid": os.environ["SWITCHYARD_GUARD_TARGET_GPU_UUID"],
 }
 if os.path.exists(path):
     with open(path, encoding="utf-8") as handle:
@@ -390,7 +397,7 @@ if (
     <= attestation["maximum_allowed_pcie_kib_per_second"]
     or attestation["maximum_allowed_pcie_kib_per_second"] != 65536
     or attestation["device_id"] != os.environ["SWITCHYARD_PUBLIC_DEVICE_ID"]
-    or attestation["target_gpu_uuid"] != os.environ["SWITCHYARD_TARGET_GPU_UUID"]
+    or attestation["target_gpu_uuid"] != os.environ["SWITCHYARD_GUARD_TARGET_GPU_UUID"]
     or launch < not_before
     or (launch - idle_started).total_seconds() < attestation["idle_seconds"]
     or attestation["idle_probe_count"]
@@ -429,9 +436,11 @@ full_fp16="$run_dir/full_float16.json"
 full_fp32="$run_dir/full_float32.json"
 manifest="$attempt_dir/manifest.json"
 
-CUDA_VISIBLE_DEVICES="" timeout --foreground 30m \
-  python scripts/compile_candidates.py --out "$compile_report"
-timeout --foreground 30m python -m pytest tests/test_backward_candidates.py -q
+if [[ "$cpu_recovery" == 0 ]]; then
+  CUDA_VISIBLE_DEVICES="" timeout --foreground 30m \
+    python scripts/compile_candidates.py --out "$compile_report"
+  timeout --foreground 30m python -m pytest tests/test_backward_candidates.py -q
+fi
 
 report_reusable() {
   local report=$1

@@ -488,6 +488,7 @@ def _recovery_environment(
         {
             "CUDA_VISIBLE_DEVICES": context["target_uuid"],
             "SWITCHYARD_TARGET_GPU_UUID": context["target_uuid"],
+            "SWITCHYARD_GUARD_TARGET_GPU_UUID": context["target_uuid"],
             "SWITCHYARD_GUARD_IDLE_ACTIVITY_SCOPE": context["idle_activity_scope"],
             "SWITCHYARD_GUARD_PROCESS_SCOPE": context["process_scope"],
             "SWITCHYARD_PUBLIC_DEVICE_ID": public_device_id,
@@ -576,19 +577,19 @@ def _campaign_identity(args: argparse.Namespace, command: list[str]) -> str:
 
 
 def _terminate_group(process: subprocess.Popen, recorder: StateRecorder, reason: str) -> None:
+    if process.returncode is not None:
+        return
     recorder.write("stopping_workload", reason=reason)
     try:
+        if os.getpgid(process.pid) != process.pid or os.getsid(process.pid) != process.pid:
+            raise RuntimeError("workload must own the session and process group")
         os.killpg(process.pid, signal.SIGTERM)
+        # Keep the leader unreaped so its group ID cannot be recycled before KILL.
+        time.sleep(2)
+        os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
-        return
-    try:
-        process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait(timeout=2)
+        pass
+    process.wait(timeout=2)
 
 
 def _cleanup_active_process() -> None:
@@ -596,7 +597,7 @@ def _cleanup_active_process() -> None:
     process, recorder = _ACTIVE_PROCESS, _ACTIVE_RECORDER
     _ACTIVE_PROCESS = None
     _ACTIVE_RECORDER = None
-    if process is not None and recorder is not None and process.poll() is None:
+    if process is not None and recorder is not None:
         _terminate_group(process, recorder, "GPU supervisor exited")
 
 
@@ -639,6 +640,7 @@ def _run_cpu_recovery(
     """Retry post-GPU publication without querying a GPU or spending an attempt."""
     cpu_environment = environment.copy()
     cpu_environment["CUDA_VISIBLE_DEVICES"] = ""
+    cpu_environment.pop("SWITCHYARD_TARGET_GPU_UUID", None)
     cpu_environment["SWITCHYARD_CPU_RECOVERY"] = "1"
     while time.time() < deadline:
         recorder.write("cpu_recovery_started", attempt=attempt)
