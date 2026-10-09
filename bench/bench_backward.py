@@ -703,7 +703,11 @@ def main() -> None:
         "candidate_reachable_from_production": False,
         "environment": environment(),
         "gpu_preflight": preflight,
-        "provenance": repository_provenance(REPO, {"Liger-Kernel": THIRD_PARTY / "Liger-Kernel"}),
+        "provenance": {
+            **repository_provenance(REPO, {"Liger-Kernel": THIRD_PARTY / "Liger-Kernel"}),
+            "input_seed": 0,
+            "grad_seed": 1,
+        },
         "comparators": comparators,
         "dtype": args.dtype,
         "shape_set": args.shape_set,

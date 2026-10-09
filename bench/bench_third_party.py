@@ -426,8 +426,13 @@ def main() -> None:
         "results": [],
         "batched_queries": [],
     }
-
+    report["provenance"].update({
+        "input_seed": 0,
+        "rng_policy": "Reset to zero per shape; single queries follow sources in the same stream",
+        "batched_query_seed": 1,
+    })
     if args.batched_only:
+        report["provenance"]["query_seed"] = 1
         for shape, n_queries in BATCHED_CASES:
             torch.manual_seed(0)
             v = torch.randn(shape.n, shape.b, shape.t, shape.d, device=device, dtype=dtype)

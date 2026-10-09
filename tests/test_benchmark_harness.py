@@ -1,13 +1,18 @@
-"""CPU-only tests for benchmark process-contamination monitoring."""
+"""CPU-only tests for benchmark timing, profiling, and process monitoring."""
 
 from __future__ import annotations
 
 import importlib.util
 import os
+import statistics
 import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+from bench import bench_backward
 
 SCRIPT = Path(__file__).resolve().parents[1] / "bench" / "harness.py"
 SPEC = importlib.util.spec_from_file_location("benchmark_harness", SCRIPT)
@@ -15,6 +20,85 @@ assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+
+EVALUATOR_SPEC = importlib.util.spec_from_file_location(
+    "harness_evaluator", SCRIPT.parents[1] / "scripts" / "evaluate_backward.py"
+)
+assert EVALUATOR_SPEC is not None and EVALUATOR_SPEC.loader is not None
+EVALUATOR = importlib.util.module_from_spec(EVALUATOR_SPEC)
+sys.modules[EVALUATOR_SPEC.name] = EVALUATOR
+EVALUATOR_SPEC.loader.exec_module(EVALUATOR)
+
+
+@pytest.fixture
+def cuda_elapsed_time(monkeypatch):
+    elapsed_time = Mock()
+    event = SimpleNamespace(record=lambda: None, elapsed_time=elapsed_time)
+    monkeypatch.setattr(MODULE.torch.cuda, "Event", lambda **_kwargs: event)
+    monkeypatch.setattr(MODULE.torch.cuda, "synchronize", lambda _device: None)
+    monkeypatch.setattr(MODULE, "_flush_l2", lambda _device: None)
+    monkeypatch.setattr(bench_backward, "measure_latency", MODULE.measure_latency)
+    return elapsed_time
+
+
+@pytest.mark.parametrize("record_samples", [False, True])
+@pytest.mark.parametrize(
+    ("samples", "median"),
+    [([3.0], 3.0), ([7.0, 1.0, 3.0], 3.0), ([7.0, 1.0, 9.0, 3.0], 5.0)],
+    ids=["single", "odd", "even"],
+)
+def test_measure_latency_statistics(cuda_elapsed_time, samples, median, record_samples):
+    cuda_elapsed_time.side_effect = samples
+    fn = Mock()
+    timing = MODULE.measure_latency(
+        fn, device=object(), warmup=2, reps=len(samples), record_samples=record_samples
+    )
+
+    assert timing.median_ms == median
+    assert timing.p10_ms == min(samples)
+    assert timing.p90_ms == max(samples)
+    assert timing.min_ms == min(samples)
+    assert timing.mean_ms == statistics.fmean(samples)
+    assert timing.cv == pytest.approx(statistics.pstdev(samples) / statistics.fmean(samples))
+    assert timing.reps == len(samples)
+    assert timing.warmup == 2
+    assert timing.l2_flushed is True
+    assert fn.call_count == 2 + len(samples)
+    assert cuda_elapsed_time.call_count == len(samples)
+    if record_samples:
+        assert timing.samples_ms == samples
+        assert timing.as_dict()["samples_ms"] == samples
+    else:
+        assert timing.samples_ms is None
+        assert "samples_ms" not in timing.as_dict()
+
+
+@pytest.mark.parametrize("quick", [True, False], ids=["even-quick", "odd-full"])
+def test_interleaved_harness_statistics_match_raw_validator(cuda_elapsed_time, quick):
+    trial_count, reps, warmup = (2, 10, 8) if quick else (15, 13, 10)
+    count = 2 * trial_count * reps
+    samples = [float(1 + (index * 7) % count) for index in range(count)]
+    cuda_elapsed_time.side_effect = samples
+    summaries, schedule = bench_backward._measure_paired_trials(
+        {"current": lambda: None, "candidate": lambda: None},
+        device=object(), quick=quick, rotation=0,
+    )
+
+    for name, summary in summaries.items():
+        for trial in summary["trials"]:
+            start = (2 * trial["trial"] + trial["order_in_trial"]) * reps
+            assert trial["samples_ms"] == samples[start : start + reps]
+        problems = []
+        rebuilt = EVALUATOR._timing_from_raw(
+            {"impl": name, "backward": summary},
+            "backward", schedule, problems, name,
+            trial_count=trial_count, reps_per_trial=reps, warmup_per_trial=warmup,
+        )
+        assert not problems
+        assert rebuilt is not None
+        assert rebuilt["median_ms"] == summary["median_ms"]
+        assert list(rebuilt["trial_medians"].values()) == summary["trial_medians_ms"]
+    assert cuda_elapsed_time.call_count == count
 
 
 def test_gpu_process_monitor_records_a_transient_competitor(monkeypatch):
@@ -100,6 +184,8 @@ def test_repository_provenance_redacts_external_argv_path(monkeypatch, tmp_path)
 
     provenance = MODULE.repository_provenance(repo)
 
+    assert "input_seed" not in provenance
+    assert "query_seed" not in provenance
     assert provenance["argv"] == [
         "bench.py",
         "--out",

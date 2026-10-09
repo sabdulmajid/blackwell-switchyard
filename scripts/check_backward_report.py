@@ -458,7 +458,7 @@ def _complete_timing(
         ordered = sorted(samples)
         mean = statistics.fmean(samples)
         expected_trial = {
-            "median_ms": ordered[len(ordered) // 2],
+            "median_ms": statistics.median(samples),
             "p10_ms": ordered[int(0.10 * len(ordered))],
             "p90_ms": ordered[min(len(ordered) - 1, int(0.90 * len(ordered)))],
             "min_ms": ordered[0],
@@ -1392,7 +1392,7 @@ def report_schema_problems(report: dict) -> list[str]:
             "third_party_commits",
             "third_party_dirty",
             "input_seed",
-            "query_seed",
+            "grad_seed",
         },
         "provenance",
         problems,
@@ -1411,7 +1411,7 @@ def report_schema_problems(report: dict) -> list[str]:
             "third_party_commits",
             "third_party_dirty",
             "input_seed",
-            "query_seed",
+            "grad_seed",
         },
         "provenance",
         problems,
@@ -1738,8 +1738,8 @@ def validate_report(
         problems.append("pinned Liger checkout was not clean")
     if provenance.get("input_seed") != 0 or type(provenance.get("input_seed")) is not int:
         problems.append("input seed provenance is not exact")
-    if provenance.get("query_seed") != 1 or type(provenance.get("query_seed")) is not int:
-        problems.append("query seed provenance is not exact")
+    if provenance.get("grad_seed") != 1 or type(provenance.get("grad_seed")) is not int:
+        problems.append("upstream-gradient seed provenance is not exact")
     if provenance.get("argv") != _expected_argv(
         dtype=dtype,
         shape_set=shape_set,

@@ -186,7 +186,7 @@ class GPUProcessMonitor:
 
 
 def repository_provenance(repo: Path, third_party: Mapping[str, Path] | None = None) -> dict:
-    """Record exact source revisions and seeds alongside raw measurements."""
+    """Record source revisions; each benchmark must describe its own RNG policy."""
 
     def git(path: Path, *args: str) -> str:
         return subprocess.run(
@@ -233,8 +233,6 @@ def repository_provenance(repo: Path, third_party: Mapping[str, Path] | None = N
         "diff_sha256": hashlib.sha256(diff).hexdigest(),
         "third_party_commits": revisions,
         "third_party_dirty": third_party_dirty,
-        "input_seed": 0,
-        "query_seed": 1,
     }
 
 
@@ -300,7 +298,7 @@ def measure_latency(
     n = len(samples)
     mean = statistics.fmean(samples)
     return Timing(
-        median_ms=samples[n // 2],
+        median_ms=statistics.median(samples),
         p10_ms=samples[max(0, int(0.10 * n))],
         p90_ms=samples[min(n - 1, int(0.90 * n))],
         min_ms=samples[0],

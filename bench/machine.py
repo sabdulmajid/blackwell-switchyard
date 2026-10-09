@@ -71,7 +71,12 @@ def _empty_kernel(x):
 
 
 def time_cuda(fn, warmup: int, reps: int) -> dict:
-    """Median/p10/p90 milliseconds over `reps` CUDA-event-timed calls."""
+    """Calibration order statistics over `reps` CUDA-event-timed calls.
+
+    Keep the upper-middle median for even counts to preserve the definition
+    behind unchanged historical machine-probe evidence. Operator latency
+    records in ``bench/harness.py`` use the arithmetic median instead.
+    """
     for _ in range(warmup):
         fn()
     torch.cuda.synchronize()

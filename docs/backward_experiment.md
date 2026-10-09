@@ -337,6 +337,12 @@ python scripts/run_when_gpu_idle.py \
 The campaign validates `SWITCHYARD_TOOLCHAIN_DIR` and then activates `scripts/env.sh`. This step
 adds the local Python headers, CUDA toolkit, project source, and local compiler caches.
 
+Timing reports record `input_seed=0` for the shared source/query RNG stream and
+`grad_seed=1` for the upstream gradient. The former shared provenance helper
+incorrectly called the latter `query_seed`; the strict validator now rejects that label.
+Quick and full latency records use the arithmetic median, including even-sized trials.
+Historical summaries without raw samples are not relabeled or reconstructed.
+
 A deterministic smoke, correctness, schema, or provenance failure stops the campaign. It does
 not spend another GPU attempt on the same inputs. Only a collision, interrupted phase, or
 measured statistical instability can request a fresh idle interval and another attempt.

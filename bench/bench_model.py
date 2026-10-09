@@ -25,7 +25,7 @@ The memory arithmetic, in bf16 with bf16 AdamW state:
 
 * parameters 2.6 GB + gradients 2.6 GB + AdamW ``exp_avg``/``exp_avg_sq``
   5.2 GB = 10.4 GB resident;
-* a ``B*T*D`` slab is 33.5 MiB, and the arena holds 9 of them (0.3 GiB) while
+* a ``B*T*D`` slab is 32 MiB, and the arena holds 9 of them (0.3 GiB) while
   the naive stacking variant materializes 265 of them and keeps them alive for
   backward (8.7 GiB);
 * everything else is ordinary activation memory.
@@ -40,7 +40,7 @@ Attributing the residual mechanism's share
 Two independent methods, because neither alone is airtight:
 
 1. **Control differencing** (primary). ``step(variant) - step(standard)``, on
-   end-to-end wall clock. Unambiguous and complete: it captures the operator,
+   CUDA-event step time. This estimate includes the operator,
    the source staging, the extra autograd nodes, and any second-order effect of
    the extra memory traffic. Its one bias is that the control is not free -- a
    standard residual still runs one elementwise add per sublayer, about 144
@@ -56,8 +56,9 @@ Two independent methods, because neither alone is airtight:
    and why the framework operator's backward under ``sources="stack"`` is not
    attributable at all: it decomposes into generic einsum and softmax nodes.
 
-Where both methods apply they agree to within a couple of percent, which is the
-reason to trust either.
+The methods have different denominators and scopes. In the stored arena results,
+control-difference shares are 39.1% and 11.4%; profiler device-time shares are 34.2%
+and 7.4%. Neither is the overhead percentage relative to the control step.
 
 Run::
 
@@ -244,7 +245,8 @@ def profile_step(model, step_fn, device, iters: int = 3) -> dict:
     out = {k: v / iters for k, v in named.items()}
     out["total_device_us"] = total_us / iters
     fwd_us = sum(out.get(r, 0.0) for r in _REGIONS)
-    bwd_us = sum(out.get(n, 0.0) for n in _BWD_NODES)
+    # The arena's inclusive backward time already includes the nested Triton scope.
+    bwd_us = out.get("_ArenaAttnResBackward", out.get("_BlockAttnResTritonBackward", 0.0))
     out["attnres_forward_us"] = fwd_us
     # None rather than 0.0 when the backward decomposes into generic nodes, so
     # an unattributable variant is never mistaken for a free one.
@@ -367,7 +369,12 @@ def main() -> None:
 
     report = {
         "environment": environment(),
-        "provenance": repository_provenance(REPO),
+        "provenance": {
+            **repository_provenance(REPO),
+            "model_seed": 0,
+            "rng_policy": "Reset before each model; synthetic data follow initialization; queries start at zero",
+            "smoke_data_seed": 1234,
+        },
         "dtype": args.dtype,
         "scale": args.scale,
         "config": SCALES[args.scale],
@@ -438,7 +445,7 @@ def attribution(variants: list[dict]) -> list[dict]:
         rows.append({
             "variant": v["variant"],
             "control": base["variant"],
-            "method": "control difference against the standard-residual model, wall clock",
+            "method": "control difference against the standard-residual model, CUDA-event step time",
             "step_delta_ms": v["step"]["median_ms"] - base["step"]["median_ms"],
             "step_share_pct": 100 * (1 - base["step"]["median_ms"] / v["step"]["median_ms"]),
             "forward_delta_ms": v["forward"]["median_ms"] - base["forward"]["median_ms"],

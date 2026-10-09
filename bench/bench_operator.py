@@ -299,7 +299,11 @@ def main() -> None:
     shapes = SHAPE_SETS[args.set]
     report = {
         "environment": environment(),
-        "provenance": repository_provenance(REPO),
+        "provenance": {
+            **repository_provenance(REPO),
+            "initial_rng_seed": 0,
+            "rng_policy": "One Torch RNG stream; sources, queries, and gradients advance it in run order",
+        },
         "dtype": args.dtype,
         "shape_set": args.set,
         "rel_l2_tol": tol,

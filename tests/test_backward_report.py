@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import statistics
 import sys
 from pathlib import Path
 
@@ -169,7 +170,7 @@ def _report(*, quick: bool = False, shape_set: str = "full") -> dict:
                 quick=quick,
             ),
             "input_seed": 0,
-            "query_seed": 1,
+            "grad_seed": 1,
         },
         "comparators": {
             "liger_exact": {
@@ -302,6 +303,38 @@ def test_clean_complete_report_can_be_reused():
 def test_clean_generated_smoke_report_can_be_reused():
     report = _report(quick=True, shape_set="gate")
     assert not _problems(report, quick=True, shape_set="gate")
+
+
+@pytest.mark.parametrize("quick", [True, False], ids=["even-quick", "odd-full"])
+@pytest.mark.parametrize("metric", ["forward", "backward", "fwd_bwd"])
+def test_report_validates_arithmetic_medians_for_nonuniform_trials(quick, metric):
+    shape_set = "gate" if quick else "full"
+    report = _report(quick=quick, shape_set=shape_set)
+    timing = report["results"][0][metric]
+    reps = timing["trials"][0]["reps"]
+    samples = [float(index) for index in range(reps, 0, -1)]
+    ordered = sorted(samples)
+    mean = statistics.fmean(samples)
+    summary = {
+        "median_ms": (reps + 1) / 2,
+        "p10_ms": ordered[int(0.10 * reps)],
+        "p90_ms": ordered[int(0.90 * reps)],
+        "min_ms": ordered[0],
+        "mean_ms": mean,
+        "cv": statistics.pstdev(samples) / mean,
+    }
+    for trial in timing["trials"]:
+        trial.update(summary, samples_ms=samples.copy())
+    timing.update(summary, trial_medians_ms=[summary["median_ms"]] * timing["trial_count"])
+
+    assert not _problems(report, quick=quick, shape_set=shape_set)
+
+    if quick:
+        timing["trials"][0]["median_ms"] = ordered[reps // 2]
+        assert any(
+            f"{metric} contains inconsistent trial statistics" in problem
+            for problem in _problems(report, quick=quick, shape_set=shape_set)
+        )
 
 
 def test_running_or_contaminated_report_cannot_be_reused():
@@ -471,13 +504,19 @@ def test_methodology_is_exact():
     assert any("methodology differs" in problem for problem in _problems(report))
 
 
+def test_gradient_seed_cannot_be_mislabeled_as_query_seed():
+    report = _report()
+    report["provenance"]["query_seed"] = report["provenance"].pop("grad_seed")
+    assert any("upstream-gradient seed" in problem for problem in _problems(report))
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
         ("dirty_paths", ["src/private.py"]),
         ("diff_sha256", "0" * 64),
         ("input_seed", False),
-        ("query_seed", True),
+        ("grad_seed", True),
         ("third_party_commits", {"Liger-Kernel": MODULE.PINNED_LIGER_COMMIT, "extra": "x"}),
         ("third_party_dirty", {"Liger-Kernel": 0}),
     ],

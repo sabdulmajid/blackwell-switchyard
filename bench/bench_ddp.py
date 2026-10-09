@@ -199,7 +199,12 @@ def main() -> None:
     from harness import repository_provenance
 
     combined = {
-        "provenance": repository_provenance(REPO),
+        "provenance": {
+            **repository_provenance(REPO),
+            "model_seed": 0,
+            "data_seed_base": 1234,
+            "rng_policy": "Model seed zero per variant; data seed 1234 + rank; queries start at zero",
+        },
         "single": None,
         "dual": None,
     }
